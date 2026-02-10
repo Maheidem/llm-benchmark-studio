@@ -11,9 +11,10 @@ import asyncio
 import json
 import os
 import re
-from datetime import datetime
+import time
 from pathlib import Path
 
+import litellm
 import yaml
 
 from dotenv import load_dotenv
@@ -26,6 +27,10 @@ load_dotenv(_dir / ".env")
 
 from benchmark import (  # noqa: E402
     AggregatedResult,
+    RunResult,
+    Target,
+    _compute_variance,
+    generate_context_text,
     load_config,
     build_targets,
     run_single,
@@ -34,6 +39,10 @@ from benchmark import (  # noqa: E402
 
 app = FastAPI(title="LLM Benchmark Studio")
 CONFIG_PATH = str(_dir / "config.yaml")
+
+# Concurrency guards
+_benchmark_lock = asyncio.Lock()
+_cancel_event = asyncio.Event()
 
 
 # ---------------------------------------------------------------------------
@@ -446,16 +455,56 @@ async def delete_env_key(request: Request):
     return {"status": "ok"}
 
 
+@app.post("/api/benchmark/cancel")
+async def cancel_benchmark():
+    """Cancel a running benchmark."""
+    _cancel_event.set()
+    return {"status": "ok", "message": "Cancellation requested"}
+
+
 @app.post("/api/benchmark")
 async def run_benchmark(request: Request):
     """Run benchmarks and stream results via SSE."""
     body = await request.json()
     model_ids = body.get("models", [])
-    runs = body.get("runs", 1)
+    runs = body.get("runs", 3)
     max_tokens = body.get("max_tokens", 512)
     temperature = body.get("temperature", 0.7)
     prompt = body.get("prompt", "")
     context_tiers = body.get("context_tiers", [0])
+    warmup = body.get("warmup", True)
+
+    # --- Input validation ---
+    if not isinstance(model_ids, list) or len(model_ids) == 0:
+        return JSONResponse(
+            {"error": "models must be a non-empty list"},
+            status_code=400,
+        )
+    if not isinstance(runs, (int, float)) or int(runs) < 1 or int(runs) > 20:
+        return JSONResponse(
+            {"error": "runs must be between 1 and 20"},
+            status_code=400,
+        )
+    runs = int(runs)
+    if not isinstance(max_tokens, (int, float)) or int(max_tokens) < 1 or int(max_tokens) > 16384:
+        return JSONResponse(
+            {"error": "max_tokens must be between 1 and 16384"},
+            status_code=400,
+        )
+    max_tokens = int(max_tokens)
+    if not isinstance(temperature, (int, float)) or float(temperature) < 0.0 or float(temperature) > 2.0:
+        return JSONResponse(
+            {"error": "temperature must be between 0.0 and 2.0"},
+            status_code=400,
+        )
+    temperature = float(temperature)
+
+    # --- Concurrent benchmark guard ---
+    if _benchmark_lock.locked():
+        return JSONResponse(
+            {"error": "Benchmark already running"},
+            status_code=409,
+        )
 
     config = load_config(CONFIG_PATH)
     defaults = config.get("defaults", {})
@@ -470,102 +519,128 @@ async def run_benchmark(request: Request):
     if not prompt.strip():
         prompt = defaults.get("prompt", "Explain recursion in programming with a Python example.")
 
-    loop = asyncio.get_event_loop()
-
     async def generate():
-        # Calculate total runs across all tiers
-        total = 0
-        for tier in context_tiers:
-            for target in targets:
-                headroom = target.context_window - max_tokens - 100
-                if tier == 0 or tier <= headroom:
-                    total += runs
-
-        queue = asyncio.Queue()
-
-        # Group targets by provider for parallel execution
-        # Within a provider: sequential (same endpoint, avoid self-contention)
-        # Across providers: fully parallel (independent endpoints)
-        provider_groups = {}
-        for target in targets:
-            provider_groups.setdefault(target.provider, []).append(target)
-
-        async def run_provider(prov_targets):
-            """Run all benchmarks for one provider sequentially."""
+        await _benchmark_lock.acquire()
+        _cancel_event.clear()
+        try:
+            # Calculate total runs across all tiers
+            total = 0
             for tier in context_tiers:
-                for target in prov_targets:
+                for target in targets:
                     headroom = target.context_window - max_tokens - 100
-                    if tier > 0 and tier > headroom:
-                        await queue.put({
-                            "type": "skipped",
-                            "provider": target.provider,
-                            "model": target.display_name,
-                            "model_id": target.model_id,
-                            "context_tokens": tier,
-                            "reason": f"{tier // 1000}K exceeds {target.context_window // 1000}K context window",
-                        })
-                        continue
+                    if tier == 0 or tier <= headroom:
+                        total += runs
 
-                    for r in range(runs):
-                        result = await loop.run_in_executor(
-                            None, run_single, target, prompt, max_tokens, temperature, tier
-                        )
-                        await queue.put({
-                            "type": "result",
-                            "provider": target.provider,
-                            "model": target.display_name,
-                            "model_id": target.model_id,
-                            "run": r + 1,
-                            "runs": runs,
-                            "context_tokens": tier,
-                            "ttft_ms": round(result.ttft_ms, 2),
-                            "total_time_s": round(result.total_time_s, 3),
-                            "output_tokens": result.output_tokens,
-                            "input_tokens": result.input_tokens,
-                            "tokens_per_second": round(result.tokens_per_second, 2),
-                            "success": result.success,
-                            "error": result.error,
-                        })
+            queue = asyncio.Queue()
 
-        # Launch all provider groups as concurrent tasks
-        tasks = [asyncio.create_task(run_provider(g))
-                 for g in provider_groups.values()]
+            # Group targets by provider for parallel execution
+            # Within a provider: sequential (same endpoint, avoid self-contention)
+            # Across providers: fully parallel (independent endpoints)
+            provider_groups = {}
+            for target in targets:
+                provider_groups.setdefault(target.provider, []).append(target)
 
-        async def sentinel():
-            """Wait for all provider tasks to finish, then signal done."""
-            await asyncio.gather(*tasks, return_exceptions=True)
-            await queue.put(None)
+            async def run_provider(prov_targets):
+                """Run all benchmarks for one provider sequentially."""
+                for tier in context_tiers:
+                    for target in prov_targets:
+                        if _cancel_event.is_set():
+                            return
+                        headroom = target.context_window - max_tokens - 100
+                        if tier > 0 and tier > headroom:
+                            await queue.put({
+                                "type": "skipped",
+                                "provider": target.provider,
+                                "model": target.display_name,
+                                "model_id": target.model_id,
+                                "context_tokens": tier,
+                                "reason": f"{tier // 1000}K exceeds {target.context_window // 1000}K context window",
+                            })
+                            continue
 
-        asyncio.create_task(sentinel())
+                        # Warm-up run (discarded)
+                        if warmup:
+                            await async_run_single(
+                                target, prompt, max_tokens, temperature, tier
+                            )
 
-        # Consume queue and yield SSE events as they arrive (interleaved)
-        current = 0
-        all_results = []
-        while True:
-            item = await queue.get()
-            if item is None:
-                break
-            if item["type"] == "result":
-                current += 1
-                # Emit progress before the result data
-                yield _sse({
-                    "type": "progress",
-                    "current": current,
-                    "total": total,
-                    "provider": item["provider"],
-                    "model": item["model"],
-                    "run": item["run"],
-                    "runs": item["runs"],
-                    "context_tokens": item["context_tokens"],
-                })
-                all_results.append(item)
-            yield _sse(item)
+                        for r in range(runs):
+                            if _cancel_event.is_set():
+                                return
+                            result = await async_run_single(
+                                target, prompt, max_tokens, temperature, tier
+                            )
+                            await queue.put({
+                                "type": "result",
+                                "provider": target.provider,
+                                "model": target.display_name,
+                                "model_id": target.model_id,
+                                "run": r + 1,
+                                "runs": runs,
+                                "context_tokens": tier,
+                                "ttft_ms": round(result.ttft_ms, 2),
+                                "total_time_s": round(result.total_time_s, 3),
+                                "output_tokens": result.output_tokens,
+                                "input_tokens": result.input_tokens,
+                                "tokens_per_second": round(result.tokens_per_second, 2),
+                                "input_tokens_per_second": round(result.input_tokens_per_second, 2),
+                                "cost": round(result.cost, 8),
+                                "success": result.success,
+                                "error": result.error,
+                            })
 
-        # Save results
-        agg_results = _aggregate(all_results, config)
-        saved = save_results(agg_results, prompt, context_tiers=context_tiers)
+            # Launch all provider groups as concurrent tasks
+            tasks = [asyncio.create_task(run_provider(g))
+                     for g in provider_groups.values()]
 
-        yield _sse({"type": "complete", "saved_to": str(saved)})
+            async def sentinel():
+                """Wait for all provider tasks to finish, then signal done."""
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await queue.put(None)
+
+            asyncio.create_task(sentinel())
+
+            # Consume queue and yield SSE events as they arrive (interleaved)
+            current = 0
+            all_results = []
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                if _cancel_event.is_set():
+                    # Cancel remaining tasks
+                    for t in tasks:
+                        t.cancel()
+                    yield _sse({"type": "cancelled"})
+                    return
+                if item["type"] == "result":
+                    current += 1
+                    # Emit progress before the result data
+                    yield _sse({
+                        "type": "progress",
+                        "current": current,
+                        "total": total,
+                        "provider": item["provider"],
+                        "model": item["model"],
+                        "run": item["run"],
+                        "runs": item["runs"],
+                        "context_tokens": item["context_tokens"],
+                    })
+                    all_results.append(item)
+                yield _sse(item)
+
+            # Save results
+            if all_results:
+                agg_results = _aggregate(all_results, config)
+                saved = save_results(agg_results, prompt, context_tiers=context_tiers)
+                yield _sse({"type": "complete", "saved_to": str(saved)})
+            else:
+                yield _sse({"type": "complete", "saved_to": ""})
+
+        except Exception as e:
+            yield _sse({"type": "error", "message": str(e)})
+        finally:
+            _benchmark_lock.release()
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -589,6 +664,219 @@ async def get_history():
     return JSONResponse(history)
 
 
+@app.get("/api/history/{filename}")
+async def get_history_file(filename: str):
+    """Return the full JSON content of a specific result file."""
+    # Validate filename to prevent path traversal
+    if not re.match(r'^benchmark_\d{8}_\d{6}\.json$', filename):
+        return JSONResponse({"error": "Invalid filename"}, status_code=400)
+
+    filepath = _dir / "results" / filename
+    if not filepath.exists():
+        return JSONResponse({"error": "File not found"}, status_code=404)
+
+    try:
+        data = json.loads(filepath.read_text())
+        data["filename"] = filename
+        return JSONResponse(data)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ---------------------------------------------------------------------------
+# Prompt templates
+# ---------------------------------------------------------------------------
+
+@app.get("/api/config/prompts")
+async def get_prompt_templates():
+    """Return prompt templates from config."""
+    config = load_config(CONFIG_PATH)
+    return config.get("prompt_templates", {})
+
+
+@app.post("/api/config/prompts")
+async def add_prompt_template(request: Request):
+    """Add a new prompt template."""
+    body = await request.json()
+    key = body.get("key", "").strip()
+    if not key or not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', key):
+        return JSONResponse({"error": "Invalid template key"}, status_code=400)
+    label = body.get("label", key)
+    category = body.get("category", "general")
+    prompt_text = body.get("prompt", "").strip()
+    if not prompt_text:
+        return JSONResponse({"error": "prompt is required"}, status_code=400)
+
+    with open(CONFIG_PATH) as f:
+        config = yaml.safe_load(f)
+
+    config.setdefault("prompt_templates", {})[key] = {
+        "category": category,
+        "label": label,
+        "prompt": prompt_text,
+    }
+
+    _save_config(config)
+    return {"status": "ok", "key": key}
+
+
+# ---------------------------------------------------------------------------
+# Provider health check
+# ---------------------------------------------------------------------------
+
+@app.get("/api/health/providers")
+async def health_check_providers():
+    """Check connectivity to each configured provider with a tiny completion."""
+    config = load_config(CONFIG_PATH)
+    all_targets = build_targets(config)
+
+    # Pick one model per provider for the health check
+    provider_targets = {}
+    for t in all_targets:
+        if t.provider not in provider_targets:
+            provider_targets[t.provider] = t
+
+    async def check_one(name: str, target: Target) -> dict:
+        kwargs = {
+            "model": target.model_id,
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 1,
+            "timeout": 10,
+        }
+        if target.api_base:
+            kwargs["api_base"] = target.api_base
+        if target.api_key:
+            kwargs["api_key"] = target.api_key
+        if target.skip_params:
+            for p in target.skip_params:
+                kwargs.pop(p, None)
+
+        start = time.perf_counter()
+        try:
+            await litellm.acompletion(**kwargs)
+            latency = (time.perf_counter() - start) * 1000
+            return {"name": name, "status": "ok", "latency_ms": round(latency)}
+        except Exception as e:
+            latency = (time.perf_counter() - start) * 1000
+            return {"name": name, "status": "error", "latency_ms": round(latency), "error": str(e)[:200]}
+
+    results = await asyncio.gather(
+        *[check_one(name, t) for name, t in provider_targets.items()]
+    )
+    return {"providers": list(results)}
+
+
+# ---------------------------------------------------------------------------
+# Async benchmark execution (used by SSE endpoint)
+# ---------------------------------------------------------------------------
+
+async def async_run_single(
+    target: Target, prompt: str, max_tokens: int, temperature: float,
+    context_tokens: int = 0, timeout: int = 120,
+) -> RunResult:
+    """Execute a single streaming benchmark run using async litellm."""
+    result = RunResult(target=target, context_tokens=context_tokens)
+
+    messages = []
+    if context_tokens > 0:
+        context_text = generate_context_text(context_tokens)
+        messages.append({"role": "system", "content": context_text})
+    messages.append({"role": "user", "content": prompt})
+
+    kwargs = {
+        "model": target.model_id,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "timeout": timeout,
+        "num_retries": 2,
+    }
+    if target.api_base:
+        kwargs["api_base"] = target.api_base
+    if target.api_key:
+        kwargs["api_key"] = target.api_key
+    # Remove params this model doesn't support
+    if target.skip_params:
+        for p in target.skip_params:
+            kwargs.pop(p, None)
+
+    try:
+        start = time.perf_counter()
+        stream = await litellm.acompletion(**kwargs)
+
+        ttft = None
+        chunk_count = 0
+        usage_from_stream = None
+
+        async for chunk in stream:
+            now = time.perf_counter()
+
+            # Time to first token
+            if ttft is None:
+                ttft = (now - start) * 1000  # ms
+
+            # Count content-bearing chunks (1 chunk ~ 1 token)
+            if (
+                chunk.choices
+                and chunk.choices[0].delta
+                and chunk.choices[0].delta.content
+            ):
+                chunk_count += 1
+
+            # Capture usage from final chunk if provider supports it
+            if hasattr(chunk, "usage") and chunk.usage:
+                usage_from_stream = chunk.usage
+
+        total = time.perf_counter() - start
+
+        # Prefer provider-reported counts; fall back to chunk counting
+        if usage_from_stream:
+            result.output_tokens = usage_from_stream.completion_tokens or chunk_count
+            result.input_tokens = usage_from_stream.prompt_tokens or 0
+        else:
+            result.output_tokens = chunk_count
+            result.input_tokens = 0
+
+        result.ttft_ms = ttft or 0.0
+        result.total_time_s = total
+        result.tokens_per_second = (
+            result.output_tokens / total if total > 0 else 0.0
+        )
+
+        # Input tokens/second: how fast the model processes the prompt
+        if result.ttft_ms > 0 and result.input_tokens > 0:
+            result.input_tokens_per_second = result.input_tokens / (result.ttft_ms / 1000)
+
+        # Cost tracking (not all models support this)
+        try:
+            result.cost = litellm.completion_cost(
+                model=target.model_id,
+                prompt=str(result.input_tokens),
+                completion=str(result.output_tokens),
+                prompt_tokens=result.input_tokens,
+                completion_tokens=result.output_tokens,
+            )
+        except Exception:
+            result.cost = 0.0
+
+    except litellm.exceptions.RateLimitError as e:
+        result.success = False
+        result.error = f"[rate_limited] {str(e)[:180]}"
+    except litellm.exceptions.AuthenticationError as e:
+        result.success = False
+        result.error = f"[auth_failed] {str(e)[:180]}"
+    except litellm.exceptions.Timeout as e:
+        result.success = False
+        result.error = f"[timeout] {str(e)[:180]}"
+    except Exception as e:
+        result.success = False
+        result.error = str(e)[:200]
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -600,8 +888,6 @@ def _sse(data: dict) -> str:
 
 def _aggregate(raw_results: list[dict], config: dict) -> list[AggregatedResult]:
     """Convert raw result dicts into AggregatedResults for saving."""
-    from benchmark import Target, RunResult
-
     # Group by (model_id, provider, context_tokens) to distinguish
     # same model_id served by different providers (e.g. two LM Studio instances)
     grouped = {}
@@ -634,6 +920,11 @@ def _aggregate(raw_results: list[dict], config: dict) -> list[AggregatedResult]:
             agg.avg_total_time_s = sum(r["total_time_s"] for r in successes) / n
             agg.avg_tokens_per_second = sum(r["tokens_per_second"] for r in successes) / n
             agg.avg_output_tokens = sum(r["output_tokens"] for r in successes) / n
+            agg.avg_cost = sum(r.get("cost", 0) for r in successes) / n
+            agg.total_cost = sum(r.get("cost", 0) for r in successes)
+            input_tps_vals = [r.get("input_tokens_per_second", 0) for r in successes if r.get("input_tokens_per_second", 0) > 0]
+            if input_tps_vals:
+                agg.avg_input_tps = sum(input_tps_vals) / len(input_tps_vals)
 
         # Store context_tokens on the result for saving
         agg.all_results = [RunResult(
@@ -644,9 +935,16 @@ def _aggregate(raw_results: list[dict], config: dict) -> list[AggregatedResult]:
             output_tokens=r["output_tokens"],
             input_tokens=r.get("input_tokens", 0),
             tokens_per_second=r["tokens_per_second"],
+            input_tokens_per_second=r.get("input_tokens_per_second", 0),
+            cost=r.get("cost", 0),
             success=r["success"],
             error=r.get("error", ""),
         ) for r in runs]
+
+        # Compute variance stats (identical to benchmark.py)
+        if n > 0:
+            success_results = [rr for rr in agg.all_results if rr.success]
+            _compute_variance(agg, success_results)
 
         agg_list.append(agg)
 

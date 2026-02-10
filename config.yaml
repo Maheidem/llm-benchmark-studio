@@ -17,6 +17,26 @@ defaults:
     Then explain how the call stack works during recursion.
 
     '
+prompt_templates:
+  recursion:
+    category: reasoning
+    label: Explain Recursion
+    prompt: Explain the concept of recursion in programming. Include a simple example
+      in Python with comments.
+  code_generation:
+    category: code
+    label: Generate Sorting Algorithm
+    prompt: Write a Python function that implements merge sort. Include type hints and
+      docstrings.
+  creative:
+    category: creative
+    label: Short Story
+    prompt: Write a short story (300 words) about a robot discovering nature for the
+      first time.
+  qa:
+    category: short_qa
+    label: Quick Q&A
+    prompt: What are the three main types of machine learning? Explain each in one sentence.
 providers:
   zai_glm:
     display_name: ZAI GLM

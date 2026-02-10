@@ -198,9 +198,50 @@
 
     /* Section label */
     .section-label { font-family: 'Chakra Petch', sans-serif; font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #52525B; }
+
+    /* Toast notifications */
+    .toast-container { position: fixed; top: 16px; right: 16px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+    .toast { pointer-events: auto; padding: 10px 16px; border-radius: 4px; font-family: 'Outfit', sans-serif; font-size: 13px; color: #E4E4E7; background: var(--surface-raised); border: 1px solid var(--border); box-shadow: 0 4px 24px rgba(0,0,0,0.4); animation: toast-in 0.3s ease forwards; max-width: 400px; }
+    .toast-error { border-color: rgba(255,59,92,0.4); background: rgba(255,59,92,0.08); color: #FCA5A5; }
+    .toast-success { border-color: rgba(191,255,0,0.3); background: rgba(191,255,0,0.06); color: var(--lime); }
+    .toast-out { animation: toast-out 0.3s ease forwards; }
+    @keyframes toast-in { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes toast-out { from { opacity: 1; } to { opacity: 0; transform: translateX(40px); } }
+
+    /* Modal */
+    .modal-overlay { position: fixed; inset: 0; z-index: 9998; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; animation: modal-fade-in 0.2s ease; }
+    .modal-overlay.modal-closing { animation: modal-fade-out 0.2s ease forwards; }
+    .modal-box { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 24px; min-width: 340px; max-width: 480px; width: 100%; box-shadow: 0 8px 40px rgba(0,0,0,0.5); animation: modal-scale-in 0.2s ease; }
+    .modal-closing .modal-box { animation: modal-scale-out 0.2s ease forwards; }
+    .modal-title { font-family: 'Chakra Petch', sans-serif; font-weight: 600; font-size: 14px; letter-spacing: 0.04em; text-transform: uppercase; color: #E4E4E7; margin-bottom: 12px; }
+    .modal-message { font-family: 'Outfit', sans-serif; font-size: 13px; color: #A1A1AA; margin-bottom: 16px; line-height: 1.5; }
+    .modal-input { width: 100%; padding: 8px 12px; border-radius: 4px; background: rgba(255,255,255,0.02); border: 1px solid var(--border-subtle); color: #E4E4E7; font-family: 'Space Mono', monospace; font-size: 13px; outline: none; margin-bottom: 16px; transition: border-color 0.2s; }
+    .modal-input:focus { border-color: rgba(191,255,0,0.3); }
+    .modal-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+    .modal-btn { padding: 6px 16px; border-radius: 4px; font-family: 'Chakra Petch', sans-serif; font-size: 12px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer; transition: all 0.15s; }
+    .modal-btn-cancel { background: transparent; border: 1px solid var(--border-subtle); color: #71717A; }
+    .modal-btn-cancel:hover { border-color: var(--border); color: #A1A1AA; }
+    .modal-btn-confirm { background: var(--lime); border: 1px solid var(--lime); color: #09090B; }
+    .modal-btn-confirm:hover { box-shadow: 0 0 12px rgba(191,255,0,0.3); }
+    .modal-btn-danger { background: rgba(255,59,92,0.15); border: 1px solid rgba(255,59,92,0.3); color: #FF3B5C; }
+    .modal-btn-danger:hover { background: rgba(255,59,92,0.25); }
+    @keyframes modal-fade-in { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes modal-fade-out { from { opacity: 1; } to { opacity: 0; } }
+    @keyframes modal-scale-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+    @keyframes modal-scale-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(0.95); } }
+
+    /* Error banner */
+    .error-banner { background: rgba(255,59,92,0.08); border: 1px solid rgba(255,59,92,0.25); border-radius: 4px; padding: 12px 16px; font-family: 'Outfit', sans-serif; font-size: 13px; color: #FCA5A5; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .error-banner button { flex-shrink: 0; padding: 4px 12px; border-radius: 4px; font-family: 'Chakra Petch', sans-serif; font-size: 11px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; background: rgba(255,59,92,0.15); border: 1px solid rgba(255,59,92,0.3); color: #FF3B5C; cursor: pointer; }
+
+    /* Skipped line in progress */
+    .skipped-line { font-family: 'Outfit', sans-serif; font-size: 12px; color: #52525B; padding: 2px 0; }
   </style>
 </head>
 <body class="min-h-screen">
+
+  <!-- Toast container -->
+  <div id="toastContainer" class="toast-container"></div>
 
   <!-- ═══════════════════════════ HEADER ═══════════════════════════ -->
   <header class="border-b px-6 py-4" style="border-color: var(--border-subtle)">
@@ -227,6 +268,11 @@
 
   <!-- ═══════════════════════════ MAIN ═══════════════════════════ -->
   <main class="max-w-7xl mx-auto px-6 py-8">
+
+    <!-- Init error banner -->
+    <div id="initErrorBanner" class="hidden error-banner mb-6">
+      <span>Failed to connect to server. Check that the backend is running.</span>
+    </div>
 
     <!-- ─── BENCHMARK TAB ─── -->
     <div id="view-benchmark">
@@ -263,6 +309,13 @@
                 <span id="runsVal" class="font-mono text-zinc-300">1</span>
               </div>
               <input type="range" id="runs" min="1" max="10" step="1" value="1" oninput="document.getElementById('runsVal').textContent=this.value">
+            </div>
+            <div class="flex items-center justify-between mt-4">
+              <span class="text-zinc-500 font-body text-xs">Warm-up run</span>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" id="warmupToggle" checked class="sr-only peer">
+                <div class="w-8 h-4 rounded-full peer bg-zinc-700 peer-checked:bg-lime-accent/40 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-400 after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4 peer-checked:after:bg-[var(--lime)]"></div>
+              </label>
             </div>
           </div>
           <div class="mt-5 pt-5" style="border-top: 1px solid var(--border-subtle)">
@@ -308,11 +361,20 @@
               <div class="pulse-dot"></div>
               <span id="progressLabel" class="text-sm text-zinc-400 font-body">Initializing...</span>
             </div>
-            <span id="progressCount" class="text-xs font-mono text-zinc-600">0/0</span>
+            <div class="flex items-center gap-4">
+              <span id="progressCount" class="text-xs font-mono text-zinc-600">0/0</span>
+              <button id="cancelBtn" onclick="cancelBenchmark()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color:var(--coral);border:1px solid rgba(255,59,92,0.3);" onmouseover="this.style.borderColor='rgba(255,59,92,0.6)'" onmouseout="this.style.borderColor='rgba(255,59,92,0.3)'">Cancel</button>
+            </div>
           </div>
           <div class="progress-track rounded-sm overflow-hidden">
             <div id="progressBar" class="progress-fill" style="width: 0%"></div>
           </div>
+          <div id="progressSkipped" class="mt-3"></div>
+        </div>
+        <!-- Error banner for SSE issues -->
+        <div id="sseBanner" class="hidden error-banner mt-3">
+          <span id="sseBannerMsg">Connection lost</span>
+          <button onclick="retryBenchmark()">Retry</button>
         </div>
       </div>
 
@@ -329,16 +391,28 @@
           </div>
         </div>
 
-        <!-- TTFT Chart (stress mode only) -->
+        <!-- TTFT Chart -->
         <div id="ttftChartSection" class="hidden card rounded-md p-5 mb-4">
-          <label class="section-label mb-4 block">Latency (TTFT) vs Context Size</label>
+          <label id="ttftChartLabel" class="section-label mb-4 block">Latency (TTFT)</label>
           <div class="relative" style="height: 300px;">
             <canvas id="ttftChart"></canvas>
           </div>
         </div>
 
-        <!-- Table -->
+        <!-- Scatter: Speed vs Latency -->
+        <div id="scatterChartSection" class="hidden card rounded-md p-5 mb-4">
+          <label class="section-label mb-4 block">Speed vs Latency</label>
+          <div class="relative" style="height: 300px;">
+            <canvas id="scatterChart"></canvas>
+          </div>
+        </div>
+
+        <!-- Table + CSV Export -->
         <div class="card rounded-md overflow-hidden mb-6">
+          <div class="flex items-center justify-between px-5 py-3" style="border-bottom:1px solid var(--border-subtle)">
+            <span class="section-label">Results</span>
+            <button onclick="exportCSV()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">Export CSV</button>
+          </div>
           <table class="w-full text-sm results-table">
             <thead>
               <tr style="border-bottom: 1px solid var(--border-subtle)">
@@ -346,6 +420,7 @@
                 <th class="px-5 py-3 text-left section-label">Provider</th>
                 <th class="px-5 py-3 text-left section-label">Model</th>
                 <th class="px-5 py-3 text-right section-label">Tok/s</th>
+                <th class="px-5 py-3 text-right section-label" data-col="stddev" style="display:none">Std Dev</th>
                 <th class="px-5 py-3 text-right section-label">TTFT</th>
                 <th class="px-5 py-3 text-right section-label">Duration</th>
                 <th class="px-5 py-3 text-right section-label">Tokens</th>
@@ -391,9 +466,91 @@
     let currentResults = [];
     let toksChart = null;
     let ttftChart = null;
+    let scatterChart = null;
     let cachedEnvKeys = [];
+    let _sseTimeout = null;
+    let _lastBenchmarkBody = null;
 
     const POSITION_LABELS = ['P1', 'P2', 'P3'];
+
+    // -------------------------------------------------------------------
+    // Toast notifications
+    // -------------------------------------------------------------------
+    function showToast(message, type = '') {
+      const container = document.getElementById('toastContainer');
+      const el = document.createElement('div');
+      el.className = `toast ${type ? 'toast-' + type : ''}`;
+      el.textContent = message;
+      container.appendChild(el);
+      setTimeout(() => { el.classList.add('toast-out'); setTimeout(() => el.remove(), 300); }, 3000);
+    }
+
+    // -------------------------------------------------------------------
+    // Modal system
+    // -------------------------------------------------------------------
+    function _closeModal(overlay) {
+      overlay.classList.add('modal-closing');
+      setTimeout(() => overlay.remove(), 200);
+    }
+
+    function showModal(title, message, onConfirm, opts = {}) {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      const danger = opts.danger || false;
+      overlay.innerHTML = `<div class="modal-box">
+        <div class="modal-title">${title}</div>
+        <div class="modal-message">${message}</div>
+        <div class="modal-buttons">
+          <button class="modal-btn modal-btn-cancel" data-action="cancel">Cancel</button>
+          <button class="modal-btn ${danger ? 'modal-btn-danger' : 'modal-btn-confirm'}" data-action="confirm">${opts.confirmLabel || 'Confirm'}</button>
+        </div>
+      </div>`;
+      overlay.querySelector('[data-action="cancel"]').onclick = () => _closeModal(overlay);
+      overlay.querySelector('[data-action="confirm"]').onclick = () => { _closeModal(overlay); onConfirm(); };
+      overlay.onclick = (e) => { if (e.target === overlay) _closeModal(overlay); };
+      document.body.appendChild(overlay);
+    }
+
+    function showInputModal(title, placeholder, onConfirm, opts = {}) {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = `<div class="modal-box">
+        <div class="modal-title">${title}</div>
+        ${opts.message ? `<div class="modal-message">${opts.message}</div>` : ''}
+        <input class="modal-input" placeholder="${placeholder}" ${opts.inputType ? `type="${opts.inputType}"` : ''} value="${opts.defaultValue || ''}">
+        <div class="modal-buttons">
+          <button class="modal-btn modal-btn-cancel" data-action="cancel">Cancel</button>
+          <button class="modal-btn modal-btn-confirm" data-action="confirm">${opts.confirmLabel || 'OK'}</button>
+        </div>
+      </div>`;
+      const input = overlay.querySelector('.modal-input');
+      overlay.querySelector('[data-action="cancel"]').onclick = () => _closeModal(overlay);
+      overlay.querySelector('[data-action="confirm"]').onclick = () => { const v = input.value; _closeModal(overlay); onConfirm(v); };
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { const v = input.value; _closeModal(overlay); onConfirm(v); } });
+      overlay.onclick = (e) => { if (e.target === overlay) _closeModal(overlay); };
+      document.body.appendChild(overlay);
+      setTimeout(() => input.focus(), 50);
+    }
+
+    function showDoubleInputModal(title, fields, onConfirm) {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      let fieldsHtml = fields.map((f, i) => `<div style="margin-bottom:${i < fields.length-1 ? '12px' : '16px'}"><div style="font-size:11px;color:#71717A;margin-bottom:4px;font-family:'Chakra Petch',sans-serif;text-transform:uppercase;letter-spacing:0.04em">${f.label}</div><input class="modal-input" style="margin-bottom:0" placeholder="${f.placeholder || ''}" ${f.type ? `type="${f.type}"` : ''}></div>`).join('');
+      overlay.innerHTML = `<div class="modal-box">
+        <div class="modal-title">${title}</div>
+        ${fieldsHtml}
+        <div class="modal-buttons">
+          <button class="modal-btn modal-btn-cancel" data-action="cancel">Cancel</button>
+          <button class="modal-btn modal-btn-confirm" data-action="confirm">OK</button>
+        </div>
+      </div>`;
+      const inputs = overlay.querySelectorAll('.modal-input');
+      overlay.querySelector('[data-action="cancel"]').onclick = () => _closeModal(overlay);
+      overlay.querySelector('[data-action="confirm"]').onclick = () => { const vals = [...inputs].map(i => i.value); _closeModal(overlay); onConfirm(...vals); };
+      overlay.onclick = (e) => { if (e.target === overlay) _closeModal(overlay); };
+      document.body.appendChild(overlay);
+      setTimeout(() => inputs[0]?.focus(), 50);
+    }
 
     const PROVIDER_COLORS = {
       'ZAI GLM':             { bg: 'rgba(191,255,0,0.08)',  border: 'rgba(191,255,0,0.3)',  text: '#BFFF00', bar: '#BFFF00' },
@@ -525,6 +682,7 @@
         renderTierChips();
       } catch (e) {
         console.error('Failed to load config:', e);
+        document.getElementById('initErrorBanner').classList.remove('hidden');
       }
     }
 
@@ -618,8 +776,37 @@
     // -------------------------------------------------------------------
     // Benchmark execution
     // -------------------------------------------------------------------
-    async function startBenchmark() {
-      if (selectedModels.size === 0) return;
+    function _resetRunBtn() {
+      const btn = document.getElementById('runBtn');
+      btn.disabled = false;
+      btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> Run Benchmark`;
+    }
+
+    function _showSSEError(msg) {
+      const banner = document.getElementById('sseBanner');
+      document.getElementById('sseBannerMsg').textContent = msg;
+      banner.classList.remove('hidden');
+    }
+
+    async function cancelBenchmark() {
+      try {
+        await fetch('/api/benchmark/cancel', { method: 'POST' });
+        showToast('Cancellation requested...', '');
+      } catch (e) {
+        showToast('Failed to cancel', 'error');
+      }
+    }
+
+    function retryBenchmark() {
+      document.getElementById('sseBanner').classList.add('hidden');
+      if (_lastBenchmarkBody) startBenchmark(_lastBenchmarkBody);
+    }
+
+    async function startBenchmark(overrideBody) {
+      if (!overrideBody && selectedModels.size === 0) {
+        showToast('Select at least one model', 'error');
+        return;
+      }
 
       const btn = document.getElementById('runBtn');
       btn.disabled = true;
@@ -627,16 +814,20 @@
 
       currentResults = [];
       document.getElementById('progressSection').classList.remove('hidden');
+      document.getElementById('progressSkipped').innerHTML = '';
+      document.getElementById('sseBanner').classList.add('hidden');
       document.getElementById('resultsSection').classList.add('hidden');
 
-      const body = {
+      const body = overrideBody || {
         models: Array.from(selectedModels),
         runs: parseInt(document.getElementById('runs').value),
         max_tokens: parseInt(document.getElementById('maxTokens').value),
         temperature: parseFloat(document.getElementById('temperature').value),
         prompt: document.getElementById('prompt').value,
         context_tiers: Array.from(selectedTiers).sort((a, b) => a - b),
+        warmup: document.getElementById('warmupToggle').checked,
       };
+      _lastBenchmarkBody = body;
 
       try {
         const res = await fetch('/api/benchmark', {
@@ -645,13 +836,37 @@
           body: JSON.stringify(body),
         });
 
+        // Handle HTTP 409 - concurrent benchmark
+        if (res.status === 409) {
+          showToast('A benchmark is already running', 'error');
+          _resetRunBtn();
+          return;
+        }
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          showToast(err.error || `Server error (${res.status})`, 'error');
+          _resetRunBtn();
+          return;
+        }
+
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
 
+        // SSE no-data timeout (30s)
+        const resetTimeout = () => {
+          if (_sseTimeout) clearTimeout(_sseTimeout);
+          _sseTimeout = setTimeout(() => {
+            _showSSEError('Connection lost - no data received for 30 seconds');
+            _resetRunBtn();
+          }, 30000);
+        };
+        resetTimeout();
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
+          resetTimeout();
           buffer += decoder.decode(value, { stream: true });
 
           const lines = buffer.split('\n');
@@ -663,12 +878,13 @@
             }
           }
         }
+        if (_sseTimeout) clearTimeout(_sseTimeout);
       } catch (e) {
         console.error('Benchmark error:', e);
+        _showSSEError('Connection error: ' + (e.message || 'Network failure'));
       }
 
-      btn.disabled = false;
-      btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> Run Benchmark`;
+      _resetRunBtn();
     }
 
     function handleSSE(data) {
@@ -680,15 +896,30 @@
         document.getElementById('progressLabel').textContent = `Testing ${data.provider} / ${data.model}${tierLabel} (run ${data.run}/${data.runs})`;
       }
       if (data.type === 'skipped') {
-        // Could show in progress log, optional
+        const el = document.getElementById('progressSkipped');
+        el.innerHTML += `<div class="skipped-line">&#x23ED; ${data.model}: skipped (${data.reason || 'context exceeds window'})</div>`;
       }
       if (data.type === 'result') {
         currentResults.push(data);
         renderLiveResults();
       }
+      if (data.type === 'cancelled') {
+        showToast('Benchmark cancelled', 'error');
+        document.getElementById('progressSection').classList.add('hidden');
+        if (currentResults.length > 0) {
+          document.getElementById('resultsSection').classList.remove('hidden');
+          renderFinalResults();
+        }
+      }
+      if (data.type === 'error') {
+        _showSSEError(data.message || 'Benchmark error');
+      }
       if (data.type === 'complete') {
         document.getElementById('progressSection').classList.add('hidden');
         document.getElementById('resultsSection').classList.remove('hidden');
+        if (currentResults.length === 0 || currentResults.every(r => !r.success)) {
+          document.getElementById('statCards').innerHTML = `<div class="col-span-full error-banner">All benchmarks failed. Check your API keys and model configuration.</div>`;
+        }
         renderFinalResults();
       }
     }
@@ -700,6 +931,7 @@
       document.getElementById('resultsSection').classList.remove('hidden');
       renderChart();
       renderTTFTChart();
+      renderScatterChart();
       renderTable();
     }
 
@@ -707,7 +939,23 @@
       renderStatCards();
       renderChart();
       renderTTFTChart();
+      renderScatterChart();
       renderTable();
+    }
+
+    function _stdDev(values) {
+      if (values.length < 2) return 0;
+      const mean = values.reduce((s, v) => s + v, 0) / values.length;
+      const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / (values.length - 1);
+      return Math.sqrt(variance);
+    }
+
+    function _percentile(sorted, p) {
+      if (sorted.length === 0) return 0;
+      if (sorted.length === 1) return sorted[0];
+      const idx = (p / 100) * (sorted.length - 1);
+      const lo = Math.floor(idx), hi = Math.ceil(idx);
+      return lo === hi ? sorted[lo] : sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
     }
 
     function aggregateResults() {
@@ -721,6 +969,8 @@
       return Object.values(grouped).map(g => {
         const successes = g._runs.filter(r => r.success);
         const n = successes.length;
+        const tpsVals = successes.map(r => r.tokens_per_second).sort((a, b) => a - b);
+        const ttftVals = successes.map(r => r.ttft_ms).sort((a, b) => a - b);
         return {
           provider: g.provider, model: g.model, model_id: g.model_id,
           context_tokens: g.context_tokens || 0,
@@ -728,6 +978,12 @@
           ttft_ms: n ? successes.reduce((s, r) => s + r.ttft_ms, 0) / n : 0,
           total_time_s: n ? successes.reduce((s, r) => s + r.total_time_s, 0) / n : 0,
           output_tokens: n ? successes.reduce((s, r) => s + r.output_tokens, 0) / n : 0,
+          std_dev_tps: _stdDev(tpsVals),
+          std_dev_ttft: _stdDev(ttftVals),
+          p50_tps: _percentile(tpsVals, 50),
+          p95_tps: _percentile(tpsVals, 95),
+          min_tps: tpsVals.length ? tpsVals[0] : 0,
+          max_tps: tpsVals.length ? tpsVals[tpsVals.length - 1] : 0,
           success: g._successes > 0,
           runs: g._runs.length,
           failures: g._runs.length - g._successes,
@@ -970,6 +1226,7 @@
       tbody.innerHTML = '';
 
       const stress = isStressMode();
+      const multiRun = agg.some(r => r.runs > 1);
 
       // Update header
       if (stress) {
@@ -987,6 +1244,10 @@
         if (ctxTh) ctxTh.remove();
       }
 
+      // Show/hide Std Dev column based on multi-run
+      const stdDevTh = thead.querySelector('[data-col="stddev"]');
+      if (stdDevTh) stdDevTh.style.display = multiRun ? '' : 'none';
+
       agg.forEach((r, i) => {
         const color = getColor(r.provider);
         const pos = i < 3 && r.success ? `<span class="font-display font-bold" ${i===0 ? 'style="color:var(--lime)"' : ''}>${POSITION_LABELS[i]}</span>` : `<span class="text-zinc-600">${i + 1}</span>`;
@@ -998,6 +1259,7 @@
             : `<span class="text-red-400 text-xs font-mono" title="${r.error}">FAIL</span>`;
 
         const ctxCell = stress ? `<td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">${r.context_tokens === 0 ? '0' : formatCtxSize(r.context_tokens).replace(' ctx', '')}</td>` : '';
+        const stdDevCell = multiRun ? `<td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-600">${r.success && r.std_dev_tps > 0 ? '\u00B1' + r.std_dev_tps.toFixed(1) : '-'}</td>` : '';
 
         const row = document.createElement('tr');
         row.className = i === 0 && r.success ? 'rank-1 fade-in' : 'fade-in';
@@ -1007,6 +1269,7 @@
           <td class="px-5 py-3.5 text-zinc-200 font-medium font-body text-[13px]">${r.model}</td>
           ${ctxCell}
           <td class="px-5 py-3.5 text-right font-mono text-sm ${r.success && i === 0 ? '' : 'text-zinc-400'}" ${r.success && i === 0 ? 'style="color:var(--lime)"' : ''}>${r.success ? r.tokens_per_second.toFixed(1) : '-'}</td>
+          ${stdDevCell}
           <td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">${r.success ? r.ttft_ms.toFixed(0) + 'ms' : '-'}</td>
           <td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">${r.success ? r.total_time_s.toFixed(2) + 's' : '-'}</td>
           <td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">${r.success ? r.output_tokens.toFixed(0) : '-'}</td>
@@ -1018,88 +1281,162 @@
 
     function renderTTFTChart() {
       const section = document.getElementById('ttftChartSection');
-      if (!isStressMode()) {
-        section.classList.add('hidden');
-        return;
-      }
       section.classList.remove('hidden');
 
       const agg = aggregateResults();
-      const ctx = document.getElementById('ttftChart').getContext('2d');
+      const chartCtx = document.getElementById('ttftChart').getContext('2d');
       if (ttftChart) ttftChart.destroy();
 
-      const tiers = [...new Set(agg.map(a => a.context_tokens))].sort((a, b) => a - b);
-      const models = [...new Set(agg.map(a => `${a.model_id}::${a.provider}`))];
-      const tierLabels = tiers.map(t => t === 0 ? '0' : (t >= 1000 ? (t/1000) + 'K' : t));
+      const stress = isStressMode();
+      document.getElementById('ttftChartLabel').textContent = stress ? 'Latency (TTFT) vs Context Size' : 'Time to First Token (TTFT)';
 
-      const datasets = models.map(uid => {
-        const modelResults = agg.filter(a => `${a.model_id}::${a.provider}` === uid);
-        const modelName = modelResults[0]?.model || mid;
-        const provider = modelResults[0]?.provider || '';
-        const color = getColor(provider);
+      if (!stress) {
+        // === STANDARD: horizontal bar chart of TTFT values ===
+        const sorted = [...agg].filter(a => a.success).sort((a, b) => a.ttft_ms - b.ttft_ms);
+        const labels = sorted.map(a => a.model);
+        const data = sorted.map(a => a.ttft_ms);
+        const bgColors = sorted.map(a => getColor(a.provider).bar + 'CC');
 
-        const data = tiers.map(tier => {
-          const match = modelResults.find(r => r.context_tokens === tier);
-          return match && match.success ? match.ttft_ms : null;
+        ttftChart = new Chart(chartCtx, {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: [{ label: 'TTFT (ms)', data, backgroundColor: bgColors, borderWidth: 0, borderRadius: 2, barPercentage: 0.55 }]
+          },
+          options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 800, easing: 'easeOutQuart' },
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                backgroundColor: '#1c1c20', borderColor: '#27272A', borderWidth: 1,
+                titleFont: { family: 'Outfit', size: 13, weight: '500' },
+                bodyFont: { family: 'Space Mono', size: 12 },
+                padding: 12, cornerRadius: 2,
+                callbacks: { label: c => ` ${c.parsed.x.toFixed(0)} ms` }
+              }
+            },
+            scales: {
+              x: { grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false }, ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } }, title: { display: true, text: 'TIME TO FIRST TOKEN (MS)', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } } },
+              y: { grid: { display: false, drawBorder: false }, ticks: { color: '#A1A1AA', font: { family: 'Outfit', size: 12, weight: '500' } } }
+            }
+          }
+        });
+      } else {
+        // === STRESS: line chart (existing behavior) ===
+        const tiers = [...new Set(agg.map(a => a.context_tokens))].sort((a, b) => a - b);
+        const models = [...new Set(agg.map(a => `${a.model_id}::${a.provider}`))];
+        const tierLabels = tiers.map(t => t === 0 ? '0' : (t >= 1000 ? (t/1000) + 'K' : t));
+
+        const datasets = models.map(uid => {
+          const modelResults = agg.filter(a => `${a.model_id}::${a.provider}` === uid);
+          const modelName = modelResults[0]?.model || uid;
+          const provider = modelResults[0]?.provider || '';
+          const color = getColor(provider);
+          const data = tiers.map(tier => { const m = modelResults.find(r => r.context_tokens === tier); return m && m.success ? m.ttft_ms : null; });
+          return { label: modelName, data, borderColor: color.bar, backgroundColor: color.bar + '33', borderWidth: 2, pointRadius: 4, pointBackgroundColor: color.bar, pointBorderColor: '#09090B', pointBorderWidth: 2, tension: 0.3, spanGaps: false };
         });
 
+        ttftChart = new Chart(chartCtx, {
+          type: 'line',
+          data: { labels: tierLabels, datasets },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            animation: { duration: 800, easing: 'easeOutQuart' },
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+              legend: { display: true, position: 'top', labels: { color: '#A1A1AA', font: { family: 'Outfit', size: 11 }, boxWidth: 12, boxHeight: 2, padding: 16 } },
+              tooltip: { backgroundColor: '#1c1c20', borderColor: '#27272A', borderWidth: 1, titleFont: { family: 'Outfit', size: 13, weight: '500' }, bodyFont: { family: 'Space Mono', size: 12 }, padding: 12, cornerRadius: 2, callbacks: { title: c => `Context: ${c[0].label} tokens`, label: c => c.parsed.y !== null ? ` ${c.dataset.label}: ${c.parsed.y.toFixed(0)}ms` : ` ${c.dataset.label}: N/A` } }
+            },
+            scales: {
+              x: { grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false }, ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } }, title: { display: true, text: 'CONTEXT SIZE (TOKENS)', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } } },
+              y: { grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false }, ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } }, title: { display: true, text: 'TIME TO FIRST TOKEN (MS)', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { right: 12 } } }
+            }
+          }
+        });
+      }
+    }
+
+    // -------------------------------------------------------------------
+    // Scatter chart: Speed vs Latency
+    // -------------------------------------------------------------------
+    function renderScatterChart() {
+      const section = document.getElementById('scatterChartSection');
+      const agg = aggregateResults().filter(a => a.success);
+      if (agg.length < 2) { section.classList.add('hidden'); return; }
+      section.classList.remove('hidden');
+
+      const chartCtx = document.getElementById('scatterChart').getContext('2d');
+      if (scatterChart) scatterChart.destroy();
+
+      // Scale point size: output_tokens mapped to 5-20px
+      const allTokens = agg.map(a => a.output_tokens);
+      const minT = Math.min(...allTokens), maxT = Math.max(...allTokens);
+      const scaleSize = (t) => maxT === minT ? 10 : 5 + (t - minT) / (maxT - minT) * 15;
+
+      const datasets = agg.map(a => {
+        const color = getColor(a.provider);
         return {
-          label: modelName,
-          data,
+          label: a.model,
+          data: [{ x: a.tokens_per_second, y: a.ttft_ms }],
+          backgroundColor: color.bar,
           borderColor: color.bar,
-          backgroundColor: color.bar + '33',
-          borderWidth: 2,
-          pointRadius: 4,
-          pointBackgroundColor: color.bar,
-          pointBorderColor: '#09090B',
-          pointBorderWidth: 2,
-          tension: 0.3,
-          spanGaps: false,
+          pointRadius: scaleSize(a.output_tokens),
+          pointHoverRadius: scaleSize(a.output_tokens) + 3,
         };
       });
 
-      ttftChart = new Chart(ctx, {
-        type: 'line',
-        data: { labels: tierLabels, datasets },
+      scatterChart = new Chart(chartCtx, {
+        type: 'scatter',
+        data: { datasets },
         options: {
-          responsive: true,
-          maintainAspectRatio: false,
+          responsive: true, maintainAspectRatio: false,
           animation: { duration: 800, easing: 'easeOutQuart' },
-          interaction: { mode: 'index', intersect: false },
           plugins: {
-            legend: {
-              display: true,
-              position: 'top',
-              labels: { color: '#A1A1AA', font: { family: 'Outfit', size: 11 }, boxWidth: 12, boxHeight: 2, padding: 16 }
-            },
+            legend: { display: true, position: 'top', labels: { color: '#A1A1AA', font: { family: 'Outfit', size: 11 }, boxWidth: 8, boxHeight: 8, padding: 12, usePointStyle: true } },
             tooltip: {
-              backgroundColor: '#1c1c20',
-              borderColor: '#27272A',
-              borderWidth: 1,
+              backgroundColor: '#1c1c20', borderColor: '#27272A', borderWidth: 1,
               titleFont: { family: 'Outfit', size: 13, weight: '500' },
               bodyFont: { family: 'Space Mono', size: 12 },
-              padding: 12,
-              cornerRadius: 2,
+              padding: 12, cornerRadius: 2,
               callbacks: {
-                title: ctx => `Context: ${ctx[0].label} tokens`,
-                label: ctx => ctx.parsed.y !== null ? ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(0)}ms` : ` ${ctx.dataset.label}: N/A`,
+                title: c => c[0].dataset.label,
+                label: c => [` Tok/s: ${c.parsed.x.toFixed(1)}`, ` TTFT: ${c.parsed.y.toFixed(0)}ms`]
               }
             }
           },
           scales: {
-            x: {
-              grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
-              ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } },
-              title: { display: true, text: 'CONTEXT SIZE (TOKENS)', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } }
-            },
-            y: {
-              grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
-              ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } },
-              title: { display: true, text: 'TIME TO FIRST TOKEN (MS)', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { right: 12 } }
-            }
+            x: { grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false }, ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } }, title: { display: true, text: 'TOKENS / SECOND', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } } },
+            y: { grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false }, ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } }, title: { display: true, text: 'TTFT (MS)', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { right: 12 } } }
           }
         }
       });
+    }
+
+    // -------------------------------------------------------------------
+    // CSV Export
+    // -------------------------------------------------------------------
+    function exportCSV() {
+      const agg = aggregateResults();
+      if (!agg.length) { showToast('No results to export', 'error'); return; }
+      const headers = ['Provider','Model','Tok/s','TTFT (ms)','Duration (s)','Output Tokens','Status'];
+      const rows = agg.map(r => [
+        r.provider, r.model,
+        r.success ? r.tokens_per_second.toFixed(2) : '',
+        r.success ? r.ttft_ms.toFixed(0) : '',
+        r.success ? r.total_time_s.toFixed(3) : '',
+        r.success ? r.output_tokens.toFixed(0) : '',
+        r.success ? (r.failures ? 'partial' : 'ok') : 'fail'
+      ]);
+      const csv = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'benchmark_results.csv'; a.click();
+      URL.revokeObjectURL(url);
+      showToast('CSV downloaded', 'success');
     }
 
     // -------------------------------------------------------------------
@@ -1209,16 +1546,17 @@
     }
 
     async function editEnvKey(name) {
-      const newVal = prompt(`Enter new value for ${name}:`);
-      if (newVal === null) return;
-      await fetch('/api/env', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name, value: newVal}) });
-      renderApiKeys();
+      showInputModal(`Edit ${name}`, 'Enter new value...', async (newVal) => {
+        await fetch('/api/env', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name, value: newVal}) });
+        renderApiKeys();
+      }, { inputType: 'password' });
     }
 
     async function deleteEnvKey(name) {
-      if (!confirm(`Remove ${name} from .env?`)) return;
-      await fetch('/api/env', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name}) });
-      renderApiKeys();
+      showModal('Remove Key', `Remove <strong>${name}</strong> from .env?`, async () => {
+        await fetch('/api/env', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name}) });
+        renderApiKeys();
+      }, { danger: true, confirmLabel: 'Remove' });
     }
 
     // ── Render Providers + Models ──
@@ -1485,11 +1823,12 @@
 
     // ── Model CRUD ──
     async function deleteModel(provKey, modelId, displayName) {
-      if (!confirm(`Remove model "${displayName}"?`)) return;
-      await fetch('/api/config/model', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId}) });
-      await refreshConfig();
-      renderModels();
-      renderProviders();
+      showModal('Remove Model', `Remove model <strong>${displayName}</strong>?`, async () => {
+        await fetch('/api/config/model', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId}) });
+        await refreshConfig();
+        renderModels();
+        renderProviders();
+      }, { danger: true, confirmLabel: 'Remove' });
     }
 
     function toggleAddModel(provKey) {
@@ -1512,22 +1851,22 @@
         renderProviders();
       } else {
         const err = await res.json();
-        alert(err.error || 'Failed to add model');
+        showToast(err.error || 'Failed to add model', 'error');
       }
     }
 
     // ── Skip Params ──
     async function promptAddSkipParam(provKey, modelId) {
-      const param = prompt('Parameter name to skip (e.g., temperature):');
-      if (!param) return;
-      // Get current list, add new one, save
-      const provData = Object.values(config.providers).find(p => p.provider_key === provKey);
-      const modelData = provData?.models?.find(m => m.model_id === modelId);
-      const current = [...(modelData?.skip_params || [])];
-      if (!current.includes(param.trim())) current.push(param.trim());
-      await fetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, skip_params: current}) });
-      await refreshConfig();
-      renderProviders();
+      showInputModal('Add Skip Param', 'Parameter name (e.g., temperature)', async (param) => {
+        if (!param || !param.trim()) return;
+        const provData = Object.values(config.providers).find(p => p.provider_key === provKey);
+        const modelData = provData?.models?.find(m => m.model_id === modelId);
+        const current = [...(modelData?.skip_params || [])];
+        if (!current.includes(param.trim())) current.push(param.trim());
+        await fetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, skip_params: current}) });
+        await refreshConfig();
+        renderProviders();
+      });
     }
 
     async function removeSkipParam(provKey, modelId, param) {
@@ -1541,13 +1880,15 @@
 
     // ── Custom Fields ──
     async function promptAddCustomField(provKey, modelId) {
-      const key = prompt('Field name:');
-      if (!key) return;
-      const value = prompt(`Value for "${key}":`);
-      if (value === null) return;
-      await fetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, custom_fields: {[key]: value}}) });
-      await refreshConfig();
-      renderProviders();
+      showDoubleInputModal('Add Custom Field', [
+        { label: 'Field Name', placeholder: 'e.g., pricing_tier' },
+        { label: 'Value', placeholder: 'e.g., standard' }
+      ], async (key, value) => {
+        if (!key || !key.trim()) return;
+        await fetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, custom_fields: {[key.trim()]: value}}) });
+        await refreshConfig();
+        renderProviders();
+      });
     }
 
     async function removeCustomField(provKey, modelId, key) {
@@ -1582,11 +1923,12 @@
     }
 
     async function deleteProvider(pk, displayName, modelCount) {
-      if (!confirm(`Delete provider "${displayName}" and its ${modelCount} model(s)?`)) return;
-      await fetch('/api/config/provider', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: pk}) });
-      await refreshConfig();
-      renderModels();
-      renderProviders();
+      showModal('Delete Provider', `Delete <strong>${displayName}</strong> and its ${modelCount} model(s)?`, async () => {
+        await fetch('/api/config/provider', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: pk}) });
+        await refreshConfig();
+        renderModels();
+        renderProviders();
+      }, { danger: true, confirmLabel: 'Delete' });
     }
 
     function toggleAddProvider() {
@@ -1601,7 +1943,7 @@
         api_key_env: document.getElementById('ap-ke')?.value.trim(),
         model_id_prefix: document.getElementById('ap-prefix')?.value.trim(),
       };
-      if (!body.provider_key) return alert('Provider key is required');
+      if (!body.provider_key) { showToast('Provider key is required', 'error'); return; }
       const res = await fetch('/api/config/provider', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
       if (res.ok) {
         await refreshConfig();
@@ -1609,7 +1951,7 @@
         renderProviders();
       } else {
         const err = await res.json();
-        alert(err.error || 'Failed to add provider');
+        showToast(err.error || 'Failed to add provider', 'error');
       }
     }
 
@@ -1626,14 +1968,25 @@
 
         container.innerHTML = history.map((h, idx) => {
           const ts = new Date(h.timestamp).toLocaleString();
-          const sorted = [...(h.results || [])].sort((a, b) => b.avg_tokens_per_second - a.avg_tokens_per_second);
+          const isV2 = (h.schema_version || 0) >= 2;
+          const sorted = [...(h.results || [])].map(r => ({
+            ...r,
+            avg_tokens_per_second: r.avg_tokens_per_second ?? r.tokens_per_second ?? 0,
+            avg_ttft_ms: r.avg_ttft_ms ?? r.ttft_ms ?? 0,
+            avg_total_time_s: r.avg_total_time_s ?? r.total_time_s ?? 0,
+            std_dev_tps: r.std_dev_tps ?? 0,
+            p50_tps: r.p50_tps ?? 0,
+            p95_tps: r.p95_tps ?? 0,
+          })).sort((a, b) => b.avg_tokens_per_second - a.avg_tokens_per_second);
           const winner = sorted[0];
+          const hasMultiRun = isV2 && sorted.some(r => (r.runs || 1) > 1);
 
           return `
             <div class="card rounded-sm p-5 fade-in" style="animation-delay: ${idx * 40}ms">
               <div class="flex items-center justify-between mb-3">
                 <div class="flex items-center gap-3">
                   <span class="text-[11px] text-zinc-600 font-mono">${ts}</span>
+                  ${isV2 ? '<span class="text-[9px] font-mono text-zinc-700 border rounded-sm px-1.5 py-0.5" style="border-color:var(--border-subtle)">v2</span>' : ''}
                   ${winner ? `<span class="badge" style="background:var(--lime-dim);color:var(--lime);border:1px solid rgba(191,255,0,0.2)">P1: ${winner.model}</span>` : ''}
                 </div>
                 ${winner ? `<span class="font-mono text-sm" style="color:var(--lime)">${winner.avg_tokens_per_second} tok/s</span>` : ''}
@@ -1643,6 +1996,8 @@
                   <thead><tr class="text-zinc-700">
                     <th class="px-3 py-1.5 text-left section-label">Model</th>
                     <th class="px-3 py-1.5 text-right section-label">Tok/s</th>
+                    ${hasMultiRun ? '<th class="px-3 py-1.5 text-right section-label">Std Dev</th>' : ''}
+                    ${isV2 ? '<th class="px-3 py-1.5 text-right section-label">P50</th><th class="px-3 py-1.5 text-right section-label">P95</th>' : ''}
                     <th class="px-3 py-1.5 text-right section-label">TTFT</th>
                     <th class="px-3 py-1.5 text-right section-label">Duration</th>
                   </tr></thead>
@@ -1651,6 +2006,8 @@
                       <tr style="border-top: 1px solid var(--border-subtle)">
                         <td class="px-3 py-2 text-zinc-400 font-body">${r.provider} / ${r.model}</td>
                         <td class="px-3 py-2 text-right font-mono ${i === 0 ? '' : 'text-zinc-500'}" ${i === 0 ? 'style="color:var(--lime)"' : ''}>${r.avg_tokens_per_second}</td>
+                        ${hasMultiRun ? `<td class="px-3 py-2 text-right font-mono text-zinc-600">${r.std_dev_tps > 0 ? '\u00B1' + r.std_dev_tps.toFixed(1) : '-'}</td>` : ''}
+                        ${isV2 ? `<td class="px-3 py-2 text-right font-mono text-zinc-600">${r.p50_tps || '-'}</td><td class="px-3 py-2 text-right font-mono text-zinc-600">${r.p95_tps || '-'}</td>` : ''}
                         <td class="px-3 py-2 text-right font-mono text-zinc-600">${r.avg_ttft_ms}ms</td>
                         <td class="px-3 py-2 text-right font-mono text-zinc-600">${r.avg_total_time_s}s</td>
                       </tr>

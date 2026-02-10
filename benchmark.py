@@ -13,6 +13,7 @@ Usage:
 import argparse
 import json
 import os
+import statistics
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -23,6 +24,7 @@ import tiktoken
 
 import litellm
 import yaml
+from pydantic import BaseModel, ValidationError
 from dotenv import load_dotenv
 from rich import box
 from rich.console import Console
@@ -64,6 +66,8 @@ class RunResult:
     success: bool = True
     error: str = ""
     context_tokens: int = 0
+    cost: float = 0.0
+    input_tokens_per_second: float = 0.0
 
 
 @dataclass
@@ -77,6 +81,46 @@ class AggregatedResult:
     runs: int = 0
     failures: int = 0
     all_results: list = field(default_factory=list)
+    # Variance tracking
+    std_dev_tps: float = 0.0
+    min_tps: float = 0.0
+    max_tps: float = 0.0
+    p50_tps: float = 0.0
+    p95_tps: float = 0.0
+    std_dev_ttft: float = 0.0
+    outlier_count: int = 0
+    # Cost tracking
+    avg_cost: float = 0.0
+    total_cost: float = 0.0
+    # Input tokens/second
+    avg_input_tps: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Config validation
+# ---------------------------------------------------------------------------
+
+class ModelSchema(BaseModel):
+    id: str
+    display_name: str
+    context_window: int = 128000
+    max_output_tokens: Optional[int] = None
+    skip_params: Optional[list[str]] = None
+
+
+class ProviderSchema(BaseModel):
+    display_name: str
+    models: list[ModelSchema]
+    api_base: Optional[str] = None
+    api_key: Optional[str] = None
+    api_key_env: Optional[str] = None
+    model_id_prefix: Optional[str] = None
+
+
+class ConfigSchema(BaseModel):
+    defaults: dict
+    providers: dict[str, ProviderSchema]
+    prompt_templates: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
@@ -84,9 +128,18 @@ class AggregatedResult:
 # ---------------------------------------------------------------------------
 
 def load_config(config_path: str) -> dict:
-    """Load benchmark configuration from YAML file."""
+    """Load and validate benchmark configuration from YAML file."""
     with open(config_path) as f:
-        return yaml.safe_load(f)
+        raw = yaml.safe_load(f)
+    try:
+        ConfigSchema(**raw)
+    except ValidationError as e:
+        console.print(f"[red]Config validation error in {config_path}:[/red]")
+        for err in e.errors():
+            loc = " -> ".join(str(x) for x in err["loc"])
+            console.print(f"  [yellow]{loc}[/yellow]: {err['msg']}")
+        raise SystemExit(1)
+    return raw
 
 
 def resolve_api_key(provider_cfg: dict) -> Optional[str]:
@@ -153,46 +206,137 @@ def build_targets(
 # ---------------------------------------------------------------------------
 
 def generate_context_text(target_tokens: int) -> str:
-    """Generate realistic filler text sized to approximately target_tokens."""
+    """Generate realistic filler text sized to approximately target_tokens.
+
+    Builds context from diverse block types (code, prose, JSON, docs) to
+    better simulate real-world workloads rather than repeating one paragraph.
+    """
     if target_tokens <= 0:
         return ""
 
-    paragraph = (
-        "Artificial intelligence continues to reshape industries across the global economy. "
-        "Modern language models leverage transformer architectures with attention mechanisms "
-        "that enable contextual understanding of text at unprecedented scale. These systems "
-        "are trained on diverse corpora spanning scientific literature, software documentation, "
-        "news articles, and conversational data. The resulting models demonstrate emergent "
-        "capabilities in reasoning, code generation, summarization, and creative writing. "
-        "Organizations are deploying these models for customer support automation, content "
-        "creation, data analysis pipelines, and research assistance. Fine-tuning techniques "
-        "such as reinforcement learning from human feedback have proven effective at aligning "
-        "model outputs with human preferences and safety requirements. Infrastructure costs "
-        "remain a significant consideration, with GPU clusters consuming substantial energy "
-        "during both training and inference phases. Quantization methods and mixture-of-experts "
-        "architectures offer promising approaches to reducing computational requirements while "
-        "maintaining output quality. The field advances rapidly, with new architectures and "
-        "training methodologies published weekly in academic venues and industry research labs. "
-    )
+    # Diverse content blocks that cycle to fill the target token count
+    _CONTEXT_BLOCKS = [
+        # Block 0: Python code snippet
+        (
+            "```python\n"
+            "def binary_search(arr: list[int], target: int) -> int:\n"
+            '    """Return the index of target in sorted arr, or -1 if absent."""\n'
+            "    lo, hi = 0, len(arr) - 1\n"
+            "    while lo <= hi:\n"
+            "        mid = (lo + hi) // 2\n"
+            "        if arr[mid] == target:\n"
+            "            return mid\n"
+            "        elif arr[mid] < target:\n"
+            "            lo = mid + 1\n"
+            "        else:\n"
+            "            hi = mid - 1\n"
+            "    return -1\n"
+            "```\n"
+        ),
+        # Block 1: Prose paragraph - AI topic
+        (
+            "Artificial intelligence continues to reshape industries across the global economy. "
+            "Modern language models leverage transformer architectures with attention mechanisms "
+            "that enable contextual understanding of text at unprecedented scale. These systems "
+            "are trained on diverse corpora spanning scientific literature, software documentation, "
+            "news articles, and conversational data. The resulting models demonstrate emergent "
+            "capabilities in reasoning, code generation, summarization, and creative writing. "
+        ),
+        # Block 2: JSON data structure
+        (
+            '{"experiment": {"id": "exp-20240315-001", "parameters": {"learning_rate": 0.001, '
+            '"batch_size": 64, "epochs": 100, "optimizer": "adamw", "weight_decay": 0.01}, '
+            '"metrics": {"train_loss": 0.342, "val_loss": 0.387, "accuracy": 0.924, '
+            '"f1_score": 0.918, "inference_ms": 12.4}, "hardware": {"gpu": "A100-80GB", '
+            '"gpu_count": 4, "cpu": "AMD EPYC 7763", "ram_gb": 512}}}\n'
+        ),
+        # Block 3: Technical documentation excerpt
+        (
+            "## API Rate Limiting\n\n"
+            "All endpoints enforce rate limits measured in requests per minute (RPM) and "
+            "tokens per minute (TPM). When a rate limit is exceeded, the server responds "
+            "with HTTP 429 and a Retry-After header indicating seconds to wait. Clients "
+            "should implement exponential backoff starting at 1 second with a maximum of "
+            "60 seconds. Batch endpoints allow up to 50 requests per call and share the "
+            "same TPM quota as streaming endpoints. Enterprise tiers receive 10x the "
+            "default limits and dedicated endpoint pools.\n"
+        ),
+        # Block 4: Prose paragraph - networking topic
+        (
+            "Distributed systems rely on consensus protocols to maintain consistency across "
+            "replicas. The Raft algorithm partitions the consensus problem into leader "
+            "election, log replication, and safety guarantees. Each server maintains a "
+            "replicated log of commands that are applied to a deterministic state machine. "
+            "When a leader receives a client request, it appends the entry to its log and "
+            "replicates it to followers. Once a majority acknowledges the entry, it is "
+            "committed and the leader responds to the client. Network partitions and "
+            "leader failures are handled through randomised election timeouts. "
+        ),
+        # Block 5: Python code snippet - data processing
+        (
+            "```python\n"
+            "import json\n"
+            "from collections import Counter\n"
+            "from pathlib import Path\n\n"
+            "def analyse_logs(log_dir: str) -> dict:\n"
+            '    """Aggregate error counts from JSON log files."""\n'
+            "    errors = Counter()\n"
+            "    for path in Path(log_dir).glob('*.json'):\n"
+            "        for line in path.read_text().splitlines():\n"
+            "            entry = json.loads(line)\n"
+            "            if entry.get('level') == 'ERROR':\n"
+            "                errors[entry.get('code', 'UNKNOWN')] += 1\n"
+            "    return dict(errors.most_common(20))\n"
+            "```\n"
+        ),
+        # Block 6: JSON config structure
+        (
+            '{"deployment": {"service": "inference-gateway", "version": "2.4.1", '
+            '"replicas": 3, "resources": {"cpu_limit": "4000m", "memory_limit": "16Gi", '
+            '"gpu_limit": 1}, "autoscaling": {"min_replicas": 2, "max_replicas": 8, '
+            '"target_cpu_utilization": 70, "scale_down_delay_s": 300}, '
+            '"health_check": {"path": "/healthz", "interval_s": 10, "timeout_s": 5}}}\n'
+        ),
+        # Block 7: Technical documentation - database
+        (
+            "## Query Optimization\n\n"
+            "The query planner selects execution strategies based on table statistics, "
+            "available indexes, and estimated cardinalities. For joins involving more than "
+            "three tables, the planner uses dynamic programming to evaluate join orderings. "
+            "Partial indexes can dramatically reduce index size when queries consistently "
+            "filter on a known predicate. The EXPLAIN ANALYZE command reveals actual row "
+            "counts versus estimates, helping identify stale statistics or cardinality "
+            "misestimates that lead to suboptimal plans.\n"
+        ),
+    ]
 
     try:
         enc = tiktoken.get_encoding("cl100k_base")
     except Exception:
         # Fallback: rough estimate of 1 token ~ 4 chars
-        repeats = max(1, target_tokens * 4 // len(paragraph) + 1)
-        text = (paragraph + "\n") * repeats
+        full_text = "\n".join(_CONTEXT_BLOCKS)
+        repeats = max(1, target_tokens * 4 // len(full_text) + 1)
+        text = (full_text + "\n") * repeats
         return text[: target_tokens * 4]
 
-    para_tokens = len(enc.encode(paragraph))
-    repeats = max(1, target_tokens // para_tokens + 1)
-    text = (paragraph + "\n") * repeats
+    # Cycle through blocks to fill the target
+    parts = []
+    total_tokens = 0
+    idx = 0
+    while total_tokens < target_tokens:
+        block = _CONTEXT_BLOCKS[idx % len(_CONTEXT_BLOCKS)]
+        parts.append(block)
+        total_tokens += len(enc.encode(block))
+        idx += 1
+
+    text = "\n".join(parts)
     tokens = enc.encode(text)
     return enc.decode(tokens[:target_tokens])
 
 
 def run_single(
     target: Target, prompt: str, max_tokens: int, temperature: float,
-    context_tokens: int = 0,
+    context_tokens: int = 0, timeout: int = 120,
 ) -> RunResult:
     """Execute a single streaming benchmark run against one model."""
     result = RunResult(target=target, context_tokens=context_tokens)
@@ -210,6 +354,8 @@ def run_single(
         "temperature": temperature,
         "stream": True,
         "stream_options": {"include_usage": True},
+        "timeout": timeout,
+        "num_retries": 2,
     }
     if target.api_base:
         kwargs["api_base"] = target.api_base
@@ -263,11 +409,69 @@ def run_single(
             result.output_tokens / total if total > 0 else 0.0
         )
 
+        # Input tokens/second: how fast the model processes the prompt
+        if result.ttft_ms > 0 and result.input_tokens > 0:
+            result.input_tokens_per_second = result.input_tokens / (result.ttft_ms / 1000)
+
+        # Cost tracking (not all models support this)
+        try:
+            result.cost = litellm.completion_cost(
+                model=target.model_id,
+                prompt=str(result.input_tokens),
+                completion=str(result.output_tokens),
+                prompt_tokens=result.input_tokens,
+                completion_tokens=result.output_tokens,
+            )
+        except Exception:
+            result.cost = 0.0
+
+    except litellm.exceptions.RateLimitError as e:
+        result.success = False
+        result.error = f"[rate_limited] {str(e)[:180]}"
+    except litellm.exceptions.AuthenticationError as e:
+        result.success = False
+        result.error = f"[auth_failed] {str(e)[:180]}"
+    except litellm.exceptions.Timeout as e:
+        result.success = False
+        result.error = f"[timeout] {str(e)[:180]}"
     except Exception as e:
         result.success = False
         result.error = str(e)[:200]
 
     return result
+
+
+def _compute_variance(agg: AggregatedResult, successes: list[RunResult]) -> None:
+    """Compute variance statistics and outlier detection on an AggregatedResult."""
+    n = len(successes)
+    if n == 0:
+        return
+
+    tps_vals = [r.tokens_per_second for r in successes]
+    ttft_vals = [r.ttft_ms for r in successes]
+
+    agg.min_tps = min(tps_vals)
+    agg.max_tps = max(tps_vals)
+    agg.p50_tps = statistics.median(tps_vals)
+
+    if n >= 2:
+        agg.std_dev_tps = statistics.stdev(tps_vals)
+        agg.std_dev_ttft = statistics.stdev(ttft_vals)
+        # p95: use quantiles when we have enough data, else use max
+        if n >= 4:
+            agg.p95_tps = statistics.quantiles(tps_vals, n=20)[-1]  # 95th percentile
+        else:
+            agg.p95_tps = max(tps_vals)
+    else:
+        agg.p95_tps = tps_vals[0]
+
+    # Outlier detection via IQR (only meaningful with >= 4 runs)
+    if n >= 4:
+        q1, _, q3 = statistics.quantiles(tps_vals, n=4)
+        iqr = q3 - q1
+        lower = q1 - 1.5 * iqr
+        upper = q3 + 1.5 * iqr
+        agg.outlier_count = sum(1 for v in tps_vals if v < lower or v > upper)
 
 
 def run_benchmarks(
@@ -277,6 +481,7 @@ def run_benchmarks(
     max_tokens: int,
     temperature: float,
     context_tiers: list[int] | None = None,
+    warmup: bool = True,
 ) -> list[AggregatedResult]:
     """Run benchmarks for all targets, optionally multiple runs each."""
     if context_tiers is None:
@@ -305,6 +510,12 @@ def run_benchmarks(
                     f"({target.context_window // 1000}K context window)[/yellow]"
                 )
                 continue
+
+            # Warm-up run (discarded)
+            if warmup:
+                console.print(f"  [dim]Warm-up: {target.display_name}...[/dim]", end=" ")
+                wu = run_single(target, prompt, max_tokens, temperature, context_tokens=tier)
+                console.print("[dim]done[/dim]" if wu.success else "[dim]fail[/dim]")
 
             run_results = []
             for r in range(runs):
@@ -342,6 +553,12 @@ def run_benchmarks(
                 agg.avg_total_time_s = sum(r.total_time_s for r in successes) / n
                 agg.avg_tokens_per_second = sum(r.tokens_per_second for r in successes) / n
                 agg.avg_output_tokens = sum(r.output_tokens for r in successes) / n
+                agg.avg_cost = sum(r.cost for r in successes) / n
+                agg.total_cost = sum(r.cost for r in successes)
+                input_tps_vals = [r.input_tokens_per_second for r in successes if r.input_tokens_per_second > 0]
+                if input_tps_vals:
+                    agg.avg_input_tps = sum(input_tps_vals) / len(input_tps_vals)
+                _compute_variance(agg, successes)
 
             results.append(agg)
 
@@ -361,6 +578,13 @@ def display_results(results: list[AggregatedResult]) -> None:
         results, key=lambda r: r.avg_tokens_per_second, reverse=True
     )
 
+    # Show std_dev column only when any result has > 1 run
+    show_std = any(r.runs > 1 for r in sorted_results)
+    # Show cost column only when any result has cost data
+    show_cost = any(r.avg_cost > 0 for r in sorted_results)
+    # Show input TPS column only when any result has data
+    show_input_tps = any(r.avg_input_tps > 0 for r in sorted_results)
+
     table = Table(
         title="\U0001f3ce  LLM Benchmark Results",
         box=box.ROUNDED,
@@ -371,9 +595,15 @@ def display_results(results: list[AggregatedResult]) -> None:
     table.add_column("Provider", style="cyan", min_width=14)
     table.add_column("Model", style="white", min_width=18)
     table.add_column("Tok/s", style="bold green", justify="right", min_width=8)
+    if show_std:
+        table.add_column("\u00b1 Std", style="dim", justify="right", min_width=7)
+    if show_input_tps:
+        table.add_column("In Tok/s", justify="right", min_width=9)
     table.add_column("TTFT (ms)", justify="right", min_width=9)
     table.add_column("Total (s)", justify="right", min_width=9)
     table.add_column("Tokens", justify="right", min_width=7)
+    if show_cost:
+        table.add_column("Cost ($)", justify="right", min_width=9)
     table.add_column("Status", justify="center", min_width=8)
 
     for i, r in enumerate(sorted_results, 1):
@@ -391,7 +621,20 @@ def display_results(results: list[AggregatedResult]) -> None:
         total = f"{r.avg_total_time_s:.2f}" if r.avg_total_time_s > 0 else "-"
         tokens = f"{r.avg_output_tokens:.0f}" if r.avg_output_tokens > 0 else "-"
 
-        table.add_row(rank, r.target.provider, r.target.display_name, tok_s, ttft, total, tokens, status)
+        row = [rank, r.target.provider, r.target.display_name, tok_s]
+        if show_std:
+            std = f"{r.std_dev_tps:.1f}" if r.std_dev_tps > 0 else "-"
+            row.append(std)
+        if show_input_tps:
+            in_tps = f"{r.avg_input_tps:.0f}" if r.avg_input_tps > 0 else "-"
+            row.append(in_tps)
+        row.extend([ttft, total, tokens])
+        if show_cost:
+            cost = f"{r.avg_cost:.6f}" if r.avg_cost > 0 else "-"
+            row.append(cost)
+        row.append(status)
+
+        table.add_row(*row)
 
     console.print()
     console.print(table)
@@ -420,6 +663,7 @@ def save_results(
     filepath = Path(output_dir) / f"benchmark_{timestamp}.json"
 
     data = {
+        "schema_version": 2,
         "timestamp": datetime.now().isoformat(),
         "prompt": prompt[:200],
         "context_tiers": context_tiers or [0],
@@ -433,9 +677,31 @@ def save_results(
                 "avg_ttft_ms": round(r.avg_ttft_ms, 2),
                 "avg_total_time_s": round(r.avg_total_time_s, 3),
                 "avg_output_tokens": round(r.avg_output_tokens),
+                "std_dev_tps": round(r.std_dev_tps, 2),
+                "min_tps": round(r.min_tps, 2),
+                "max_tps": round(r.max_tps, 2),
+                "p50_tps": round(r.p50_tps, 2),
+                "p95_tps": round(r.p95_tps, 2),
+                "std_dev_ttft": round(r.std_dev_ttft, 2),
+                "outlier_count": r.outlier_count,
+                "avg_cost": round(r.avg_cost, 8),
+                "total_cost": round(r.total_cost, 8),
+                "avg_input_tps": round(r.avg_input_tps, 2),
                 "runs": r.runs,
                 "failures": r.failures,
                 "error": next((rr.error for rr in r.all_results if not rr.success), ""),
+                "runs_detail": [
+                    {
+                        "tokens_per_second": round(rr.tokens_per_second, 2),
+                        "ttft_ms": round(rr.ttft_ms, 2),
+                        "total_time_s": round(rr.total_time_s, 3),
+                        "output_tokens": rr.output_tokens,
+                        "input_tokens_per_second": round(rr.input_tokens_per_second, 2),
+                        "cost": round(rr.cost, 8),
+                        "success": rr.success,
+                    }
+                    for rr in r.all_results
+                ],
             }
             for r in results
         ],
@@ -467,7 +733,7 @@ Examples:
         """,
     )
     parser.add_argument("--config", default="config.yaml", help="Config file path (default: config.yaml)")
-    parser.add_argument("--runs", type=int, default=1, help="Number of runs per model (default: 1)")
+    parser.add_argument("--runs", type=int, default=3, help="Number of runs per model (default: 3)")
     parser.add_argument("--provider", help="Filter by provider name (substring match)")
     parser.add_argument("--model", help="Filter by model name (substring match)")
     parser.add_argument("--prompt", help="Override default benchmark prompt")
@@ -476,6 +742,7 @@ Examples:
     parser.add_argument("--no-save", action="store_true", help="Don't save results to JSON")
     parser.add_argument("--verbose", action="store_true", help="Show LiteLLM debug output")
     parser.add_argument("--context-tiers", help="Comma-separated context token tiers (e.g., 0,1000,5000)")
+    parser.add_argument("--no-warmup", action="store_true", help="Skip warm-up run before measured runs")
     args = parser.parse_args()
 
     # Load .env (keys)
@@ -529,7 +796,8 @@ Examples:
     console.print(f"  [dim]Prompt: {prompt_preview}{'...' if len(prompt.strip()) > 80 else ''}[/dim]\n")
 
     # Run
-    results = run_benchmarks(targets, prompt, runs, max_tokens, temperature, context_tiers=context_tiers)
+    results = run_benchmarks(targets, prompt, runs, max_tokens, temperature,
+                             context_tiers=context_tiers, warmup=not args.no_warmup)
 
     # Display
     display_results(results)
