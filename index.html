@@ -281,7 +281,12 @@
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
         <!-- Prompt -->
         <div class="lg:col-span-2 card rounded-md p-5 stagger">
-          <label class="section-label mb-3 block">Benchmark Prompt</label>
+          <div class="flex items-center justify-between mb-3">
+            <label class="section-label">Benchmark Prompt</label>
+            <select id="promptTemplateSelect" onchange="applyPromptTemplate(this.value)" class="text-xs font-mono px-3 py-1.5 rounded-sm cursor-pointer" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;max-width:220px;">
+              <option value="">Custom</option>
+            </select>
+          </div>
           <textarea id="prompt" rows="3" class="prompt-input w-full rounded-sm px-4 py-3" placeholder="Enter your benchmark prompt..."></textarea>
         </div>
 
@@ -336,6 +341,7 @@
         <div class="flex items-center justify-between mb-4">
           <label class="section-label">Select Models</label>
           <div class="flex gap-2">
+            <button id="healthCheckBtn" onclick="checkProviderHealth()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color: #38BDF8; border: 1px solid rgba(56,189,248,0.2);" onmouseover="this.style.borderColor='rgba(56,189,248,0.5)'" onmouseout="this.style.borderColor='rgba(56,189,248,0.2)'">Check Health</button>
             <button onclick="selectAll()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color: var(--lime); border: 1px solid rgba(191,255,0,0.2);" onmouseover="this.style.borderColor='rgba(191,255,0,0.5)'" onmouseout="this.style.borderColor='rgba(191,255,0,0.2)'">All</button>
             <button onclick="selectNone()" class="text-[11px] font-display font-medium tracking-wider uppercase text-zinc-600 px-3 py-1 rounded-sm border transition-colors" style="border-color: var(--border-subtle)" onmouseover="this.style.borderColor='var(--border)'" onmouseout="this.style.borderColor='var(--border-subtle)'">Clear</button>
           </div>
@@ -422,9 +428,11 @@
                 <th class="px-5 py-3 text-right section-label">Tok/s</th>
                 <th class="px-5 py-3 text-right section-label" data-col="stddev" style="display:none">Std Dev</th>
                 <th class="px-5 py-3 text-right section-label">TTFT</th>
+                <th class="px-5 py-3 text-right section-label">Input Tok/s</th>
                 <th class="px-5 py-3 text-right section-label">Duration</th>
                 <th class="px-5 py-3 text-right section-label">Tokens</th>
                 <th class="px-5 py-3 text-center section-label">Status</th>
+                <th class="px-5 py-3 text-right section-label">Cost</th>
               </tr>
             </thead>
             <tbody id="resultsBody"></tbody>
@@ -435,6 +443,11 @@
 
     <!-- ─── HISTORY TAB ─── -->
     <div id="view-history" class="hidden">
+      <div id="historyCompareBar" class="hidden mb-4 flex items-center justify-between card rounded-md px-5 py-3" style="border-color:rgba(56,189,248,0.3)">
+        <span class="text-xs font-body text-zinc-400"><span id="compareCount">0</span> runs selected</span>
+        <button onclick="compareSelectedRuns()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:#38BDF8;border:1px solid rgba(56,189,248,0.3);">Compare Selected</button>
+      </div>
+      <div id="historyCompareResult" class="hidden mb-6"></div>
       <div id="historyContainer" class="space-y-4">
         <p class="text-zinc-600 text-sm font-body">Loading history...</p>
       </div>
@@ -971,6 +984,8 @@
         const n = successes.length;
         const tpsVals = successes.map(r => r.tokens_per_second).sort((a, b) => a - b);
         const ttftVals = successes.map(r => r.ttft_ms).sort((a, b) => a - b);
+        const inputTpsVals = successes.map(r => r.input_tokens_per_second || 0).filter(v => v > 0);
+        const costVals = successes.map(r => r.cost || 0);
         return {
           provider: g.provider, model: g.model, model_id: g.model_id,
           context_tokens: g.context_tokens || 0,
@@ -978,6 +993,9 @@
           ttft_ms: n ? successes.reduce((s, r) => s + r.ttft_ms, 0) / n : 0,
           total_time_s: n ? successes.reduce((s, r) => s + r.total_time_s, 0) / n : 0,
           output_tokens: n ? successes.reduce((s, r) => s + r.output_tokens, 0) / n : 0,
+          input_tokens_per_second: inputTpsVals.length ? inputTpsVals.reduce((s, v) => s + v, 0) / inputTpsVals.length : 0,
+          avg_cost: n ? costVals.reduce((s, v) => s + v, 0) / n : 0,
+          total_cost: costVals.reduce((s, v) => s + v, 0),
           std_dev_tps: _stdDev(tpsVals),
           std_dev_ttft: _stdDev(ttftVals),
           p50_tps: _percentile(tpsVals, 50),
@@ -1010,6 +1028,7 @@
         const fastestTTFT = [...agg].filter(a => a.success).sort((a, b) => a.ttft_ms - b.ttft_ms)[0];
         const totalModels = agg.length;
         const totalFails = agg.reduce((s, a) => s + a.failures, 0);
+        const grandTotalCost = agg.reduce((s, a) => s + a.total_cost, 0);
 
         container.innerHTML = `
           <div class="stat-card card-accent rounded-sm p-4">
@@ -1027,10 +1046,10 @@
             <div class="big-num text-2xl text-zinc-100">${totalModels}</div>
             <div class="text-[11px] text-zinc-600 mt-1 font-body">${agg.reduce((s,a) => s + a.runs, 0)} total runs</div>
           </div>
-          <div class="stat-card card rounded-sm p-4" style="border-left: 3px solid ${totalFails ? 'var(--coral)' : '#22C55E'}">
-            <div class="section-label mb-2">Failures</div>
-            <div class="big-num text-2xl ${totalFails ? 'text-red-400' : 'text-green-400'}">${totalFails || 'None'}</div>
-            <div class="text-[11px] text-zinc-600 mt-1 font-body">${totalFails ? 'Check errors' : 'All nominal'}</div>
+          <div class="stat-card card rounded-sm p-4" style="border-left: 3px solid ${grandTotalCost > 0 ? '#FB923C' : '#22C55E'}">
+            <div class="section-label mb-2">Total Cost</div>
+            <div class="big-num text-2xl text-zinc-100">${grandTotalCost > 0 ? '$' + grandTotalCost.toFixed(4) : '$0'}</div>
+            <div class="text-[11px] text-zinc-600 mt-1 font-body">${totalFails ? totalFails + ' failure(s)' : 'All nominal'}</div>
           </div>
         `;
       } else {
@@ -1260,6 +1279,8 @@
 
         const ctxCell = stress ? `<td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">${r.context_tokens === 0 ? '0' : formatCtxSize(r.context_tokens).replace(' ctx', '')}</td>` : '';
         const stdDevCell = multiRun ? `<td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-600">${r.success && r.std_dev_tps > 0 ? '\u00B1' + r.std_dev_tps.toFixed(1) : '-'}</td>` : '';
+        const inputTpsFormatted = r.success && r.input_tokens_per_second > 0 ? Math.round(r.input_tokens_per_second).toLocaleString() : '-';
+        const costFormatted = r.success && r.avg_cost > 0 ? '$' + r.avg_cost.toFixed(4) : '-';
 
         const row = document.createElement('tr');
         row.className = i === 0 && r.success ? 'rank-1 fade-in' : 'fade-in';
@@ -1271,9 +1292,11 @@
           <td class="px-5 py-3.5 text-right font-mono text-sm ${r.success && i === 0 ? '' : 'text-zinc-400'}" ${r.success && i === 0 ? 'style="color:var(--lime)"' : ''}>${r.success ? r.tokens_per_second.toFixed(1) : '-'}</td>
           ${stdDevCell}
           <td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">${r.success ? r.ttft_ms.toFixed(0) + 'ms' : '-'}</td>
+          <td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">${inputTpsFormatted}</td>
           <td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">${r.success ? r.total_time_s.toFixed(2) + 's' : '-'}</td>
           <td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">${r.success ? r.output_tokens.toFixed(0) : '-'}</td>
           <td class="px-5 py-3.5 text-center">${statusHtml}</td>
+          <td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">${costFormatted}</td>
         `;
         tbody.appendChild(row);
       });
@@ -1421,14 +1444,17 @@
     function exportCSV() {
       const agg = aggregateResults();
       if (!agg.length) { showToast('No results to export', 'error'); return; }
-      const headers = ['Provider','Model','Tok/s','TTFT (ms)','Duration (s)','Output Tokens','Status'];
+      const headers = ['Provider','Model','Tok/s','TTFT (ms)','Input Tok/s','Duration (s)','Output Tokens','Status','Avg Cost','Total Cost'];
       const rows = agg.map(r => [
         r.provider, r.model,
         r.success ? r.tokens_per_second.toFixed(2) : '',
         r.success ? r.ttft_ms.toFixed(0) : '',
+        r.success && r.input_tokens_per_second > 0 ? Math.round(r.input_tokens_per_second) : '',
         r.success ? r.total_time_s.toFixed(3) : '',
         r.success ? r.output_tokens.toFixed(0) : '',
-        r.success ? (r.failures ? 'partial' : 'ok') : 'fail'
+        r.success ? (r.failures ? 'partial' : 'ok') : 'fail',
+        r.success && r.avg_cost > 0 ? r.avg_cost.toFixed(6) : '',
+        r.success && r.total_cost > 0 ? r.total_cost.toFixed(6) : '',
       ]);
       const csv = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
       const blob = new Blob([csv], { type: 'text/csv' });
@@ -1957,6 +1983,10 @@
 
     async function loadHistory() {
       const container = document.getElementById('historyContainer');
+      selectedHistoryRuns.clear();
+      document.getElementById('historyCompareBar').classList.add('hidden');
+      document.getElementById('historyCompareResult').classList.add('hidden');
+
       try {
         const res = await fetch('/api/history');
         const history = await res.json();
@@ -1980,11 +2010,13 @@
           })).sort((a, b) => b.avg_tokens_per_second - a.avg_tokens_per_second);
           const winner = sorted[0];
           const hasMultiRun = isV2 && sorted.some(r => (r.runs || 1) > 1);
+          const hasFilename = !!h.filename;
 
           return `
             <div class="card rounded-sm p-5 fade-in" style="animation-delay: ${idx * 40}ms">
               <div class="flex items-center justify-between mb-3">
                 <div class="flex items-center gap-3">
+                  ${hasFilename ? `<button onclick="toggleHistoryCheckbox(this, '${h.filename}')" class="w-4 h-4 rounded-sm border flex items-center justify-center transition-all flex-shrink-0" style="border-color:var(--border-subtle)" title="Select for comparison" data-checked="false"></button>` : ''}
                   <span class="text-[11px] text-zinc-600 font-mono">${ts}</span>
                   ${isV2 ? '<span class="text-[9px] font-mono text-zinc-700 border rounded-sm px-1.5 py-0.5" style="border-color:var(--border-subtle)">v2</span>' : ''}
                   ${winner ? `<span class="badge" style="background:var(--lime-dim);color:var(--lime);border:1px solid rgba(191,255,0,0.2)">P1: ${winner.model}</span>` : ''}
@@ -2024,9 +2056,216 @@
     }
 
     // -------------------------------------------------------------------
+    // Prompt Templates
+    // -------------------------------------------------------------------
+    let promptTemplates = {};
+
+    async function loadPromptTemplates() {
+      try {
+        const res = await fetch('/api/config/prompts');
+        promptTemplates = await res.json();
+        const select = document.getElementById('promptTemplateSelect');
+        select.innerHTML = '<option value="">Custom</option>';
+        for (const [key, tpl] of Object.entries(promptTemplates)) {
+          const opt = document.createElement('option');
+          opt.value = key;
+          opt.textContent = tpl.label || key;
+          select.appendChild(opt);
+        }
+      } catch (e) {
+        console.error('Failed to load prompt templates:', e);
+      }
+    }
+
+    function applyPromptTemplate(key) {
+      const textarea = document.getElementById('prompt');
+      if (!key) {
+        // Custom - leave textarea as is, make it editable
+        textarea.removeAttribute('readonly');
+        return;
+      }
+      const tpl = promptTemplates[key];
+      if (tpl) {
+        textarea.value = tpl.prompt;
+        textarea.removeAttribute('readonly');
+      }
+    }
+
+    // -------------------------------------------------------------------
+    // Provider Health Check
+    // -------------------------------------------------------------------
+    async function checkProviderHealth() {
+      const btn = document.getElementById('healthCheckBtn');
+      btn.textContent = 'Checking...';
+      btn.style.opacity = '0.5';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/health/providers');
+        const data = await res.json();
+        const healthMap = {};
+        for (const p of data.providers) {
+          healthMap[p.name] = p;
+        }
+
+        // Update provider group headers with health status
+        const headers = document.querySelectorAll('.provider-group-header');
+        headers.forEach(header => {
+          const labelEl = header.querySelector('.provider-group-label');
+          if (!labelEl) return;
+          const provName = labelEl.textContent.trim();
+          const health = healthMap[provName];
+
+          // Remove any existing health indicator
+          const existing = header.querySelector('.health-indicator');
+          if (existing) existing.remove();
+
+          if (health) {
+            const indicator = document.createElement('span');
+            indicator.className = 'health-indicator';
+            indicator.style.cssText = 'display:inline-flex;align-items:center;gap:4px;margin-left:4px;';
+            if (health.status === 'ok') {
+              indicator.innerHTML = `<span style="width:6px;height:6px;border-radius:50%;background:#22C55E;display:inline-block;box-shadow:0 0 6px rgba(34,197,94,0.4)"></span><span style="font-size:9px;font-family:'Space Mono',monospace;color:#52525B">${health.latency_ms}ms</span>`;
+            } else {
+              indicator.innerHTML = `<span style="width:6px;height:6px;border-radius:50%;background:#FF3B5C;display:inline-block;box-shadow:0 0 6px rgba(255,59,92,0.4)"></span><span style="font-size:9px;font-family:'Space Mono',monospace;color:#FF3B5C" title="${health.error || ''}">err</span>`;
+            }
+            header.appendChild(indicator);
+          }
+        });
+
+        showToast('Health check complete', 'success');
+      } catch (e) {
+        showToast('Health check failed: ' + e.message, 'error');
+      } finally {
+        btn.textContent = 'Check Health';
+        btn.style.opacity = '1';
+        btn.disabled = false;
+      }
+    }
+
+    // -------------------------------------------------------------------
+    // Cross-Run Comparison (History)
+    // -------------------------------------------------------------------
+    let selectedHistoryRuns = new Set();
+
+    function toggleHistoryCheckbox(btn, filename) {
+      const isChecked = btn.dataset.checked === 'true';
+      if (isChecked) {
+        btn.dataset.checked = 'false';
+        btn.style.borderColor = 'var(--border-subtle)';
+        btn.style.background = 'transparent';
+        btn.innerHTML = '';
+        selectedHistoryRuns.delete(filename);
+      } else {
+        btn.dataset.checked = 'true';
+        btn.style.borderColor = '#38BDF8';
+        btn.style.background = 'rgba(56,189,248,0.15)';
+        btn.innerHTML = '<svg class="w-2.5 h-2.5" fill="none" stroke="#38BDF8" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>';
+        selectedHistoryRuns.add(filename);
+      }
+      const bar = document.getElementById('historyCompareBar');
+      const countEl = document.getElementById('compareCount');
+      if (selectedHistoryRuns.size >= 2) {
+        bar.classList.remove('hidden');
+        countEl.textContent = selectedHistoryRuns.size;
+      } else {
+        bar.classList.add('hidden');
+      }
+    }
+
+    async function compareSelectedRuns() {
+      const filenames = Array.from(selectedHistoryRuns);
+      if (filenames.length < 2) {
+        showToast('Select at least 2 runs to compare', 'error');
+        return;
+      }
+
+      const container = document.getElementById('historyCompareResult');
+      container.innerHTML = '<div class="card rounded-md p-5"><span class="text-zinc-500 text-sm font-body">Loading comparison...</span></div>';
+      container.classList.remove('hidden');
+
+      try {
+        const runs = await Promise.all(filenames.map(async fn => {
+          const res = await fetch(`/api/history/${fn}`);
+          return res.json();
+        }));
+
+        // Collect all unique models across runs
+        const allModels = new Set();
+        runs.forEach(run => {
+          (run.results || []).forEach(r => {
+            allModels.add(`${r.provider}||${r.model}`);
+          });
+        });
+        const modelList = Array.from(allModels).sort();
+
+        // Build comparison table
+        const runLabels = runs.map(r => {
+          const d = new Date(r.timestamp);
+          return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+        });
+
+        let tableHtml = `
+          <div class="card rounded-md overflow-hidden">
+            <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid var(--border-subtle)">
+              <span class="section-label">Cross-Run Comparison</span>
+              <button onclick="document.getElementById('historyCompareResult').classList.add('hidden')" class="text-[11px] font-display tracking-wider uppercase text-zinc-600 hover:text-zinc-300 px-2 py-1">Close</button>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs results-table">
+                <thead><tr style="border-bottom:1px solid var(--border-subtle)">
+                  <th class="px-4 py-3 text-left section-label">Model</th>
+                  ${runLabels.map(l => `<th class="px-4 py-3 text-right section-label">${l}</th>`).join('')}
+                </tr></thead>
+                <tbody>`;
+
+        for (const modelKey of modelList) {
+          const [provider, model] = modelKey.split('||');
+          const color = getColor(provider);
+          const values = runs.map(run => {
+            const match = (run.results || []).find(r => r.provider === provider && r.model === model);
+            if (!match) return null;
+            return match.avg_tokens_per_second ?? match.tokens_per_second ?? 0;
+          });
+
+          // Find max value for highlighting
+          const validValues = values.filter(v => v !== null && v > 0);
+          const maxVal = validValues.length ? Math.max(...validValues) : 0;
+          const minVal = validValues.length ? Math.min(...validValues) : 0;
+
+          tableHtml += `<tr style="border-top:1px solid var(--border-subtle)">
+            <td class="px-4 py-2.5">
+              <span class="badge mr-2" style="background:${color.bg};color:${color.text};border:1px solid ${color.border};font-size:9px">${provider}</span>
+              <span class="text-zinc-300 font-body text-[12px]">${model}</span>
+            </td>`;
+
+          for (const v of values) {
+            if (v === null) {
+              tableHtml += `<td class="px-4 py-2.5 text-right font-mono text-zinc-700">-</td>`;
+            } else {
+              let cellColor = 'text-zinc-400';
+              if (validValues.length >= 2 && maxVal !== minVal) {
+                if (v === maxVal) cellColor = 'text-green-400';
+                else if (v === minVal) cellColor = 'text-red-400';
+              }
+              tableHtml += `<td class="px-4 py-2.5 text-right font-mono ${cellColor}">${v.toFixed ? v.toFixed(1) : v} tok/s</td>`;
+            }
+          }
+          tableHtml += '</tr>';
+        }
+
+        tableHtml += '</tbody></table></div></div>';
+        container.innerHTML = tableHtml;
+      } catch (e) {
+        container.innerHTML = `<div class="error-banner">${e.message || 'Failed to load comparison data'}</div>`;
+      }
+    }
+
+    // -------------------------------------------------------------------
     // Boot
     // -------------------------------------------------------------------
     init();
+    loadPromptTemplates();
   </script>
 </body>
 </html>
