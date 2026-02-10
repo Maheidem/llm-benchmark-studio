@@ -602,21 +602,22 @@ def _aggregate(raw_results: list[dict], config: dict) -> list[AggregatedResult]:
     """Convert raw result dicts into AggregatedResults for saving."""
     from benchmark import Target, RunResult
 
-    # Group by (model_id, context_tokens)
+    # Group by (model_id, provider, context_tokens) to distinguish
+    # same model_id served by different providers (e.g. two LM Studio instances)
     grouped = {}
     for r in raw_results:
-        key = (r["model_id"], r.get("context_tokens", 0))
+        key = (r["model_id"], r["provider"], r.get("context_tokens", 0))
         if key not in grouped:
             grouped[key] = []
         grouped[key].append(r)
 
     agg_list = []
     all_targets = build_targets(config)
-    target_map = {t.model_id: t for t in all_targets}
+    target_map = {(t.model_id, t.provider): t for t in all_targets}
 
-    for (mid, ctx_tokens), runs in grouped.items():
-        target = target_map.get(mid, Target(
-            provider=runs[0]["provider"],
+    for (mid, provider, ctx_tokens), runs in grouped.items():
+        target = target_map.get((mid, provider), Target(
+            provider=provider,
             model_id=mid,
             display_name=runs[0]["model"],
         ))

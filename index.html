@@ -90,6 +90,17 @@
     .model-card .check-dot { width: 8px; height: 8px; border-radius: 50%; background: #3f3f46; transition: all 0.15s; }
     .model-card.selected .check-dot { background: var(--lime); box-shadow: 0 0 8px rgba(191,255,0,0.4); }
 
+    /* Provider groups */
+    .provider-group { border-left: 2px solid var(--border-subtle); padding-left: 0; margin-bottom: 8px; }
+    .provider-group-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 12px; margin-bottom: 6px; cursor: pointer; user-select: none;
+    }
+    .provider-group-header:hover .provider-group-label { opacity: 1; }
+    .provider-group-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .provider-group-label { font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.7; transition: opacity 0.15s; }
+    .provider-group-count { font-size: 9px; font-family: 'Space Mono', monospace; color: #52525B; margin-left: auto; }
+
     /* Run button */
     .run-btn {
       background: var(--lime);
@@ -276,7 +287,7 @@
             <button onclick="selectNone()" class="text-[11px] font-display font-medium tracking-wider uppercase text-zinc-600 px-3 py-1 rounded-sm border transition-colors" style="border-color: var(--border-subtle)" onmouseover="this.style.borderColor='var(--border)'" onmouseout="this.style.borderColor='var(--border-subtle)'">Clear</button>
           </div>
         </div>
-        <div id="modelGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+        <div id="modelGrid" class="flex flex-col gap-1">
           <!-- JS populates -->
         </div>
       </div>
@@ -380,13 +391,18 @@
     let currentResults = [];
     let toksChart = null;
     let ttftChart = null;
+    let cachedEnvKeys = [];
 
     const POSITION_LABELS = ['P1', 'P2', 'P3'];
 
     const PROVIDER_COLORS = {
-      'ZAI GLM':           { bg: 'rgba(191,255,0,0.08)',  border: 'rgba(191,255,0,0.3)',  text: '#BFFF00', bar: '#BFFF00' },
-      'LM Studio (Local)': { bg: 'rgba(56,189,248,0.08)', border: 'rgba(56,189,248,0.3)', text: '#38BDF8', bar: '#38BDF8' },
-      'OpenAI':            { bg: 'rgba(168,162,158,0.08)', border: 'rgba(168,162,158,0.3)', text: '#A8A29E', bar: '#A8A29E' },
+      'ZAI GLM':             { bg: 'rgba(191,255,0,0.08)',  border: 'rgba(191,255,0,0.3)',  text: '#BFFF00', bar: '#BFFF00' },
+      'LM Studio (Desktop)': { bg: 'rgba(56,189,248,0.08)', border: 'rgba(56,189,248,0.3)', text: '#38BDF8', bar: '#38BDF8' },
+      'LM Studio (Mac)':     { bg: 'rgba(129,140,248,0.08)',border: 'rgba(129,140,248,0.3)',text: '#818CF8', bar: '#818CF8' },
+      'LM Studio (Local)':   { bg: 'rgba(56,189,248,0.08)', border: 'rgba(56,189,248,0.3)', text: '#38BDF8', bar: '#38BDF8' },
+      'OpenAI':              { bg: 'rgba(168,162,158,0.08)', border: 'rgba(168,162,158,0.3)', text: '#A8A29E', bar: '#A8A29E' },
+      'Anthropic':           { bg: 'rgba(251,113,133,0.08)', border: 'rgba(251,113,133,0.3)', text: '#FB7185', bar: '#FB7185' },
+      'Google Gemini':       { bg: 'rgba(96,165,250,0.08)',  border: 'rgba(96,165,250,0.3)',  text: '#60A5FA', bar: '#60A5FA' },
     };
     const DEFAULT_COLOR = { bg: 'rgba(251,146,60,0.08)', border: 'rgba(251,146,60,0.3)', text: '#FB923C', bar: '#FB923C' };
 
@@ -435,6 +451,8 @@
       { value: 10000, label: '10K' },
       { value: 20000, label: '20K' },
       { value: 50000, label: '50K' },
+      { value: 100000, label: '100K' },
+      { value: 150000, label: '150K' },
     ];
     let selectedTiers = new Set([0]);
 
@@ -525,12 +543,40 @@
       for (const [provider, provData] of Object.entries(config.providers)) {
         const color = getColor(provider);
         const models = getProviderModels(provData);
+        if (!models.length) continue;
+
+        // Provider group container
+        const group = document.createElement('div');
+        group.className = 'provider-group';
+        group.style.borderColor = color.border;
+
+        // Provider header — click to toggle all models in group
+        const header = document.createElement('div');
+        header.className = 'provider-group-header';
+        header.innerHTML = `
+          <div class="provider-group-dot" style="background:${color.text}"></div>
+          <span class="provider-group-label" style="color:${color.text}">${provider}</span>
+          <span class="provider-group-count">${models.length} model${models.length > 1 ? 's' : ''}</span>
+        `;
+        header.onclick = () => {
+          const cards = group.querySelectorAll('.model-card');
+          const allSelected = [...cards].every(c => c.classList.contains('selected'));
+          cards.forEach(c => {
+            if (allSelected) { selectedModels.delete(c.dataset.modelId); c.classList.remove('selected'); }
+            else { selectedModels.add(c.dataset.modelId); c.classList.add('selected'); }
+          });
+        };
+        group.appendChild(header);
+
+        // Model cards sub-grid
+        const subgrid = document.createElement('div');
+        subgrid.className = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pl-3';
         for (const m of models) {
           selectedModels.add(m.model_id);
           const card = document.createElement('div');
           card.className = 'model-card selected rounded-sm px-4 py-3 flex items-center gap-3';
           card.dataset.modelId = m.model_id;
-          card.onclick = () => toggleModel(m.model_id, card);
+          card.onclick = (e) => { e.stopPropagation(); toggleModel(m.model_id, card); };
           card.innerHTML = `
             <div class="check-dot flex-shrink-0"></div>
             <div class="flex-1 min-w-0">
@@ -538,11 +584,12 @@
                 <div class="text-[13px] font-medium text-zinc-200 truncate font-body">${m.display_name}</div>
                 ${m.context_window ? `<span class="text-[9px] font-mono px-1.5 py-0.5 rounded-sm" style="background:rgba(255,255,255,0.04);color:#71717A;">${formatCtxSize(m.context_window)}</span>` : ''}
               </div>
-              <div class="text-[10px] mt-0.5 font-display tracking-wider uppercase" style="color:${color.text}">${provider}</div>
             </div>
           `;
-          grid.appendChild(card);
+          subgrid.appendChild(card);
         }
+        group.appendChild(subgrid);
+        grid.appendChild(group);
       }
     }
 
@@ -666,7 +713,7 @@
     function aggregateResults() {
       const grouped = {};
       for (const r of currentResults) {
-        const key = `${r.model_id}::${r.context_tokens || 0}`;
+        const key = `${r.model_id}::${r.provider}::${r.context_tokens || 0}`;
         if (!grouped[key]) grouped[key] = { ...r, _runs: [], _successes: 0 };
         grouped[key]._runs.push(r);
         if (r.success) grouped[key]._successes++;
@@ -836,11 +883,11 @@
       } else {
         // === STRESS TEST LINE CHART ===
         const tiers = [...new Set(agg.map(a => a.context_tokens))].sort((a, b) => a - b);
-        const models = [...new Set(agg.map(a => a.model_id))];
+        const models = [...new Set(agg.map(a => `${a.model_id}::${a.provider}`))];
         const tierLabels = tiers.map(t => t === 0 ? '0' : (t >= 1000 ? (t/1000) + 'K' : t));
 
-        const datasets = models.map(mid => {
-          const modelResults = agg.filter(a => a.model_id === mid);
+        const datasets = models.map(uid => {
+          const modelResults = agg.filter(a => `${a.model_id}::${a.provider}` === uid);
           const modelName = modelResults[0]?.model || mid;
           const provider = modelResults[0]?.provider || '';
           const color = getColor(provider);
@@ -982,11 +1029,11 @@
       if (ttftChart) ttftChart.destroy();
 
       const tiers = [...new Set(agg.map(a => a.context_tokens))].sort((a, b) => a - b);
-      const models = [...new Set(agg.map(a => a.model_id))];
+      const models = [...new Set(agg.map(a => `${a.model_id}::${a.provider}`))];
       const tierLabels = tiers.map(t => t === 0 ? '0' : (t >= 1000 ? (t/1000) + 'K' : t));
 
-      const datasets = models.map(mid => {
-        const modelResults = agg.filter(a => a.model_id === mid);
+      const datasets = models.map(uid => {
+        const modelResults = agg.filter(a => `${a.model_id}::${a.provider}` === uid);
         const modelName = modelResults[0]?.model || mid;
         const provider = modelResults[0]?.provider || '';
         const color = getColor(provider);
@@ -1099,7 +1146,7 @@
           return;
         }
       }
-      renderApiKeys();
+      await renderApiKeys();
       renderProviders();
     }
 
@@ -1110,6 +1157,7 @@
         const res = await fetch('/api/env');
         const data = await res.json();
         const keys = data.keys || [];
+        cachedEnvKeys = keys;
         container.innerHTML = `
           <div class="card rounded-md overflow-hidden">
             <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid var(--border-subtle)">
@@ -1217,7 +1265,11 @@
               </div>
               <div>
                 <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">API Key Env Var</label>
-                <input id="pe-ke-${pk}" value="${provData.api_key_env||''}" placeholder="MY_API_KEY" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+                <select id="pe-ke-${pk}" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+                  <option value="">— None —</option>
+                  ${cachedEnvKeys.map(k => `<option value="${k.name}" ${k.name === (provData.api_key_env||'') ? 'selected' : ''}>${k.name}${k.is_set ? '' : ' (not set)'}</option>`).join('')}
+                  ${provData.api_key_env && !cachedEnvKeys.find(k => k.name === provData.api_key_env) ? `<option value="${provData.api_key_env}" selected>${provData.api_key_env} (missing)</option>` : ''}
+                </select>
               </div>
             </div>
             <button onclick="saveProvider('${pk}')" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">Save Provider</button>
@@ -1280,7 +1332,10 @@
             </div>
             <div>
               <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">API Key Env Var</label>
-              <input id="ap-ke" placeholder="MY_API_KEY" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+              <select id="ap-ke" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+                <option value="">— None —</option>
+                ${cachedEnvKeys.map(k => `<option value="${k.name}">${k.name}${k.is_set ? '' : ' (not set)'}</option>`).join('')}
+              </select>
             </div>
           </div>
           <button onclick="addProvider()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">Create Provider</button>
