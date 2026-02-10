@@ -1,0 +1,66 @@
+defaults:
+  max_tokens: 512
+  temperature: 0.7
+  context_tiers:
+  - 0
+  - 1000
+  - 5000
+  - 10000
+  - 20000
+  - 50000
+  prompt: 'Explain the concept of recursion in programming.
+
+    Include a simple example in Python with comments.
+
+    Then explain how the call stack works during recursion.
+
+    '
+providers:
+  zai_glm:
+    display_name: ZAI GLM
+    api_base: https://api.z.ai/api/coding/paas/v4
+    api_key_env: ZAI_API_KEY
+    models:
+    - id: zai/GLM-4.7
+      display_name: GLM-4.7
+      context_window: 200000
+      max_output_tokens: 8000
+    - id: zai/GLM-4.5-Air
+      display_name: GLM-4.5-Air
+      context_window: 128000
+  lm_studio:
+    display_name: LM Studio (Desktop)
+    api_base: http://192.168.31.222:1234/v1
+    api_key: not-needed
+    models:
+    - id: lm_studio/zai-org/glm-4.7-flash
+      display_name: GLM-4.7-Flash Q4_K_M (CUDA)
+      context_window: 80000
+    model_id_prefix: lm_studio
+  openai:
+    display_name: OpenAI
+    api_key_env: OPENAI_API_KEY
+    models:
+    - id: gpt-5.2
+      display_name: GPT-5.2
+      context_window: 128000
+      skip_params:
+      - temperature
+    - id: gpt-5.1-codex
+      display_name: GPT-5.1-Codex
+      context_window: 200000
+      skip_params:
+      - temperature
+    - id: gpt-5.1-codex-mini
+      display_name: GPT-5.1-Codex-Mini
+      context_window: 200000
+      skip_params:
+      - temperature
+  lm_studio_mac:
+    display_name: LM Studio (Mac)
+    models:
+    - id: lm_studio/zai-org/glm-4.7-flash
+      display_name: GLM-4.7-Flash Q6 (MLX)
+      context_window: 80000
+    api_base: http://127.0.0.1:1234/v1
+    model_id_prefix: lm_studio

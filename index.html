@@ -1,0 +1,1620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM Benchmark Studio</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['Chakra Petch', 'sans-serif'],
+            body: ['Outfit', 'sans-serif'],
+            mono: ['Space Mono', 'monospace'],
+          },
+          colors: {
+            zinc: { 925: '#111113', 850: '#1c1c20' },
+            lime: { accent: '#BFFF00' },
+            coral: { accent: '#FF3B5C' },
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    :root {
+      --lime: #BFFF00;
+      --lime-dim: rgba(191,255,0,0.12);
+      --lime-mid: rgba(191,255,0,0.3);
+      --coral: #FF3B5C;
+      --surface: #111113;
+      --surface-raised: #1c1c20;
+      --border: #27272A;
+      --border-subtle: #1f1f23;
+    }
+    * { box-sizing: border-box; }
+    body {
+      background: #09090B;
+      font-family: 'Outfit', sans-serif;
+      color: #A1A1AA;
+    }
+    /* Dot grid background */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: radial-gradient(rgba(255,255,255,0.03) 1px, transparent 1px);
+      background-size: 24px 24px;
+      pointer-events: none;
+      z-index: 0;
+    }
+    body > * { position: relative; z-index: 1; }
+
+    /* Noise grain overlay */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      opacity: 0.015;
+      background: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Cards */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border-subtle);
+      transition: border-color 0.2s;
+    }
+    .card:hover { border-color: var(--border); }
+    .card-accent {
+      background: var(--surface);
+      border: 1px solid var(--border-subtle);
+      border-left: 3px solid var(--lime);
+    }
+
+    /* Model cards */
+    .model-card {
+      background: var(--surface);
+      border: 1px solid var(--border-subtle);
+      transition: all 0.15s ease;
+      cursor: pointer;
+    }
+    .model-card:hover { border-color: var(--border); background: var(--surface-raised); }
+    .model-card.selected { border-color: var(--lime); background: var(--lime-dim); }
+    .model-card .check-dot { width: 8px; height: 8px; border-radius: 50%; background: #3f3f46; transition: all 0.15s; }
+    .model-card.selected .check-dot { background: var(--lime); box-shadow: 0 0 8px rgba(191,255,0,0.4); }
+
+    /* Run button */
+    .run-btn {
+      background: var(--lime);
+      color: #09090B;
+      font-family: 'Chakra Petch', sans-serif;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      transition: all 0.2s;
+      box-shadow: 0 0 30px rgba(191,255,0,0.15);
+    }
+    .run-btn:hover { box-shadow: 0 0 50px rgba(191,255,0,0.3); transform: translateY(-1px); }
+    .run-btn:disabled { opacity: 0.3; cursor: not-allowed; box-shadow: none; transform: none; }
+    .run-btn:active { transform: translateY(0); }
+
+    /* Progress bar */
+    .progress-track { background: #1c1c20; height: 6px; }
+    .progress-fill {
+      height: 100%;
+      background: var(--lime);
+      box-shadow: 0 0 12px rgba(191,255,0,0.3);
+      transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      background-image: repeating-linear-gradient(
+        -45deg,
+        transparent,
+        transparent 6px,
+        rgba(0,0,0,0.15) 6px,
+        rgba(0,0,0,0.15) 12px
+      );
+      background-size: 17px 17px;
+      animation: stripe-scroll 0.6s linear infinite;
+    }
+    @keyframes stripe-scroll { to { background-position: 17px 0; } }
+
+    /* Pulse dot */
+    .pulse-dot {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--lime);
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity: 0.4; box-shadow: none; } 50% { opacity: 1; box-shadow: 0 0 8px rgba(191,255,0,0.5); } }
+
+    /* Stagger animations */
+    .stagger { opacity: 0; transform: translateY(12px); animation: stagger-in 0.4s ease forwards; }
+    .stagger:nth-child(1) { animation-delay: 0.05s; }
+    .stagger:nth-child(2) { animation-delay: 0.1s; }
+    .stagger:nth-child(3) { animation-delay: 0.15s; }
+    .stagger:nth-child(4) { animation-delay: 0.2s; }
+    .stagger:nth-child(5) { animation-delay: 0.25s; }
+    .stagger:nth-child(6) { animation-delay: 0.3s; }
+    @keyframes stagger-in { to { opacity: 1; transform: translateY(0); } }
+    .fade-in { animation: stagger-in 0.3s ease forwards; }
+
+    /* Tabs */
+    .tab { padding: 8px 0; font-family: 'Chakra Petch', sans-serif; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; font-size: 12px; border-bottom: 2px solid transparent; transition: all 0.2s; color: #52525B; }
+    .tab:hover { color: #A1A1AA; }
+    .tab-active { color: var(--lime) !important; border-bottom-color: var(--lime) !important; }
+
+    /* Sliders */
+    input[type=range] { -webkit-appearance: none; background: transparent; width: 100%; }
+    input[type=range]::-webkit-slider-track { height: 3px; border-radius: 2px; background: #27272A; }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 2px; background: var(--lime); margin-top: -5.5px; cursor: pointer; box-shadow: 0 0 6px rgba(191,255,0,0.3); }
+
+    /* Textarea */
+    .prompt-input {
+      background: rgba(255,255,255,0.02);
+      border: 1px solid var(--border-subtle);
+      color: #E4E4E7;
+      font-family: 'Space Mono', monospace;
+      font-size: 13px;
+      resize: none;
+      transition: border-color 0.2s;
+    }
+    .prompt-input:focus { outline: none; border-color: rgba(191,255,0,0.3); }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #27272A; border-radius: 2px; }
+
+    /* Stat cards */
+    .stat-card { transition: all 0.2s; }
+    .stat-card:hover { border-color: var(--border); transform: translateY(-1px); }
+
+    /* Table */
+    .results-table tr { border-bottom: 1px solid var(--border-subtle); transition: background 0.15s; }
+    .results-table tr:hover { background: rgba(255,255,255,0.02); }
+    .results-table .rank-1 { background: var(--lime-dim); }
+    .results-table .rank-1:hover { background: rgba(191,255,0,0.08); }
+
+    /* Provider badges */
+    .badge { font-family: 'Chakra Petch', sans-serif; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 500; padding: 2px 8px; border-radius: 2px; }
+
+    /* Big number style */
+    .big-num { font-family: 'Chakra Petch', sans-serif; font-weight: 700; line-height: 1; }
+
+    /* Section label */
+    .section-label { font-family: 'Chakra Petch', sans-serif; font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #52525B; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+  <!-- ═══════════════════════════ HEADER ═══════════════════════════ -->
+  <header class="border-b px-6 py-4" style="border-color: var(--border-subtle)">
+    <div class="max-w-7xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-4">
+        <!-- Logo mark -->
+        <div class="w-9 h-9 rounded-sm flex items-center justify-center font-display font-bold text-sm" style="background: var(--lime); color: #09090B;">
+          B<span style="font-size:10px; opacity:0.6;">s</span>
+        </div>
+        <div>
+          <h1 class="font-display font-bold text-base text-zinc-100 tracking-wide">
+            BENCHMARK <span style="color: var(--lime)">STUDIO</span>
+          </h1>
+          <p class="text-[10px] tracking-[0.2em] uppercase text-zinc-600 mt-0.5">Measure &middot; Compare &middot; Optimize</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-6">
+        <button onclick="showTab('benchmark')" id="tab-benchmark" class="tab tab-active">Benchmark</button>
+        <button onclick="showTab('history')" id="tab-history" class="tab">History</button>
+        <button onclick="showTab('settings')" id="tab-settings" class="tab">Settings</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ═══════════════════════════ MAIN ═══════════════════════════ -->
+  <main class="max-w-7xl mx-auto px-6 py-8">
+
+    <!-- ─── BENCHMARK TAB ─── -->
+    <div id="view-benchmark">
+
+      <!-- CONFIG ROW -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+        <!-- Prompt -->
+        <div class="lg:col-span-2 card rounded-md p-5 stagger">
+          <label class="section-label mb-3 block">Benchmark Prompt</label>
+          <textarea id="prompt" rows="3" class="prompt-input w-full rounded-sm px-4 py-3" placeholder="Enter your benchmark prompt..."></textarea>
+        </div>
+
+        <!-- Params -->
+        <div class="card rounded-md p-5 stagger">
+          <label class="section-label mb-4 block">Parameters</label>
+          <div class="space-y-5">
+            <div>
+              <div class="flex justify-between text-xs mb-2">
+                <span class="text-zinc-500 font-body">Max Tokens</span>
+                <span id="maxTokensVal" class="font-mono text-zinc-300">512</span>
+              </div>
+              <input type="range" id="maxTokens" min="64" max="4096" step="64" value="512" oninput="document.getElementById('maxTokensVal').textContent=this.value">
+            </div>
+            <div>
+              <div class="flex justify-between text-xs mb-2">
+                <span class="text-zinc-500 font-body">Temperature</span>
+                <span id="tempVal" class="font-mono text-zinc-300">0.7</span>
+              </div>
+              <input type="range" id="temperature" min="0" max="2" step="0.1" value="0.7" oninput="document.getElementById('tempVal').textContent=parseFloat(this.value).toFixed(1)">
+            </div>
+            <div>
+              <div class="flex justify-between text-xs mb-2">
+                <span class="text-zinc-500 font-body">Runs per model</span>
+                <span id="runsVal" class="font-mono text-zinc-300">1</span>
+              </div>
+              <input type="range" id="runs" min="1" max="10" step="1" value="1" oninput="document.getElementById('runsVal').textContent=this.value">
+            </div>
+          </div>
+          <div class="mt-5 pt-5" style="border-top: 1px solid var(--border-subtle)">
+            <div class="flex justify-between text-xs mb-3">
+              <span class="text-zinc-500 font-body">Context Tiers</span>
+              <span id="tierBadge" class="hidden text-[10px] font-display font-semibold tracking-wider uppercase px-2 py-0.5 rounded-sm" style="background:rgba(255,59,92,0.15);color:var(--coral);">STRESS TEST</span>
+            </div>
+            <div id="tierChips" class="flex flex-wrap gap-2">
+              <!-- JS populates -->
+            </div>
+            <div id="tierWarnings" class="mt-2 space-y-1"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MODEL SELECTION -->
+      <div class="card rounded-md p-5 mb-6 stagger">
+        <div class="flex items-center justify-between mb-4">
+          <label class="section-label">Select Models</label>
+          <div class="flex gap-2">
+            <button onclick="selectAll()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color: var(--lime); border: 1px solid rgba(191,255,0,0.2);" onmouseover="this.style.borderColor='rgba(191,255,0,0.5)'" onmouseout="this.style.borderColor='rgba(191,255,0,0.2)'">All</button>
+            <button onclick="selectNone()" class="text-[11px] font-display font-medium tracking-wider uppercase text-zinc-600 px-3 py-1 rounded-sm border transition-colors" style="border-color: var(--border-subtle)" onmouseover="this.style.borderColor='var(--border)'" onmouseout="this.style.borderColor='var(--border-subtle)'">Clear</button>
+          </div>
+        </div>
+        <div id="modelGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          <!-- JS populates -->
+        </div>
+      </div>
+
+      <!-- RUN BUTTON -->
+      <div class="flex justify-center mb-10 stagger">
+        <button id="runBtn" onclick="startBenchmark()" class="run-btn px-12 py-3 rounded-sm text-sm flex items-center gap-3">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          Run Benchmark
+        </button>
+      </div>
+
+      <!-- PROGRESS -->
+      <div id="progressSection" class="hidden mb-8 fade-in">
+        <div class="card rounded-md p-5">
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-3">
+              <div class="pulse-dot"></div>
+              <span id="progressLabel" class="text-sm text-zinc-400 font-body">Initializing...</span>
+            </div>
+            <span id="progressCount" class="text-xs font-mono text-zinc-600">0/0</span>
+          </div>
+          <div class="progress-track rounded-sm overflow-hidden">
+            <div id="progressBar" class="progress-fill" style="width: 0%"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RESULTS -->
+      <div id="resultsSection" class="hidden fade-in">
+        <!-- Stat Cards -->
+        <div id="statCards" class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6"></div>
+
+        <!-- Chart -->
+        <div class="card rounded-md p-5 mb-4">
+          <label class="section-label mb-4 block">Throughput Comparison</label>
+          <div class="relative" style="height: 300px;">
+            <canvas id="toksChart"></canvas>
+          </div>
+        </div>
+
+        <!-- TTFT Chart (stress mode only) -->
+        <div id="ttftChartSection" class="hidden card rounded-md p-5 mb-4">
+          <label class="section-label mb-4 block">Latency (TTFT) vs Context Size</label>
+          <div class="relative" style="height: 300px;">
+            <canvas id="ttftChart"></canvas>
+          </div>
+        </div>
+
+        <!-- Table -->
+        <div class="card rounded-md overflow-hidden mb-6">
+          <table class="w-full text-sm results-table">
+            <thead>
+              <tr style="border-bottom: 1px solid var(--border-subtle)">
+                <th class="px-5 py-3 text-left section-label">Pos</th>
+                <th class="px-5 py-3 text-left section-label">Provider</th>
+                <th class="px-5 py-3 text-left section-label">Model</th>
+                <th class="px-5 py-3 text-right section-label">Tok/s</th>
+                <th class="px-5 py-3 text-right section-label">TTFT</th>
+                <th class="px-5 py-3 text-right section-label">Duration</th>
+                <th class="px-5 py-3 text-right section-label">Tokens</th>
+                <th class="px-5 py-3 text-center section-label">Status</th>
+              </tr>
+            </thead>
+            <tbody id="resultsBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── HISTORY TAB ─── -->
+    <div id="view-history" class="hidden">
+      <div id="historyContainer" class="space-y-4">
+        <p class="text-zinc-600 text-sm font-body">Loading history...</p>
+      </div>
+    </div>
+
+    <!-- ─── SETTINGS TAB ─── -->
+    <div id="view-settings" class="hidden">
+      <div class="mb-6">
+        <h2 class="font-display font-bold text-lg text-zinc-100 mb-1">Configuration</h2>
+        <p class="text-sm text-zinc-600 font-body">Manage API keys, providers, and model settings.</p>
+      </div>
+      <!-- API Keys Section -->
+      <div id="apiKeysContainer" class="mb-6"></div>
+      <!-- Providers + Models -->
+      <div id="settingsContainer" class="space-y-6">
+        <p class="text-zinc-600 text-sm font-body">Loading configuration...</p>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ═══════════════════════════ SCRIPT ═══════════════════════════ -->
+  <script>
+    // -------------------------------------------------------------------
+    // State
+    // -------------------------------------------------------------------
+    let config = null;
+    let selectedModels = new Set();
+    let currentResults = [];
+    let toksChart = null;
+    let ttftChart = null;
+
+    const POSITION_LABELS = ['P1', 'P2', 'P3'];
+
+    const PROVIDER_COLORS = {
+      'ZAI GLM':           { bg: 'rgba(191,255,0,0.08)',  border: 'rgba(191,255,0,0.3)',  text: '#BFFF00', bar: '#BFFF00' },
+      'LM Studio (Local)': { bg: 'rgba(56,189,248,0.08)', border: 'rgba(56,189,248,0.3)', text: '#38BDF8', bar: '#38BDF8' },
+      'OpenAI':            { bg: 'rgba(168,162,158,0.08)', border: 'rgba(168,162,158,0.3)', text: '#A8A29E', bar: '#A8A29E' },
+    };
+    const DEFAULT_COLOR = { bg: 'rgba(251,146,60,0.08)', border: 'rgba(251,146,60,0.3)', text: '#FB923C', bar: '#FB923C' };
+
+    function getColor(provider) { return PROVIDER_COLORS[provider] || DEFAULT_COLOR; }
+
+    function safeId(str) { return str.replace(/[^a-zA-Z0-9_-]/g, '_'); }
+
+    function slugify(str) {
+      return str.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    }
+
+    function uniqueProviderKey(base) {
+      if (!config || !config.providers) return base;
+      const existing = new Set(Object.values(config.providers).map(p => p.provider_key));
+      if (!existing.has(base)) return base;
+      for (let i = 2; i < 100; i++) {
+        const candidate = `${base}_${i}`;
+        if (!existing.has(candidate)) return candidate;
+      }
+      return base + '_' + Date.now();
+    }
+
+    function detectPrefix(models) {
+      if (!models || models.length === 0) return '';
+      const ids = models.map(m => m.model_id || m.id || '');
+      const firstSlash = ids[0].indexOf('/');
+      if (firstSlash < 1) return '';
+      const candidate = ids[0].substring(0, firstSlash);
+      if (ids.every(id => id.startsWith(candidate + '/'))) return candidate;
+      return '';
+    }
+
+    function formatCtxSize(tokens) {
+      if (tokens >= 1000000) return (tokens / 1000000).toFixed(0) + 'M ctx';
+      if (tokens >= 1000) return (tokens / 1000).toFixed(0) + 'K ctx';
+      return tokens + ' ctx';
+    }
+
+    // -------------------------------------------------------------------
+    // Context Tiers
+    // -------------------------------------------------------------------
+    const TIER_OPTIONS = [
+      { value: 0, label: '0' },
+      { value: 1000, label: '1K' },
+      { value: 5000, label: '5K' },
+      { value: 10000, label: '10K' },
+      { value: 20000, label: '20K' },
+      { value: 50000, label: '50K' },
+    ];
+    let selectedTiers = new Set([0]);
+
+    function renderTierChips() {
+      const container = document.getElementById('tierChips');
+      container.innerHTML = TIER_OPTIONS.map(t => {
+        const selected = selectedTiers.has(t.value);
+        return `<button onclick="toggleTier(${t.value})" class="text-[11px] font-mono px-3 py-1.5 rounded-sm transition-all ${selected ? '' : 'text-zinc-600 hover:text-zinc-400'}" style="${selected ? 'background:var(--lime-dim);color:var(--lime);border:1px solid rgba(191,255,0,0.3)' : 'background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle)'}">${t.label}</button>`;
+      }).join('');
+
+      // Show/hide stress test badge
+      const badge = document.getElementById('tierBadge');
+      if (selectedTiers.size > 1 || (selectedTiers.size === 1 && !selectedTiers.has(0))) {
+        badge.classList.remove('hidden');
+      } else {
+        badge.classList.add('hidden');
+      }
+
+      updateTierWarnings();
+    }
+
+    function toggleTier(value) {
+      if (selectedTiers.has(value)) {
+        selectedTiers.delete(value);
+        if (selectedTiers.size === 0) selectedTiers.add(0); // Always have at least one
+      } else {
+        selectedTiers.add(value);
+      }
+      renderTierChips();
+    }
+
+    function updateTierWarnings() {
+      const container = document.getElementById('tierWarnings');
+      if (!config) { container.innerHTML = ''; return; }
+
+      const warnings = [];
+      const maxTier = Math.max(...selectedTiers);
+
+      for (const [provider, provData] of Object.entries(config.providers)) {
+        const models = getProviderModels(provData);
+        for (const m of models) {
+          if (!selectedModels.has(m.model_id)) continue;
+          if (m.context_window && maxTier > m.context_window) {
+            warnings.push(`<div class="text-[10px] font-body" style="color:#FBBF24;">${m.display_name}: ${formatCtxSize(maxTier).replace(' ctx','')} &gt; ${formatCtxSize(m.context_window)}</div>`);
+          }
+        }
+      }
+      container.innerHTML = warnings.join('');
+    }
+
+    // -------------------------------------------------------------------
+    // Init
+    // -------------------------------------------------------------------
+    async function init() {
+      try {
+        const res = await fetch('/api/config');
+        config = await res.json();
+        renderModels();
+        if (config.defaults?.prompt) {
+          document.getElementById('prompt').value = config.defaults.prompt.trim();
+        }
+        if (config.defaults?.max_tokens) {
+          document.getElementById('maxTokens').value = config.defaults.max_tokens;
+          document.getElementById('maxTokensVal').textContent = config.defaults.max_tokens;
+        }
+        if (config.defaults?.temperature !== undefined) {
+          document.getElementById('temperature').value = config.defaults.temperature;
+          document.getElementById('tempVal').textContent = parseFloat(config.defaults.temperature).toFixed(1);
+        }
+        renderTierChips();
+      } catch (e) {
+        console.error('Failed to load config:', e);
+      }
+    }
+
+    // -------------------------------------------------------------------
+    // Model selection
+    // -------------------------------------------------------------------
+    function getProviderModels(provData) {
+      // Handle both old shape (array) and new shape ({models: [...]})
+      return Array.isArray(provData) ? provData : (provData.models || []);
+    }
+
+    function renderModels() {
+      const grid = document.getElementById('modelGrid');
+      grid.innerHTML = '';
+
+      for (const [provider, provData] of Object.entries(config.providers)) {
+        const color = getColor(provider);
+        const models = getProviderModels(provData);
+        for (const m of models) {
+          selectedModels.add(m.model_id);
+          const card = document.createElement('div');
+          card.className = 'model-card selected rounded-sm px-4 py-3 flex items-center gap-3';
+          card.dataset.modelId = m.model_id;
+          card.onclick = () => toggleModel(m.model_id, card);
+          card.innerHTML = `
+            <div class="check-dot flex-shrink-0"></div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2">
+                <div class="text-[13px] font-medium text-zinc-200 truncate font-body">${m.display_name}</div>
+                ${m.context_window ? `<span class="text-[9px] font-mono px-1.5 py-0.5 rounded-sm" style="background:rgba(255,255,255,0.04);color:#71717A;">${formatCtxSize(m.context_window)}</span>` : ''}
+              </div>
+              <div class="text-[10px] mt-0.5 font-display tracking-wider uppercase" style="color:${color.text}">${provider}</div>
+            </div>
+          `;
+          grid.appendChild(card);
+        }
+      }
+    }
+
+    function toggleModel(modelId, card) {
+      if (selectedModels.has(modelId)) {
+        selectedModels.delete(modelId);
+        card.classList.remove('selected');
+      } else {
+        selectedModels.add(modelId);
+        card.classList.add('selected');
+      }
+    }
+
+    function selectAll() {
+      document.querySelectorAll('.model-card').forEach(card => {
+        selectedModels.add(card.dataset.modelId);
+        card.classList.add('selected');
+      });
+    }
+
+    function selectNone() {
+      selectedModels.clear();
+      document.querySelectorAll('.model-card').forEach(c => c.classList.remove('selected'));
+    }
+
+    // -------------------------------------------------------------------
+    // Benchmark execution
+    // -------------------------------------------------------------------
+    async function startBenchmark() {
+      if (selectedModels.size === 0) return;
+
+      const btn = document.getElementById('runBtn');
+      btn.disabled = true;
+      btn.innerHTML = `<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> RUNNING...`;
+
+      currentResults = [];
+      document.getElementById('progressSection').classList.remove('hidden');
+      document.getElementById('resultsSection').classList.add('hidden');
+
+      const body = {
+        models: Array.from(selectedModels),
+        runs: parseInt(document.getElementById('runs').value),
+        max_tokens: parseInt(document.getElementById('maxTokens').value),
+        temperature: parseFloat(document.getElementById('temperature').value),
+        prompt: document.getElementById('prompt').value,
+        context_tiers: Array.from(selectedTiers).sort((a, b) => a - b),
+      };
+
+      try {
+        const res = await fetch('/api/benchmark', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try { handleSSE(JSON.parse(line.slice(6))); } catch (e) {}
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Benchmark error:', e);
+      }
+
+      btn.disabled = false;
+      btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> Run Benchmark`;
+    }
+
+    function handleSSE(data) {
+      if (data.type === 'progress') {
+        const pct = (data.current / data.total * 100).toFixed(0);
+        document.getElementById('progressBar').style.width = pct + '%';
+        document.getElementById('progressCount').textContent = `${data.current}/${data.total}`;
+        const tierLabel = data.context_tokens > 0 ? ` @ ${data.context_tokens >= 1000 ? (data.context_tokens/1000)+'K' : data.context_tokens} ctx` : '';
+        document.getElementById('progressLabel').textContent = `Testing ${data.provider} / ${data.model}${tierLabel} (run ${data.run}/${data.runs})`;
+      }
+      if (data.type === 'skipped') {
+        // Could show in progress log, optional
+      }
+      if (data.type === 'result') {
+        currentResults.push(data);
+        renderLiveResults();
+      }
+      if (data.type === 'complete') {
+        document.getElementById('progressSection').classList.add('hidden');
+        document.getElementById('resultsSection').classList.remove('hidden');
+        renderFinalResults();
+      }
+    }
+
+    // -------------------------------------------------------------------
+    // Results rendering
+    // -------------------------------------------------------------------
+    function renderLiveResults() {
+      document.getElementById('resultsSection').classList.remove('hidden');
+      renderChart();
+      renderTTFTChart();
+      renderTable();
+    }
+
+    function renderFinalResults() {
+      renderStatCards();
+      renderChart();
+      renderTTFTChart();
+      renderTable();
+    }
+
+    function aggregateResults() {
+      const grouped = {};
+      for (const r of currentResults) {
+        const key = `${r.model_id}::${r.context_tokens || 0}`;
+        if (!grouped[key]) grouped[key] = { ...r, _runs: [], _successes: 0 };
+        grouped[key]._runs.push(r);
+        if (r.success) grouped[key]._successes++;
+      }
+      return Object.values(grouped).map(g => {
+        const successes = g._runs.filter(r => r.success);
+        const n = successes.length;
+        return {
+          provider: g.provider, model: g.model, model_id: g.model_id,
+          context_tokens: g.context_tokens || 0,
+          tokens_per_second: n ? successes.reduce((s, r) => s + r.tokens_per_second, 0) / n : 0,
+          ttft_ms: n ? successes.reduce((s, r) => s + r.ttft_ms, 0) / n : 0,
+          total_time_s: n ? successes.reduce((s, r) => s + r.total_time_s, 0) / n : 0,
+          output_tokens: n ? successes.reduce((s, r) => s + r.output_tokens, 0) / n : 0,
+          success: g._successes > 0,
+          runs: g._runs.length,
+          failures: g._runs.length - g._successes,
+          error: g._runs.find(r => !r.success)?.error || '',
+        };
+      }).sort((a, b) => b.tokens_per_second - a.tokens_per_second);
+    }
+
+    function isStressMode() {
+      const tiers = new Set(currentResults.map(r => r.context_tokens || 0));
+      return tiers.size > 1;
+    }
+
+    function renderStatCards() {
+      const agg = aggregateResults();
+      const container = document.getElementById('statCards');
+      if (!agg.length || !agg[0].success) { container.innerHTML = ''; return; }
+
+      const stress = isStressMode();
+
+      if (!stress) {
+        // Standard stat cards (existing behavior)
+        const winner = agg[0];
+        const fastestTTFT = [...agg].filter(a => a.success).sort((a, b) => a.ttft_ms - b.ttft_ms)[0];
+        const totalModels = agg.length;
+        const totalFails = agg.reduce((s, a) => s + a.failures, 0);
+
+        container.innerHTML = `
+          <div class="stat-card card-accent rounded-sm p-4">
+            <div class="section-label mb-2">Fastest</div>
+            <div class="big-num text-2xl text-zinc-100">${winner.tokens_per_second.toFixed(1)} <span class="text-xs font-normal" style="color:var(--lime)">tok/s</span></div>
+            <div class="text-[11px] text-zinc-600 mt-1 font-body">${winner.model}</div>
+          </div>
+          <div class="stat-card card rounded-sm p-4" style="border-left: 3px solid #38BDF8">
+            <div class="section-label mb-2">Best TTFT</div>
+            <div class="big-num text-2xl text-zinc-100">${fastestTTFT.ttft_ms.toFixed(0)}<span class="text-xs font-normal text-zinc-500">ms</span></div>
+            <div class="text-[11px] text-zinc-600 mt-1 font-body">${fastestTTFT.model}</div>
+          </div>
+          <div class="stat-card card rounded-sm p-4" style="border-left: 3px solid #52525B">
+            <div class="section-label mb-2">Models</div>
+            <div class="big-num text-2xl text-zinc-100">${totalModels}</div>
+            <div class="text-[11px] text-zinc-600 mt-1 font-body">${agg.reduce((s,a) => s + a.runs, 0)} total runs</div>
+          </div>
+          <div class="stat-card card rounded-sm p-4" style="border-left: 3px solid ${totalFails ? 'var(--coral)' : '#22C55E'}">
+            <div class="section-label mb-2">Failures</div>
+            <div class="big-num text-2xl ${totalFails ? 'text-red-400' : 'text-green-400'}">${totalFails || 'None'}</div>
+            <div class="text-[11px] text-zinc-600 mt-1 font-body">${totalFails ? 'Check errors' : 'All nominal'}</div>
+          </div>
+        `;
+      } else {
+        // Stress test stat cards
+        const atZero = agg.filter(a => a.context_tokens === 0 && a.success).sort((a, b) => b.tokens_per_second - a.tokens_per_second);
+        const maxTier = Math.max(...agg.map(a => a.context_tokens));
+        const atMax = agg.filter(a => a.context_tokens === maxTier && a.success).sort((a, b) => b.tokens_per_second - a.tokens_per_second);
+        const totalFails = agg.reduce((s, a) => s + a.failures, 0);
+        const totalRuns = agg.reduce((s, a) => s + a.runs, 0);
+
+        const bestZero = atZero[0];
+        const bestMax = atMax[0];
+
+        container.innerHTML = `
+          <div class="stat-card card-accent rounded-sm p-4">
+            <div class="section-label mb-2">Best @ 0K</div>
+            ${bestZero ? `
+              <div class="big-num text-2xl text-zinc-100">${bestZero.tokens_per_second.toFixed(1)} <span class="text-xs font-normal" style="color:var(--lime)">tok/s</span></div>
+              <div class="text-[11px] text-zinc-600 mt-1 font-body">${bestZero.model}</div>
+            ` : `<div class="text-zinc-600 text-sm font-body">N/A</div>`}
+          </div>
+          <div class="stat-card card rounded-sm p-4" style="border-left: 3px solid #38BDF8">
+            <div class="section-label mb-2">Best @ ${formatCtxSize(maxTier).replace(' ctx','')}</div>
+            ${bestMax ? `
+              <div class="big-num text-2xl text-zinc-100">${bestMax.tokens_per_second.toFixed(1)} <span class="text-xs font-normal" style="color:#38BDF8">tok/s</span></div>
+              <div class="text-[11px] text-zinc-600 mt-1 font-body">${bestMax.model}</div>
+            ` : `<div class="text-zinc-600 text-sm font-body">N/A</div>`}
+          </div>
+          <div class="stat-card card rounded-sm p-4" style="border-left: 3px solid #52525B">
+            <div class="section-label mb-2">Tiers Tested</div>
+            <div class="big-num text-2xl text-zinc-100">${new Set(agg.map(a => a.context_tokens)).size}</div>
+            <div class="text-[11px] text-zinc-600 mt-1 font-body">${totalRuns} total runs</div>
+          </div>
+          <div class="stat-card card rounded-sm p-4" style="border-left: 3px solid ${totalFails ? 'var(--coral)' : '#22C55E'}">
+            <div class="section-label mb-2">Failures</div>
+            <div class="big-num text-2xl ${totalFails ? 'text-red-400' : 'text-green-400'}">${totalFails || 'None'}</div>
+            <div class="text-[11px] text-zinc-600 mt-1 font-body">${totalFails ? 'Check errors' : 'All nominal'}</div>
+          </div>
+        `;
+      }
+    }
+
+    function renderChart() {
+      const agg = aggregateResults();
+      const ctx = document.getElementById('toksChart').getContext('2d');
+      if (toksChart) toksChart.destroy();
+
+      if (!isStressMode()) {
+        // === STANDARD BAR CHART (existing behavior) ===
+        const labels = agg.map(a => a.model);
+        const data = agg.map(a => a.tokens_per_second);
+        const bgColors = agg.map(a => getColor(a.provider).bar + 'CC');
+        const borderColors = agg.map(a => getColor(a.provider).bar);
+
+        toksChart = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: [{
+              label: 'Tokens/sec',
+              data,
+              backgroundColor: bgColors,
+              borderColor: borderColors,
+              borderWidth: 0,
+              borderRadius: 2,
+              barPercentage: 0.55,
+            }]
+          },
+          options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 800, easing: 'easeOutQuart' },
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                backgroundColor: '#1c1c20',
+                borderColor: '#27272A',
+                borderWidth: 1,
+                titleFont: { family: 'Outfit', size: 13, weight: '500' },
+                bodyFont: { family: 'Space Mono', size: 12 },
+                padding: 12,
+                cornerRadius: 2,
+                callbacks: {
+                  label: ctx => ` ${ctx.parsed.x.toFixed(1)} tok/s`,
+                  afterLabel: ctx => {
+                    const r = agg[ctx.dataIndex];
+                    return ` TTFT: ${r.ttft_ms.toFixed(0)}ms  |  Tokens: ${r.output_tokens.toFixed(0)}`;
+                  }
+                }
+              }
+            },
+            scales: {
+              x: {
+                grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
+                ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } },
+                title: { display: true, text: 'TOKENS / SECOND', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } }
+              },
+              y: {
+                grid: { display: false, drawBorder: false },
+                ticks: { color: '#A1A1AA', font: { family: 'Outfit', size: 12, weight: '500' } }
+              }
+            }
+          }
+        });
+      } else {
+        // === STRESS TEST LINE CHART ===
+        const tiers = [...new Set(agg.map(a => a.context_tokens))].sort((a, b) => a - b);
+        const models = [...new Set(agg.map(a => a.model_id))];
+        const tierLabels = tiers.map(t => t === 0 ? '0' : (t >= 1000 ? (t/1000) + 'K' : t));
+
+        const datasets = models.map(mid => {
+          const modelResults = agg.filter(a => a.model_id === mid);
+          const modelName = modelResults[0]?.model || mid;
+          const provider = modelResults[0]?.provider || '';
+          const color = getColor(provider);
+
+          const data = tiers.map(tier => {
+            const match = modelResults.find(r => r.context_tokens === tier);
+            return match && match.success ? match.tokens_per_second : null;
+          });
+
+          return {
+            label: modelName,
+            data,
+            borderColor: color.bar,
+            backgroundColor: color.bar + '33',
+            borderWidth: 2,
+            pointRadius: 4,
+            pointBackgroundColor: color.bar,
+            pointBorderColor: '#09090B',
+            pointBorderWidth: 2,
+            tension: 0.3,
+            spanGaps: false,
+          };
+        });
+
+        toksChart = new Chart(ctx, {
+          type: 'line',
+          data: { labels: tierLabels, datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 800, easing: 'easeOutQuart' },
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+              legend: {
+                display: true,
+                position: 'top',
+                labels: {
+                  color: '#A1A1AA',
+                  font: { family: 'Outfit', size: 11 },
+                  boxWidth: 12,
+                  boxHeight: 2,
+                  padding: 16,
+                }
+              },
+              tooltip: {
+                backgroundColor: '#1c1c20',
+                borderColor: '#27272A',
+                borderWidth: 1,
+                titleFont: { family: 'Outfit', size: 13, weight: '500' },
+                bodyFont: { family: 'Space Mono', size: 12 },
+                padding: 12,
+                cornerRadius: 2,
+                callbacks: {
+                  title: ctx => `Context: ${ctx[0].label} tokens`,
+                  label: ctx => ctx.parsed.y !== null ? ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)} tok/s` : ` ${ctx.dataset.label}: N/A`,
+                }
+              }
+            },
+            scales: {
+              x: {
+                grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
+                ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } },
+                title: { display: true, text: 'CONTEXT SIZE (TOKENS)', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } }
+              },
+              y: {
+                grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
+                ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } },
+                title: { display: true, text: 'TOKENS / SECOND', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { right: 12 } }
+              }
+            }
+          }
+        });
+      }
+    }
+
+    function renderTable() {
+      const agg = aggregateResults();
+      const tbody = document.getElementById('resultsBody');
+      const thead = tbody.closest('table').querySelector('thead tr');
+      tbody.innerHTML = '';
+
+      const stress = isStressMode();
+
+      // Update header
+      if (stress) {
+        // Add Context column if not present
+        if (!thead.querySelector('[data-col="context"]')) {
+          const th = document.createElement('th');
+          th.className = 'px-5 py-3 text-right section-label';
+          th.dataset.col = 'context';
+          th.textContent = 'Context';
+          // Insert after Model column (index 2)
+          thead.children[3].before(th);
+        }
+      } else {
+        const ctxTh = thead.querySelector('[data-col="context"]');
+        if (ctxTh) ctxTh.remove();
+      }
+
+      agg.forEach((r, i) => {
+        const color = getColor(r.provider);
+        const pos = i < 3 && r.success ? `<span class="font-display font-bold" ${i===0 ? 'style="color:var(--lime)"' : ''}>${POSITION_LABELS[i]}</span>` : `<span class="text-zinc-600">${i + 1}</span>`;
+
+        const statusHtml = r.failures === 0
+          ? `<span class="text-green-500 text-xs font-mono">${r.runs}/${r.runs}</span>`
+          : r.failures < r.runs
+            ? `<span class="text-amber-500 text-xs font-mono">${r.runs - r.failures}/${r.runs}</span>`
+            : `<span class="text-red-400 text-xs font-mono" title="${r.error}">FAIL</span>`;
+
+        const ctxCell = stress ? `<td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">${r.context_tokens === 0 ? '0' : formatCtxSize(r.context_tokens).replace(' ctx', '')}</td>` : '';
+
+        const row = document.createElement('tr');
+        row.className = i === 0 && r.success ? 'rank-1 fade-in' : 'fade-in';
+        row.innerHTML = `
+          <td class="px-5 py-3.5 text-center">${pos}</td>
+          <td class="px-5 py-3.5"><span class="badge" style="background:${color.bg};color:${color.text};border:1px solid ${color.border}">${r.provider}</span></td>
+          <td class="px-5 py-3.5 text-zinc-200 font-medium font-body text-[13px]">${r.model}</td>
+          ${ctxCell}
+          <td class="px-5 py-3.5 text-right font-mono text-sm ${r.success && i === 0 ? '' : 'text-zinc-400'}" ${r.success && i === 0 ? 'style="color:var(--lime)"' : ''}>${r.success ? r.tokens_per_second.toFixed(1) : '-'}</td>
+          <td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">${r.success ? r.ttft_ms.toFixed(0) + 'ms' : '-'}</td>
+          <td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">${r.success ? r.total_time_s.toFixed(2) + 's' : '-'}</td>
+          <td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">${r.success ? r.output_tokens.toFixed(0) : '-'}</td>
+          <td class="px-5 py-3.5 text-center">${statusHtml}</td>
+        `;
+        tbody.appendChild(row);
+      });
+    }
+
+    function renderTTFTChart() {
+      const section = document.getElementById('ttftChartSection');
+      if (!isStressMode()) {
+        section.classList.add('hidden');
+        return;
+      }
+      section.classList.remove('hidden');
+
+      const agg = aggregateResults();
+      const ctx = document.getElementById('ttftChart').getContext('2d');
+      if (ttftChart) ttftChart.destroy();
+
+      const tiers = [...new Set(agg.map(a => a.context_tokens))].sort((a, b) => a - b);
+      const models = [...new Set(agg.map(a => a.model_id))];
+      const tierLabels = tiers.map(t => t === 0 ? '0' : (t >= 1000 ? (t/1000) + 'K' : t));
+
+      const datasets = models.map(mid => {
+        const modelResults = agg.filter(a => a.model_id === mid);
+        const modelName = modelResults[0]?.model || mid;
+        const provider = modelResults[0]?.provider || '';
+        const color = getColor(provider);
+
+        const data = tiers.map(tier => {
+          const match = modelResults.find(r => r.context_tokens === tier);
+          return match && match.success ? match.ttft_ms : null;
+        });
+
+        return {
+          label: modelName,
+          data,
+          borderColor: color.bar,
+          backgroundColor: color.bar + '33',
+          borderWidth: 2,
+          pointRadius: 4,
+          pointBackgroundColor: color.bar,
+          pointBorderColor: '#09090B',
+          pointBorderWidth: 2,
+          tension: 0.3,
+          spanGaps: false,
+        };
+      });
+
+      ttftChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels: tierLabels, datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: { duration: 800, easing: 'easeOutQuart' },
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: {
+              display: true,
+              position: 'top',
+              labels: { color: '#A1A1AA', font: { family: 'Outfit', size: 11 }, boxWidth: 12, boxHeight: 2, padding: 16 }
+            },
+            tooltip: {
+              backgroundColor: '#1c1c20',
+              borderColor: '#27272A',
+              borderWidth: 1,
+              titleFont: { family: 'Outfit', size: 13, weight: '500' },
+              bodyFont: { family: 'Space Mono', size: 12 },
+              padding: 12,
+              cornerRadius: 2,
+              callbacks: {
+                title: ctx => `Context: ${ctx[0].label} tokens`,
+                label: ctx => ctx.parsed.y !== null ? ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(0)}ms` : ` ${ctx.dataset.label}: N/A`,
+              }
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
+              ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } },
+              title: { display: true, text: 'CONTEXT SIZE (TOKENS)', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } }
+            },
+            y: {
+              grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
+              ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } },
+              title: { display: true, text: 'TIME TO FIRST TOKEN (MS)', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { right: 12 } }
+            }
+          }
+        }
+      });
+    }
+
+    // -------------------------------------------------------------------
+    // Tabs
+    // -------------------------------------------------------------------
+    function showTab(tab) {
+      document.getElementById('view-benchmark').classList.toggle('hidden', tab !== 'benchmark');
+      document.getElementById('view-history').classList.toggle('hidden', tab !== 'history');
+      document.getElementById('view-settings').classList.toggle('hidden', tab !== 'settings');
+      document.getElementById('tab-benchmark').classList.toggle('tab-active', tab === 'benchmark');
+      document.getElementById('tab-history').classList.toggle('tab-active', tab === 'history');
+      document.getElementById('tab-settings').classList.toggle('tab-active', tab === 'settings');
+      if (tab === 'history') loadHistory();
+      if (tab === 'settings') renderSettings();
+    }
+
+    // -------------------------------------------------------------------
+    // Settings — Full CRUD
+    // -------------------------------------------------------------------
+    const QUICK_CTX_SIZES = [4096, 8192, 16384, 32768, 65536, 131072, 200000];
+    const QUICK_CTX_LABELS = ['4K', '8K', '16K', '32K', '64K', '128K', '200K'];
+    const INPUT_STYLE = "background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;";
+    const INPUT_CLASS = "w-full px-3 py-2 rounded-sm text-sm font-mono text-zinc-200";
+
+    async function refreshConfig() {
+      const res = await fetch('/api/config');
+      config = await res.json();
+    }
+
+    function showStatus(elId, ok, msg) {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      el.classList.remove('hidden');
+      el.style.color = ok ? 'var(--lime)' : 'var(--coral)';
+      el.textContent = msg;
+      setTimeout(() => el.classList.add('hidden'), 3000);
+    }
+
+    // ── Render Settings (orchestrator) ──
+    async function renderSettings() {
+      if (!config) {
+        try { await refreshConfig(); } catch (e) {
+          document.getElementById('settingsContainer').innerHTML = '<p class="text-red-400 text-sm">Failed to load config.</p>';
+          return;
+        }
+      }
+      renderApiKeys();
+      renderProviders();
+    }
+
+    // ── API Keys ──
+    async function renderApiKeys() {
+      const container = document.getElementById('apiKeysContainer');
+      try {
+        const res = await fetch('/api/env');
+        const data = await res.json();
+        const keys = data.keys || [];
+        container.innerHTML = `
+          <div class="card rounded-md overflow-hidden">
+            <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid var(--border-subtle)">
+              <span class="section-label">API Keys</span>
+              <button onclick="toggleAddKeyForm()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">+ Add Key</button>
+            </div>
+            <div id="addKeyForm" class="hidden px-5 py-3" style="border-bottom:1px solid var(--border-subtle);background:rgba(191,255,0,0.02)">
+              <div class="grid grid-cols-2 gap-3">
+                <input id="newKeyName" placeholder="KEY_NAME" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+                <input id="newKeyValue" placeholder="Value" type="password" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+              </div>
+              <div class="flex gap-2 mt-2">
+                <button onclick="addEnvKey()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">Save</button>
+                <button onclick="toggleAddKeyForm()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm text-zinc-600" style="border:1px solid var(--border-subtle)">Cancel</button>
+              </div>
+            </div>
+            <div class="divide-y" style="border-color:var(--border-subtle)">
+              ${keys.length === 0 ? '<div class="px-5 py-3 text-zinc-700 text-xs font-body">No keys configured.</div>' :
+                keys.map(k => `
+                  <div class="px-5 py-3 flex items-center justify-between group" id="envrow-${k.name}">
+                    <div class="flex items-center gap-3">
+                      <span class="text-xs font-mono text-zinc-300">${k.name}</span>
+                      <span class="text-[10px] font-mono text-zinc-600">${k.is_set ? k.masked_value : '<span style="color:var(--coral)">NOT SET</span>'}</span>
+                    </div>
+                    <div class="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button onclick="editEnvKey('${k.name}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 transition-colors">Edit</button>
+                      <button onclick="deleteEnvKey('${k.name}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-600 hover:text-red-400 transition-colors">Del</button>
+                    </div>
+                  </div>
+                `).join('')}
+            </div>
+          </div>
+        `;
+      } catch (e) {
+        container.innerHTML = '<p class="text-red-400 text-xs">Failed to load API keys.</p>';
+      }
+    }
+
+    function toggleAddKeyForm() {
+      document.getElementById('addKeyForm')?.classList.toggle('hidden');
+    }
+
+    async function addEnvKey() {
+      const name = document.getElementById('newKeyName').value.trim();
+      const value = document.getElementById('newKeyValue').value;
+      if (!name) return;
+      await fetch('/api/env', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name, value}) });
+      renderApiKeys();
+    }
+
+    async function editEnvKey(name) {
+      const newVal = prompt(`Enter new value for ${name}:`);
+      if (newVal === null) return;
+      await fetch('/api/env', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name, value: newVal}) });
+      renderApiKeys();
+    }
+
+    async function deleteEnvKey(name) {
+      if (!confirm(`Remove ${name} from .env?`)) return;
+      await fetch('/api/env', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name}) });
+      renderApiKeys();
+    }
+
+    // ── Render Providers + Models ──
+    function renderProviders() {
+      const container = document.getElementById('settingsContainer');
+      container.innerHTML = '';
+
+      for (const [provDisplayName, provData] of Object.entries(config.providers)) {
+        const pk = provData.provider_key;
+        const models = provData.models || [];
+        const color = getColor(provDisplayName);
+        const prefix = provData.model_id_prefix || detectPrefix(models);
+
+        const section = document.createElement('div');
+        section.className = 'card rounded-md overflow-hidden';
+        section.innerHTML = `
+          <!-- Provider Header -->
+          <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid var(--border-subtle)">
+            <div class="flex items-center gap-3">
+              <span class="badge" style="background:${color.bg};color:${color.text};border:1px solid ${color.border}">${provDisplayName}</span>
+              <span class="text-zinc-600 text-xs font-body">${models.length} model${models.length!==1?'s':''}</span>
+              <span class="text-[9px] font-mono text-zinc-700">${pk}</span>
+              ${prefix ? `<span class="text-[9px] font-mono px-1.5 py-0.5 rounded-sm" style="background:rgba(56,189,248,0.08);color:#38BDF8;border:1px solid rgba(56,189,248,0.2)">prefix: ${prefix}/</span>` : ''}
+            </div>
+            <div class="flex gap-2">
+              <button onclick="editProvider('${pk}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 transition-colors">Edit</button>
+              <button onclick="deleteProvider('${pk}','${provDisplayName}',${models.length})" class="text-[10px] font-display tracking-wider uppercase text-zinc-600 hover:text-red-400 transition-colors">Del</button>
+            </div>
+          </div>
+          <!-- Provider edit form (hidden) -->
+          <div id="prov-edit-${pk}" class="hidden px-5 py-3" style="border-bottom:1px solid var(--border-subtle);background:rgba(191,255,0,0.02)">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-2">
+              <div>
+                <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Display Name</label>
+                <input id="pe-dn-${pk}" value="${provDisplayName}" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+              </div>
+              <div>
+                <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Model ID Prefix</label>
+                <input id="pe-prefix-${pk}" value="${provData.model_id_prefix || detectPrefix(provData.models)}" placeholder="Optional" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+              </div>
+              <div>
+                <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">API Base</label>
+                <input id="pe-ab-${pk}" value="${provData.api_base||''}" placeholder="https://..." class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+              </div>
+              <div>
+                <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">API Key Env Var</label>
+                <input id="pe-ke-${pk}" value="${provData.api_key_env||''}" placeholder="MY_API_KEY" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+              </div>
+            </div>
+            <button onclick="saveProvider('${pk}')" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">Save Provider</button>
+            <span id="prov-status-${pk}" class="ml-3 text-[11px] font-body hidden"></span>
+          </div>
+          <!-- Models -->
+          <div class="divide-y" style="border-color:var(--border-subtle)">
+            ${models.map(m => renderModelCard(pk, m)).join('')}
+          </div>
+          <!-- Add Model -->
+          <div class="px-5 py-3" style="border-top:1px solid var(--border-subtle)">
+            <button onclick="toggleAddModel('${pk}')" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">+ Add Model</button>
+            <div id="add-model-${pk}" class="hidden mt-3">
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-2">
+                <div>
+                  <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Model ID</label>
+                  <div class="flex items-center gap-0">
+                    ${prefix ? `<span class="text-[11px] font-mono px-2 py-2 rounded-l-sm flex-shrink-0" style="background:rgba(56,189,248,0.08);color:#38BDF8;border:1px solid rgba(56,189,248,0.2);border-right:none;">${prefix}/</span>` : ''}
+                    <input id="am-id-${pk}" placeholder="${prefix ? 'model-name' : 'provider/model-name'}" class="${INPUT_CLASS} ${prefix ? 'rounded-l-none' : ''}" style="${INPUT_STYLE}" oninput="autoDeriveName('am-id-${pk}','am-dn-${pk}'); updateModelPreview('${pk}')">
+                  </div>
+                  <div id="am-preview-${pk}" class="text-[9px] font-mono text-zinc-600 mt-1"></div>
+                </div>
+                <div>
+                  <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Display Name</label>
+                  <input id="am-dn-${pk}" placeholder="Auto from ID" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+                </div>
+                <div>
+                  <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Context Window</label>
+                  <input id="am-ctx-${pk}" value="128000" type="number" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+                </div>
+              </div>
+              <button onclick="addModel('${pk}')" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">Add</button>
+            </div>
+          </div>
+        `;
+        container.appendChild(section);
+      }
+
+      // Add Provider button at bottom
+      const addProvBtn = document.createElement('div');
+      addProvBtn.innerHTML = `
+        <button onclick="toggleAddProvider()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-2 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">+ Add Provider</button>
+        <div id="add-provider-form" class="hidden card rounded-md p-5 mt-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Display Name</label>
+              <input id="ap-dn" placeholder="My Provider" class="${INPUT_CLASS}" style="${INPUT_STYLE}" oninput="document.getElementById('ap-key').value = uniqueProviderKey(slugify(this.value))">
+            </div>
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Provider Key <span class="text-zinc-700 normal-case">(auto-derived, editable)</span></label>
+              <input id="ap-key" placeholder="auto_generated" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+            </div>
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Model ID Prefix <span class="text-zinc-700 normal-case">(e.g. lm_studio)</span></label>
+              <input id="ap-prefix" placeholder="Optional — prepended to model IDs" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+            </div>
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">API Base</label>
+              <input id="ap-ab" placeholder="https://api.example.com/v1" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+            </div>
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">API Key Env Var</label>
+              <input id="ap-ke" placeholder="MY_API_KEY" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
+            </div>
+          </div>
+          <button onclick="addProvider()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">Create Provider</button>
+        </div>
+      `;
+      container.appendChild(addProvBtn);
+    }
+
+    // ── Single model card ──
+    function renderModelCard(provKey, m) {
+      const sid = safeId(provKey + '__' + m.model_id);
+      const skipHtml = (m.skip_params || []).map(p =>
+        `<span class="text-[10px] font-mono text-zinc-400 px-1.5 py-0.5 rounded-sm inline-flex items-center gap-1" style="background:rgba(255,255,255,0.04)">
+          ${p} <button onclick="removeSkipParam('${provKey}','${m.model_id}','${p}')" class="text-zinc-600 hover:text-red-400">&times;</button>
+        </span>`
+      ).join(' ');
+
+      // Custom fields (anything not standard)
+      const stdKeys = new Set(['model_id','display_name','context_window','max_output_tokens','skip_params']);
+      const customs = Object.entries(m).filter(([k]) => !stdKeys.has(k));
+      const customHtml = customs.map(([k,v]) =>
+        `<div class="flex items-center gap-2">
+          <span class="text-[10px] font-mono text-zinc-500">${k}:</span>
+          <input id="cf-${sid}-${safeId(k)}" value="${v}" class="px-2 py-1 rounded-sm text-[11px] font-mono text-zinc-300 flex-1" style="${INPUT_STYLE}">
+          <button onclick="removeCustomField('${provKey}','${m.model_id}','${k}')" class="text-zinc-600 hover:text-red-400 text-xs">&times;</button>
+        </div>`
+      ).join('');
+
+      return `
+        <div class="px-5 py-4" id="settings-${sid}">
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-3">
+              <div class="text-[13px] font-medium text-zinc-200 font-body">${m.display_name}</div>
+              <span class="text-[9px] font-mono text-zinc-700">${m.model_id}</span>
+            </div>
+            <div class="flex gap-2">
+              <button onclick="saveModelConfig('${provKey}','${m.model_id}')" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);" onmouseover="this.style.borderColor='rgba(191,255,0,0.5)'" onmouseout="this.style.borderColor='rgba(191,255,0,0.2)'">Save</button>
+              <button onclick="deleteModel('${provKey}','${m.model_id}','${m.display_name}')" class="text-[11px] font-display tracking-wider uppercase px-2 py-1.5 rounded-sm text-zinc-600 hover:text-red-400 transition-colors" style="border:1px solid var(--border-subtle)">&times;</button>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Model ID</label>
+              <input id="mid-${sid}" value="${m.model_id}" class="${INPUT_CLASS}" style="${INPUT_STYLE}" onfocus="this.style.borderColor='rgba(191,255,0,0.3)'" onblur="this.style.borderColor='var(--border-subtle)'" oninput="autoDeriveName('mid-${sid}','mdn-${sid}')">
+            </div>
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Display Name</label>
+              <input id="mdn-${sid}" value="${m.display_name}" class="${INPUT_CLASS}" style="${INPUT_STYLE}" onfocus="this.style.borderColor='rgba(191,255,0,0.3)'" onblur="this.style.borderColor='var(--border-subtle)'">
+            </div>
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Context Window</label>
+              <input type="number" id="ctx-${sid}" value="${m.context_window||128000}" class="${INPUT_CLASS}" style="${INPUT_STYLE}" onfocus="this.style.borderColor='rgba(191,255,0,0.3)'" onblur="this.style.borderColor='var(--border-subtle)'">
+              <div class="flex gap-1.5 mt-2 flex-wrap">
+                ${QUICK_CTX_SIZES.map((size,i) => `<button onclick="document.getElementById('ctx-${sid}').value=${size}" class="text-[9px] font-mono px-2 py-0.5 rounded-sm text-zinc-600 hover:text-zinc-400 transition-colors" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle)">${QUICK_CTX_LABELS[i]}</button>`).join('')}
+              </div>
+            </div>
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Max Output Tokens</label>
+              <input type="number" id="mot-${sid}" value="${m.max_output_tokens||''}" placeholder="Default" class="${INPUT_CLASS}" style="${INPUT_STYLE}" onfocus="this.style.borderColor='rgba(191,255,0,0.3)'" onblur="this.style.borderColor='var(--border-subtle)'">
+            </div>
+          </div>
+          <!-- Skip Params -->
+          <div class="mt-3">
+            <span class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Skip Params: </span>
+            <span id="sp-pills-${sid}">${skipHtml || '<span class="text-[10px] text-zinc-700 font-body">none</span>'}</span>
+            <button onclick="promptAddSkipParam('${provKey}','${m.model_id}')" class="text-[10px] font-mono text-zinc-500 hover:text-zinc-300 ml-2 px-1.5 py-0.5 rounded-sm" style="border:1px solid var(--border-subtle)">+ add</button>
+          </div>
+          <!-- Custom Fields -->
+          <div class="mt-3">
+            <span class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Custom Fields</span>
+            <div id="cf-${sid}" class="space-y-1">${customHtml || '<span class="text-[10px] text-zinc-700 font-body">none</span>'}</div>
+            <button onclick="promptAddCustomField('${provKey}','${m.model_id}')" class="text-[10px] font-mono text-zinc-500 hover:text-zinc-300 mt-1 px-1.5 py-0.5 rounded-sm" style="border:1px solid var(--border-subtle)">+ add field</button>
+          </div>
+          <div id="save-status-${sid}" class="mt-2 text-[11px] font-body hidden"></div>
+        </div>
+      `;
+    }
+
+    function autoDeriveName(idInputId, nameInputId) {
+      const idVal = document.getElementById(idInputId)?.value || '';
+      const nameInput = document.getElementById(nameInputId);
+      if (nameInput && !nameInput.dataset.manual) {
+        nameInput.value = idVal.includes('/') ? idVal.split('/').pop() : idVal;
+      }
+    }
+
+    function updateModelPreview(provKey) {
+      const previewEl = document.getElementById(`am-preview-${provKey}`);
+      const inputEl = document.getElementById(`am-id-${provKey}`);
+      if (!previewEl || !inputEl) return;
+      const provData = Object.values(config.providers).find(p => p.provider_key === provKey);
+      const prefix = provData?.model_id_prefix || '';
+      const val = inputEl.value.trim();
+      if (!val) { previewEl.textContent = ''; return; }
+      if (prefix && !val.startsWith(prefix + '/')) {
+        previewEl.textContent = `Full ID: ${prefix}/${val}`;
+      } else {
+        previewEl.textContent = `Full ID: ${val}`;
+      }
+    }
+
+    // ── Save Model ──
+    async function saveModelConfig(providerKey, modelId) {
+      const sid = safeId(providerKey + '__' + modelId);
+      const statusId = `save-status-${sid}`;
+
+      // Collect skip_params from current config
+      const provData = Object.values(config.providers).find(p => p.provider_key === providerKey);
+      const modelData = provData?.models?.find(m => m.model_id === modelId);
+      const currentSkipParams = modelData?.skip_params || [];
+
+      // Collect custom fields
+      const stdKeys = new Set(['model_id','display_name','context_window','max_output_tokens','skip_params']);
+      const customs = {};
+      if (modelData) {
+        for (const [k] of Object.entries(modelData).filter(([k]) => !stdKeys.has(k))) {
+          const el = document.getElementById(`cf-${sid}-${safeId(k)}`);
+          if (el) customs[k] = el.value;
+        }
+      }
+
+      const body = {
+        provider_key: providerKey,
+        model_id: modelId,
+        new_model_id: document.getElementById(`mid-${sid}`)?.value || modelId,
+        display_name: document.getElementById(`mdn-${sid}`)?.value || '',
+        context_window: parseInt(document.getElementById(`ctx-${sid}`)?.value) || null,
+        max_output_tokens: parseInt(document.getElementById(`mot-${sid}`)?.value) || null,
+        skip_params: currentSkipParams,
+        custom_fields: Object.keys(customs).length ? customs : undefined,
+      };
+
+      try {
+        const res = await fetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        const result = await res.json();
+        if (res.ok) {
+          showStatus(statusId, true, 'Saved');
+          await refreshConfig();
+          renderModels();
+        } else {
+          showStatus(statusId, false, result.error || 'Save failed');
+        }
+      } catch (e) {
+        showStatus(statusId, false, 'Network error');
+      }
+    }
+
+    // ── Model CRUD ──
+    async function deleteModel(provKey, modelId, displayName) {
+      if (!confirm(`Remove model "${displayName}"?`)) return;
+      await fetch('/api/config/model', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId}) });
+      await refreshConfig();
+      renderModels();
+      renderProviders();
+    }
+
+    function toggleAddModel(provKey) {
+      document.getElementById(`add-model-${provKey}`)?.classList.toggle('hidden');
+    }
+
+    async function addModel(provKey) {
+      const id = document.getElementById(`am-id-${provKey}`)?.value.trim();
+      if (!id) return;
+      const body = {
+        provider_key: provKey,
+        id: id,
+        display_name: document.getElementById(`am-dn-${provKey}`)?.value.trim() || '',
+        context_window: parseInt(document.getElementById(`am-ctx-${provKey}`)?.value) || 128000,
+      };
+      const res = await fetch('/api/config/model', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      if (res.ok) {
+        await refreshConfig();
+        renderModels();
+        renderProviders();
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Failed to add model');
+      }
+    }
+
+    // ── Skip Params ──
+    async function promptAddSkipParam(provKey, modelId) {
+      const param = prompt('Parameter name to skip (e.g., temperature):');
+      if (!param) return;
+      // Get current list, add new one, save
+      const provData = Object.values(config.providers).find(p => p.provider_key === provKey);
+      const modelData = provData?.models?.find(m => m.model_id === modelId);
+      const current = [...(modelData?.skip_params || [])];
+      if (!current.includes(param.trim())) current.push(param.trim());
+      await fetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, skip_params: current}) });
+      await refreshConfig();
+      renderProviders();
+    }
+
+    async function removeSkipParam(provKey, modelId, param) {
+      const provData = Object.values(config.providers).find(p => p.provider_key === provKey);
+      const modelData = provData?.models?.find(m => m.model_id === modelId);
+      const current = (modelData?.skip_params || []).filter(p => p !== param);
+      await fetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, skip_params: current}) });
+      await refreshConfig();
+      renderProviders();
+    }
+
+    // ── Custom Fields ──
+    async function promptAddCustomField(provKey, modelId) {
+      const key = prompt('Field name:');
+      if (!key) return;
+      const value = prompt(`Value for "${key}":`);
+      if (value === null) return;
+      await fetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, custom_fields: {[key]: value}}) });
+      await refreshConfig();
+      renderProviders();
+    }
+
+    async function removeCustomField(provKey, modelId, key) {
+      await fetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, custom_fields: {[key]: null}}) });
+      await refreshConfig();
+      renderProviders();
+    }
+
+    // ── Provider CRUD ──
+    function editProvider(pk) {
+      document.getElementById(`prov-edit-${pk}`)?.classList.toggle('hidden');
+    }
+
+    async function saveProvider(pk) {
+      const body = {
+        provider_key: pk,
+        display_name: document.getElementById(`pe-dn-${pk}`)?.value || pk,
+        api_base: document.getElementById(`pe-ab-${pk}`)?.value || '',
+        api_key_env: document.getElementById(`pe-ke-${pk}`)?.value || '',
+        model_id_prefix: document.getElementById(`pe-prefix-${pk}`)?.value.trim() || '',
+      };
+      const res = await fetch('/api/config/provider', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      if (res.ok) {
+        showStatus(`prov-status-${pk}`, true, 'Saved');
+        await refreshConfig();
+        renderModels();
+        renderProviders();
+      } else {
+        const err = await res.json();
+        showStatus(`prov-status-${pk}`, false, err.error || 'Failed');
+      }
+    }
+
+    async function deleteProvider(pk, displayName, modelCount) {
+      if (!confirm(`Delete provider "${displayName}" and its ${modelCount} model(s)?`)) return;
+      await fetch('/api/config/provider', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: pk}) });
+      await refreshConfig();
+      renderModels();
+      renderProviders();
+    }
+
+    function toggleAddProvider() {
+      document.getElementById('add-provider-form')?.classList.toggle('hidden');
+    }
+
+    async function addProvider() {
+      const body = {
+        provider_key: document.getElementById('ap-key')?.value.trim(),
+        display_name: document.getElementById('ap-dn')?.value.trim(),
+        api_base: document.getElementById('ap-ab')?.value.trim(),
+        api_key_env: document.getElementById('ap-ke')?.value.trim(),
+        model_id_prefix: document.getElementById('ap-prefix')?.value.trim(),
+      };
+      if (!body.provider_key) return alert('Provider key is required');
+      const res = await fetch('/api/config/provider', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      if (res.ok) {
+        await refreshConfig();
+        renderModels();
+        renderProviders();
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Failed to add provider');
+      }
+    }
+
+    async function loadHistory() {
+      const container = document.getElementById('historyContainer');
+      try {
+        const res = await fetch('/api/history');
+        const history = await res.json();
+
+        if (!history.length) {
+          container.innerHTML = '<div class="card rounded-sm p-10 text-center"><p class="text-zinc-600 font-body">No benchmark history yet.</p><p class="text-zinc-700 text-xs mt-1 font-body">Run your first benchmark to see results here.</p></div>';
+          return;
+        }
+
+        container.innerHTML = history.map((h, idx) => {
+          const ts = new Date(h.timestamp).toLocaleString();
+          const sorted = [...(h.results || [])].sort((a, b) => b.avg_tokens_per_second - a.avg_tokens_per_second);
+          const winner = sorted[0];
+
+          return `
+            <div class="card rounded-sm p-5 fade-in" style="animation-delay: ${idx * 40}ms">
+              <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-3">
+                  <span class="text-[11px] text-zinc-600 font-mono">${ts}</span>
+                  ${winner ? `<span class="badge" style="background:var(--lime-dim);color:var(--lime);border:1px solid rgba(191,255,0,0.2)">P1: ${winner.model}</span>` : ''}
+                </div>
+                ${winner ? `<span class="font-mono text-sm" style="color:var(--lime)">${winner.avg_tokens_per_second} tok/s</span>` : ''}
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-xs">
+                  <thead><tr class="text-zinc-700">
+                    <th class="px-3 py-1.5 text-left section-label">Model</th>
+                    <th class="px-3 py-1.5 text-right section-label">Tok/s</th>
+                    <th class="px-3 py-1.5 text-right section-label">TTFT</th>
+                    <th class="px-3 py-1.5 text-right section-label">Duration</th>
+                  </tr></thead>
+                  <tbody>
+                    ${sorted.map((r, i) => `
+                      <tr style="border-top: 1px solid var(--border-subtle)">
+                        <td class="px-3 py-2 text-zinc-400 font-body">${r.provider} / ${r.model}</td>
+                        <td class="px-3 py-2 text-right font-mono ${i === 0 ? '' : 'text-zinc-500'}" ${i === 0 ? 'style="color:var(--lime)"' : ''}>${r.avg_tokens_per_second}</td>
+                        <td class="px-3 py-2 text-right font-mono text-zinc-600">${r.avg_ttft_ms}ms</td>
+                        <td class="px-3 py-2 text-right font-mono text-zinc-600">${r.avg_total_time_s}s</td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {
+        container.innerHTML = '<p class="text-red-400 text-sm font-body">Failed to load history.</p>';
+      }
+    }
+
+    // -------------------------------------------------------------------
+    // Boot
+    // -------------------------------------------------------------------
+    init();
+  </script>
+</body>
+</html>
