@@ -481,57 +481,85 @@ async def run_benchmark(request: Request):
                 if tier == 0 or tier <= headroom:
                     total += runs
 
+        queue = asyncio.Queue()
+
+        # Group targets by provider for parallel execution
+        # Within a provider: sequential (same endpoint, avoid self-contention)
+        # Across providers: fully parallel (independent endpoints)
+        provider_groups = {}
+        for target in targets:
+            provider_groups.setdefault(target.provider, []).append(target)
+
+        async def run_provider(prov_targets):
+            """Run all benchmarks for one provider sequentially."""
+            for tier in context_tiers:
+                for target in prov_targets:
+                    headroom = target.context_window - max_tokens - 100
+                    if tier > 0 and tier > headroom:
+                        await queue.put({
+                            "type": "skipped",
+                            "provider": target.provider,
+                            "model": target.display_name,
+                            "model_id": target.model_id,
+                            "context_tokens": tier,
+                            "reason": f"{tier // 1000}K exceeds {target.context_window // 1000}K context window",
+                        })
+                        continue
+
+                    for r in range(runs):
+                        result = await loop.run_in_executor(
+                            None, run_single, target, prompt, max_tokens, temperature, tier
+                        )
+                        await queue.put({
+                            "type": "result",
+                            "provider": target.provider,
+                            "model": target.display_name,
+                            "model_id": target.model_id,
+                            "run": r + 1,
+                            "runs": runs,
+                            "context_tokens": tier,
+                            "ttft_ms": round(result.ttft_ms, 2),
+                            "total_time_s": round(result.total_time_s, 3),
+                            "output_tokens": result.output_tokens,
+                            "input_tokens": result.input_tokens,
+                            "tokens_per_second": round(result.tokens_per_second, 2),
+                            "success": result.success,
+                            "error": result.error,
+                        })
+
+        # Launch all provider groups as concurrent tasks
+        tasks = [asyncio.create_task(run_provider(g))
+                 for g in provider_groups.values()]
+
+        async def sentinel():
+            """Wait for all provider tasks to finish, then signal done."""
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await queue.put(None)
+
+        asyncio.create_task(sentinel())
+
+        # Consume queue and yield SSE events as they arrive (interleaved)
         current = 0
         all_results = []
-
-        for tier in context_tiers:
-            for target in targets:
-                headroom = target.context_window - max_tokens - 100
-                if tier > 0 and tier > headroom:
-                    yield _sse({
-                        "type": "skipped",
-                        "provider": target.provider,
-                        "model": target.display_name,
-                        "model_id": target.model_id,
-                        "context_tokens": tier,
-                        "reason": f"{tier // 1000}K exceeds {target.context_window // 1000}K context window",
-                    })
-                    continue
-
-                for r in range(runs):
-                    current += 1
-                    yield _sse({
-                        "type": "progress",
-                        "current": current,
-                        "total": total,
-                        "provider": target.provider,
-                        "model": target.display_name,
-                        "run": r + 1,
-                        "runs": runs,
-                        "context_tokens": tier,
-                    })
-
-                    result = await loop.run_in_executor(
-                        None, run_single, target, prompt, max_tokens, temperature, tier
-                    )
-
-                    result_data = {
-                        "type": "result",
-                        "provider": target.provider,
-                        "model": target.display_name,
-                        "model_id": target.model_id,
-                        "run": r + 1,
-                        "context_tokens": tier,
-                        "ttft_ms": round(result.ttft_ms, 2),
-                        "total_time_s": round(result.total_time_s, 3),
-                        "output_tokens": result.output_tokens,
-                        "input_tokens": result.input_tokens,
-                        "tokens_per_second": round(result.tokens_per_second, 2),
-                        "success": result.success,
-                        "error": result.error,
-                    }
-                    all_results.append(result_data)
-                    yield _sse(result_data)
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if item["type"] == "result":
+                current += 1
+                # Emit progress before the result data
+                yield _sse({
+                    "type": "progress",
+                    "current": current,
+                    "total": total,
+                    "provider": item["provider"],
+                    "model": item["model"],
+                    "run": item["run"],
+                    "runs": item["runs"],
+                    "context_tokens": item["context_tokens"],
+                })
+                all_results.append(item)
+            yield _sse(item)
 
         # Save results
         agg_results = _aggregate(all_results, config)
