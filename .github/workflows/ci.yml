@@ -86,21 +86,34 @@ jobs:
           STACK_ID: ${{ secrets.PORTAINER_STACK_ID_STAGING }}
           ENDPOINT_ID: ${{ secrets.PORTAINER_ENDPOINT_ID }}
         run: |
-          # Stop the stack
+          # Stop the stack (ignore if already stopped)
+          echo "Stopping stack..."
           curl -s -X POST "$PORTAINER_URL/api/stacks/$STACK_ID/stop?endpointId=$ENDPOINT_ID" \
             -H "X-API-Key: $API_KEY" || true
-          sleep 2
+          sleep 5
 
           # Pull latest image via Portainer docker API
+          echo "Pulling latest image..."
           curl -s -X POST "$PORTAINER_URL/api/endpoints/$ENDPOINT_ID/docker/images/create?fromImage=ghcr.io/maheidem/llm-benchmark-studio&tag=main" \
             -H "X-API-Key: $API_KEY" \
             -H "X-Registry-Auth: $(echo '{}' | base64)"
 
-          # Start the stack (recreates containers with new image)
+          # Start the stack — retry once if 409 (still stopping)
+          echo "Starting stack..."
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
             "$PORTAINER_URL/api/stacks/$STACK_ID/start?endpointId=$ENDPOINT_ID" \
             -H "X-API-Key: $API_KEY")
           HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          if [ "$HTTP_CODE" = "409" ]; then
+            echo "Stack still running, retrying stop+start..."
+            curl -s -X POST "$PORTAINER_URL/api/stacks/$STACK_ID/stop?endpointId=$ENDPOINT_ID" \
+              -H "X-API-Key: $API_KEY" || true
+            sleep 8
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+              "$PORTAINER_URL/api/stacks/$STACK_ID/start?endpointId=$ENDPOINT_ID" \
+              -H "X-API-Key: $API_KEY")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          fi
           echo "Start HTTP: $HTTP_CODE"
           if [ "$HTTP_CODE" != "200" ]; then
             echo "Start failed: $(echo "$RESPONSE" | sed '$d')"
@@ -124,21 +137,34 @@ jobs:
           # Extract semver major.minor from tag (refs/tags/v1.0.0 -> 1.0)
           TAG=$(echo "$GITHUB_REF" | sed 's|refs/tags/v||' | cut -d. -f1,2)
 
-          # Stop the stack
+          # Stop the stack (ignore if already stopped)
+          echo "Stopping stack..."
           curl -s -X POST "$PORTAINER_URL/api/stacks/$STACK_ID/stop?endpointId=$ENDPOINT_ID" \
             -H "X-API-Key: $API_KEY" || true
-          sleep 2
+          sleep 5
 
           # Pull latest image via Portainer docker API
+          echo "Pulling image tag: $TAG..."
           curl -s -X POST "$PORTAINER_URL/api/endpoints/$ENDPOINT_ID/docker/images/create?fromImage=ghcr.io/maheidem/llm-benchmark-studio&tag=$TAG" \
             -H "X-API-Key: $API_KEY" \
             -H "X-Registry-Auth: $(echo '{}' | base64)"
 
-          # Start the stack (recreates containers with new image)
+          # Start the stack — retry once if 409 (still stopping)
+          echo "Starting stack..."
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
             "$PORTAINER_URL/api/stacks/$STACK_ID/start?endpointId=$ENDPOINT_ID" \
             -H "X-API-Key: $API_KEY")
           HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          if [ "$HTTP_CODE" = "409" ]; then
+            echo "Stack still running, retrying stop+start..."
+            curl -s -X POST "$PORTAINER_URL/api/stacks/$STACK_ID/stop?endpointId=$ENDPOINT_ID" \
+              -H "X-API-Key: $API_KEY" || true
+            sleep 8
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+              "$PORTAINER_URL/api/stacks/$STACK_ID/start?endpointId=$ENDPOINT_ID" \
+              -H "X-API-Key: $API_KEY")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          fi
           echo "Start HTTP: $HTTP_CODE"
           if [ "$HTTP_CODE" != "200" ]; then
             echo "Start failed: $(echo "$RESPONSE" | sed '$d')"
