@@ -1,6 +1,6 @@
 services:
   benchmark:
-    image: ghcr.io/maheidem/llm-benchmark-studio:1.0
+    image: ghcr.io/maheidem/llm-benchmark-studio:1.1
     ports:
       - "8501:8501"
     volumes:
