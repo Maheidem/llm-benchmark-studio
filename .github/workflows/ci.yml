@@ -93,14 +93,17 @@ jobs:
             -H "X-Registry-Auth: $(echo '{}' | base64)"
           echo ""
 
-          # Find and remove old containers for this compose project
+          # Stop the stack first (tells Portainer it's inactive)
+          echo "Stopping stack..."
+          curl -s -X POST "$PORTAINER_URL/api/stacks/$STACK_ID/stop?endpointId=$ENDPOINT_ID" \
+            -H "X-API-Key: $API_KEY" || true
+          sleep 2
+
+          # Remove old containers so start recreates them with new image
           echo "Removing old containers..."
           CONTAINERS=$(curl -s "$PORTAINER_URL/api/endpoints/$ENDPOINT_ID/docker/containers/json?all=true" \
             -H "X-API-Key: $API_KEY" | jq -r '.[] | select(.Labels["com.docker.compose.project"]=="benchmark-staging") | .Id')
           for CID in $CONTAINERS; do
-            echo "  Stopping $CID..."
-            curl -s -X POST "$PORTAINER_URL/api/endpoints/$ENDPOINT_ID/docker/containers/$CID/stop" \
-              -H "X-API-Key: $API_KEY" || true
             echo "  Removing $CID..."
             curl -s -X DELETE "$PORTAINER_URL/api/endpoints/$ENDPOINT_ID/docker/containers/$CID?force=true" \
               -H "X-API-Key: $API_KEY" || true
@@ -143,14 +146,17 @@ jobs:
             -H "X-Registry-Auth: $(echo '{}' | base64)"
           echo ""
 
-          # Find and remove old containers for this compose project
+          # Stop the stack first (tells Portainer it's inactive)
+          echo "Stopping stack..."
+          curl -s -X POST "$PORTAINER_URL/api/stacks/$STACK_ID/stop?endpointId=$ENDPOINT_ID" \
+            -H "X-API-Key: $API_KEY" || true
+          sleep 2
+
+          # Remove old containers so start recreates them with new image
           echo "Removing old containers..."
           CONTAINERS=$(curl -s "$PORTAINER_URL/api/endpoints/$ENDPOINT_ID/docker/containers/json?all=true" \
             -H "X-API-Key: $API_KEY" | jq -r '.[] | select(.Labels["com.docker.compose.project"]=="benchmark-prod") | .Id')
           for CID in $CONTAINERS; do
-            echo "  Stopping $CID..."
-            curl -s -X POST "$PORTAINER_URL/api/endpoints/$ENDPOINT_ID/docker/containers/$CID/stop" \
-              -H "X-API-Key: $API_KEY" || true
             echo "  Removing $CID..."
             curl -s -X DELETE "$PORTAINER_URL/api/endpoints/$ENDPOINT_ID/docker/containers/$CID?force=true" \
               -H "X-API-Key: $API_KEY" || true
