@@ -280,3 +280,56 @@ async def delete_user_key(user_id: str, provider_key: str) -> bool:
         )
         await db.commit()
         return cursor.rowcount > 0
+
+
+# --- Benchmark runs CRUD ---
+
+async def save_benchmark_run(
+    user_id: str, prompt: str, context_tiers: str, results_json: str, metadata: str = None
+) -> str:
+    """Save a benchmark run. Returns the run ID."""
+    run_id = uuid.uuid4().hex
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            "INSERT INTO benchmark_runs (id, user_id, prompt, context_tiers, results_json, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, user_id, prompt, context_tiers, results_json, metadata),
+        )
+        await db.commit()
+    return run_id
+
+
+async def get_user_benchmark_runs(user_id: str, limit: int = 50, offset: int = 0) -> list[dict]:
+    """Get benchmark runs for a user, newest first."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, timestamp, prompt, context_tiers, results_json, metadata "
+            "FROM benchmark_runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            (user_id, limit, offset),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_benchmark_run(run_id: str, user_id: str) -> dict | None:
+    """Get a specific benchmark run (scoped to user)."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM benchmark_runs WHERE id = ? AND user_id = ?",
+            (run_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def delete_benchmark_run(run_id: str, user_id: str) -> bool:
+    """Delete a benchmark run (scoped to user)."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "DELETE FROM benchmark_runs WHERE id = ? AND user_id = ?",
+            (run_id, user_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0

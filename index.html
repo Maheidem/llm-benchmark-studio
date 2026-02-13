@@ -2381,7 +2381,8 @@
 
       try {
         const res = await apiFetch('/api/history');
-        const history = await res.json();
+        const data = await res.json();
+        const history = data.runs || [];
 
         if (!history.length) {
           container.innerHTML = '<div class="card rounded-sm p-10 text-center"><p class="text-zinc-600 font-body">No benchmark history yet.</p><p class="text-zinc-700 text-xs mt-1 font-body">Run your first benchmark to see results here.</p></div>';
@@ -2390,7 +2391,6 @@
 
         container.innerHTML = history.map((h, idx) => {
           const ts = new Date(h.timestamp).toLocaleString();
-          const isV2 = (h.schema_version || 0) >= 2;
           const sorted = [...(h.results || [])].map(r => ({
             ...r,
             avg_tokens_per_second: r.avg_tokens_per_second ?? r.tokens_per_second ?? 0,
@@ -2401,19 +2401,21 @@
             p95_tps: r.p95_tps ?? 0,
           })).sort((a, b) => b.avg_tokens_per_second - a.avg_tokens_per_second);
           const winner = sorted[0];
-          const hasMultiRun = isV2 && sorted.some(r => (r.runs || 1) > 1);
-          const hasFilename = !!h.filename;
+          const hasMultiRun = sorted.some(r => (r.runs || 1) > 1);
+          const runId = h.id;
 
           return `
             <div class="card rounded-sm p-5 fade-in" style="animation-delay: ${idx * 40}ms">
               <div class="flex items-center justify-between mb-3">
                 <div class="flex items-center gap-3">
-                  ${hasFilename ? `<button onclick="toggleHistoryCheckbox(this, '${h.filename}')" class="w-4 h-4 rounded-sm border flex items-center justify-center transition-all flex-shrink-0" style="border-color:var(--border-subtle)" title="Select for comparison" data-checked="false"></button>` : ''}
+                  ${runId ? `<button onclick="toggleHistoryCheckbox(this, '${runId}')" class="w-4 h-4 rounded-sm border flex items-center justify-center transition-all flex-shrink-0" style="border-color:var(--border-subtle)" title="Select for comparison" data-checked="false"></button>` : ''}
                   <span class="text-[11px] text-zinc-600 font-mono">${ts}</span>
-                  ${isV2 ? '<span class="text-[9px] font-mono text-zinc-700 border rounded-sm px-1.5 py-0.5" style="border-color:var(--border-subtle)">v2</span>' : ''}
                   ${winner ? `<span class="badge" style="background:var(--lime-dim);color:var(--lime);border:1px solid rgba(191,255,0,0.2)">P1: ${winner.model}</span>` : ''}
                 </div>
-                ${winner ? `<span class="font-mono text-sm" style="color:var(--lime)">${winner.avg_tokens_per_second} tok/s</span>` : ''}
+                <div class="flex items-center gap-3">
+                  ${winner ? `<span class="font-mono text-sm" style="color:var(--lime)">${winner.avg_tokens_per_second} tok/s</span>` : ''}
+                  ${runId ? `<button onclick="deleteHistoryRun('${runId}')" class="text-zinc-700 hover:text-red-400 transition-colors" title="Delete run"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>` : ''}
+                </div>
               </div>
               <div class="overflow-x-auto">
                 <table class="w-full text-xs">
@@ -2421,7 +2423,6 @@
                     <th class="px-3 py-1.5 text-left section-label">Model</th>
                     <th class="px-3 py-1.5 text-right section-label">Tok/s</th>
                     ${hasMultiRun ? '<th class="px-3 py-1.5 text-right section-label">Std Dev</th>' : ''}
-                    ${isV2 ? '<th class="px-3 py-1.5 text-right section-label">P50</th><th class="px-3 py-1.5 text-right section-label">P95</th>' : ''}
                     <th class="px-3 py-1.5 text-right section-label">TTFT</th>
                     <th class="px-3 py-1.5 text-right section-label">Duration</th>
                   </tr></thead>
@@ -2431,7 +2432,6 @@
                         <td class="px-3 py-2 text-zinc-400 font-body">${r.provider} / ${r.model}</td>
                         <td class="px-3 py-2 text-right font-mono ${i === 0 ? '' : 'text-zinc-500'}" ${i === 0 ? 'style="color:var(--lime)"' : ''}>${r.avg_tokens_per_second}</td>
                         ${hasMultiRun ? `<td class="px-3 py-2 text-right font-mono text-zinc-600">${r.std_dev_tps > 0 ? '\u00B1' + r.std_dev_tps.toFixed(1) : '-'}</td>` : ''}
-                        ${isV2 ? `<td class="px-3 py-2 text-right font-mono text-zinc-600">${r.p50_tps || '-'}</td><td class="px-3 py-2 text-right font-mono text-zinc-600">${r.p95_tps || '-'}</td>` : ''}
                         <td class="px-3 py-2 text-right font-mono text-zinc-600">${r.avg_ttft_ms}ms</td>
                         <td class="px-3 py-2 text-right font-mono text-zinc-600">${r.avg_total_time_s}s</td>
                       </tr>
@@ -2444,6 +2444,22 @@
         }).join('');
       } catch (e) {
         container.innerHTML = '<p class="text-red-400 text-sm font-body">Failed to load history.</p>';
+      }
+    }
+
+    async function deleteHistoryRun(runId) {
+      if (!confirm('Delete this benchmark run?')) return;
+      try {
+        const res = await apiFetch(`/api/history/${runId}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('Run deleted', 'success');
+          loadHistory();
+        } else {
+          const err = await res.json();
+          showToast(err.error || 'Failed to delete run', 'error');
+        }
+      } catch (e) {
+        showToast('Failed to delete run', 'error');
       }
     }
 
@@ -2540,20 +2556,20 @@
     // -------------------------------------------------------------------
     let selectedHistoryRuns = new Set();
 
-    function toggleHistoryCheckbox(btn, filename) {
+    function toggleHistoryCheckbox(btn, runId) {
       const isChecked = btn.dataset.checked === 'true';
       if (isChecked) {
         btn.dataset.checked = 'false';
         btn.style.borderColor = 'var(--border-subtle)';
         btn.style.background = 'transparent';
         btn.innerHTML = '';
-        selectedHistoryRuns.delete(filename);
+        selectedHistoryRuns.delete(runId);
       } else {
         btn.dataset.checked = 'true';
         btn.style.borderColor = '#38BDF8';
         btn.style.background = 'rgba(56,189,248,0.15)';
         btn.innerHTML = '<svg class="w-2.5 h-2.5" fill="none" stroke="#38BDF8" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>';
-        selectedHistoryRuns.add(filename);
+        selectedHistoryRuns.add(runId);
       }
       const bar = document.getElementById('historyCompareBar');
       const countEl = document.getElementById('compareCount');
@@ -2566,8 +2582,8 @@
     }
 
     async function compareSelectedRuns() {
-      const filenames = Array.from(selectedHistoryRuns);
-      if (filenames.length < 2) {
+      const runIds = Array.from(selectedHistoryRuns);
+      if (runIds.length < 2) {
         showToast('Select at least 2 runs to compare', 'error');
         return;
       }
@@ -2577,8 +2593,8 @@
       container.classList.remove('hidden');
 
       try {
-        const runs = await Promise.all(filenames.map(async fn => {
-          const res = await apiFetch(`/api/history/${fn}`);
+        const runs = await Promise.all(runIds.map(async id => {
+          const res = await apiFetch(`/api/history/${id}`);
           return res.json();
         }));
 

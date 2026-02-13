@@ -146,9 +146,50 @@ async def _save_user_config(user_id: str, config: dict):
     await db.save_user_config(user_id, config)
 
 
-# Concurrency guards
-_benchmark_lock = asyncio.Lock()
-_cancel_event = asyncio.Event()
+# Per-user concurrency guards
+_user_locks: dict[str, asyncio.Lock] = {}
+_user_cancel: dict[str, asyncio.Event] = {}
+
+
+def _get_user_lock(user_id: str) -> asyncio.Lock:
+    if user_id not in _user_locks:
+        _user_locks[user_id] = asyncio.Lock()
+    return _user_locks[user_id]
+
+
+def _get_user_cancel(user_id: str) -> asyncio.Event:
+    if user_id not in _user_cancel:
+        _user_cancel[user_id] = asyncio.Event()
+    return _user_cancel[user_id]
+
+
+# Rate limiter
+RATE_LIMIT_PER_HOUR = int(os.environ.get("BENCHMARK_RATE_LIMIT", "2000"))
+_rate_windows: dict[str, list[float]] = {}
+
+
+def _check_rate_limit(user_id: str) -> tuple[bool, int]:
+    """Check if user is within rate limit. Returns (allowed, remaining)."""
+    now = time.time()
+    if user_id not in _rate_windows:
+        _rate_windows[user_id] = []
+    window = _rate_windows[user_id]
+    # Prune entries older than 1 hour
+    cutoff = now - 3600
+    _rate_windows[user_id] = [t for t in window if t > cutoff]
+    window = _rate_windows[user_id]
+
+    remaining = RATE_LIMIT_PER_HOUR - len(window)
+    if remaining <= 0:
+        return False, 0
+    return True, remaining
+
+
+def _record_rate_limit(user_id: str):
+    """Record a benchmark execution for rate limiting."""
+    if user_id not in _rate_windows:
+        _rate_windows[user_id] = []
+    _rate_windows[user_id].append(time.time())
 
 
 # ---------------------------------------------------------------------------
@@ -751,8 +792,15 @@ async def delete_my_key(request: Request, user: dict = Depends(auth.get_current_
 @app.post("/api/benchmark/cancel")
 async def cancel_benchmark(user: dict = Depends(auth.get_current_user)):
     """Cancel a running benchmark."""
-    _cancel_event.set()
+    _get_user_cancel(user["id"]).set()
     return {"status": "ok", "message": "Cancellation requested"}
+
+
+@app.get("/api/user/rate-limit")
+async def get_rate_limit(user: dict = Depends(auth.get_current_user)):
+    """Return the user's current rate limit status."""
+    allowed, remaining = _check_rate_limit(user["id"])
+    return {"limit": RATE_LIMIT_PER_HOUR, "remaining": remaining, "window": "1 hour"}
 
 
 @app.post("/api/benchmark")
@@ -792,8 +840,18 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
         )
     temperature = float(temperature)
 
-    # --- Concurrent benchmark guard ---
-    if _benchmark_lock.locked():
+    # --- Rate limit check ---
+    allowed, remaining = _check_rate_limit(user["id"])
+    if not allowed:
+        return JSONResponse(
+            {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} benchmarks per hour."},
+            status_code=429,
+        )
+    _record_rate_limit(user["id"])
+
+    # --- Concurrent benchmark guard (per-user) ---
+    user_lock = _get_user_lock(user["id"])
+    if user_lock.locked():
         return JSONResponse(
             {"error": "Benchmark already running"},
             status_code=409,
@@ -821,9 +879,11 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
     if not prompt.strip():
         prompt = defaults.get("prompt", "Explain recursion in programming with a Python example.")
 
+    cancel_event = _get_user_cancel(user["id"])
+
     async def generate():
-        await _benchmark_lock.acquire()
-        _cancel_event.clear()
+        await user_lock.acquire()
+        cancel_event.clear()
         try:
             # Calculate total runs across all tiers
             total = 0
@@ -846,7 +906,7 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
                 """Run all benchmarks for one provider sequentially."""
                 for tier in context_tiers:
                     for target in prov_targets:
-                        if _cancel_event.is_set():
+                        if cancel_event.is_set():
                             return
                         headroom = target.context_window - max_tokens - 100
                         if tier > 0 and tier > headroom:
@@ -867,7 +927,7 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
                             )
 
                         for r in range(runs):
-                            if _cancel_event.is_set():
+                            if cancel_event.is_set():
                                 return
                             result = await async_run_single(
                                 target, prompt, max_tokens, temperature, tier
@@ -914,7 +974,7 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
                     continue
                 if item is None:
                     break
-                if _cancel_event.is_set():
+                if cancel_event.is_set():
                     # Cancel remaining tasks
                     for t in tasks:
                         t.cancel()
@@ -936,10 +996,19 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
                     all_results.append(item)
                 yield _sse(item)
 
-            # Save results
+            # Save results to JSON file (for CLI compatibility)
             if all_results:
                 agg_results = _aggregate(all_results, config)
                 saved = save_results(agg_results, prompt, context_tiers=context_tiers)
+
+                # Save results to DB for per-user history
+                await db.save_benchmark_run(
+                    user_id=user["id"],
+                    prompt=prompt,
+                    context_tiers=json.dumps(context_tiers),
+                    results_json=json.dumps(all_results),
+                )
+
                 yield _sse({"type": "complete", "saved_to": str(saved)})
             else:
                 yield _sse({"type": "complete", "saved_to": ""})
@@ -947,7 +1016,7 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
         except Exception as e:
             yield _sse({"type": "error", "message": sanitize_error(str(e))})
         finally:
-            _benchmark_lock.release()
+            user_lock.release()
 
     return StreamingResponse(
         generate(),
@@ -961,40 +1030,45 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
 
 @app.get("/api/history")
 async def get_history(user: dict = Depends(auth.get_current_user)):
-    """Return previous benchmark runs."""
-    results_dir = _dir / "results"
-    if not results_dir.exists():
-        return JSONResponse([])
+    """Get the current user's benchmark history from the database."""
+    runs = await db.get_user_benchmark_runs(user["id"])
+    # Parse results_json back to objects for the frontend
+    for run in runs:
+        if isinstance(run.get("results_json"), str):
+            run["results"] = json.loads(run["results_json"])
+            del run["results_json"]
+        if isinstance(run.get("context_tiers"), str):
+            try:
+                run["context_tiers"] = json.loads(run["context_tiers"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return {"runs": runs}
 
-    files = sorted(results_dir.glob("benchmark_*.json"), reverse=True)
-    history = []
-    for f in files[:20]:
+
+@app.get("/api/history/{run_id}")
+async def get_history_run(run_id: str, user: dict = Depends(auth.get_current_user)):
+    """Return a specific benchmark run from the database."""
+    run = await db.get_benchmark_run(run_id, user["id"])
+    if not run:
+        return JSONResponse({"error": "Run not found"}, status_code=404)
+    if isinstance(run.get("results_json"), str):
+        run["results"] = json.loads(run["results_json"])
+        del run["results_json"]
+    if isinstance(run.get("context_tiers"), str):
         try:
-            data = json.loads(f.read_text())
-            data["filename"] = f.name
-            history.append(data)
-        except Exception:
-            continue
-    return JSONResponse(history)
+            run["context_tiers"] = json.loads(run["context_tiers"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return run
 
 
-@app.get("/api/history/{filename}")
-async def get_history_file(filename: str, user: dict = Depends(auth.get_current_user)):
-    """Return the full JSON content of a specific result file."""
-    # Validate filename to prevent path traversal
-    if not re.match(r'^benchmark_\d{8}_\d{6}\.json$', filename):
-        return JSONResponse({"error": "Invalid filename"}, status_code=400)
-
-    filepath = _dir / "results" / filename
-    if not filepath.exists():
-        return JSONResponse({"error": "File not found"}, status_code=404)
-
-    try:
-        data = json.loads(filepath.read_text())
-        data["filename"] = filename
-        return JSONResponse(data)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+@app.delete("/api/history/{run_id}")
+async def delete_history_run(run_id: str, user: dict = Depends(auth.get_current_user)):
+    """Delete a benchmark run from history."""
+    deleted = await db.delete_benchmark_run(run_id, user["id"])
+    if not deleted:
+        return JSONResponse({"error": "Run not found"}, status_code=404)
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
