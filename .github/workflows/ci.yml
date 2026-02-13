@@ -86,32 +86,27 @@ jobs:
           STACK_ID: ${{ secrets.PORTAINER_STACK_ID_STAGING }}
           ENDPOINT_ID: ${{ secrets.PORTAINER_ENDPOINT_ID }}
         run: |
-          set +e
-          # Fetch current stack config (preserves env vars set in Portainer)
-          STACK=$(curl -s -w "\nHTTP_CODE:%{http_code}" "$PORTAINER_URL/api/stacks/$STACK_ID" \
-            -H "X-API-Key: $API_KEY")
-          HTTP_CODE=$(echo "$STACK" | tail -1 | sed 's/HTTP_CODE://')
-          STACK=$(echo "$STACK" | sed '$d')
-          echo "Stack fetch HTTP: $HTTP_CODE"
-          if [ "$HTTP_CODE" != "200" ]; then echo "Stack fetch failed: $STACK"; exit 1; fi
+          # Stop the stack
+          curl -s -X POST "$PORTAINER_URL/api/stacks/$STACK_ID/stop?endpointId=$ENDPOINT_ID" \
+            -H "X-API-Key: $API_KEY" || true
+          sleep 2
 
-          ENV_VARS=$(echo "$STACK" | jq '.Env')
-          STACK_FILE=$(echo "$STACK" | jq -r '.StackFileContent')
-
-          BODY=$(jq -n --arg file "$STACK_FILE" --argjson env "$ENV_VARS" \
-            '{stackFileContent: $file, env: $env, pullImage: true}')
-
-          # Redeploy with pullImage to get the new GHCR image
-          RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X PUT \
-            "$PORTAINER_URL/api/stacks/$STACK_ID?endpointId=$ENDPOINT_ID" \
+          # Pull latest image via Portainer docker API
+          curl -s -X POST "$PORTAINER_URL/api/endpoints/$ENDPOINT_ID/docker/images/create?fromImage=ghcr.io/maheidem/llm-benchmark-studio&tag=main" \
             -H "X-API-Key: $API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "$BODY")
-          HTTP_CODE=$(echo "$RESPONSE" | tail -1 | sed 's/HTTP_CODE://')
-          RESPONSE=$(echo "$RESPONSE" | sed '$d')
-          echo "Deploy HTTP: $HTTP_CODE"
-          if [ "$HTTP_CODE" != "200" ]; then echo "Deploy failed: $RESPONSE"; exit 1; fi
-          echo "Deploy succeeded"
+            -H "X-Registry-Auth: $(echo '{}' | base64)"
+
+          # Start the stack (recreates containers with new image)
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "$PORTAINER_URL/api/stacks/$STACK_ID/start?endpointId=$ENDPOINT_ID" \
+            -H "X-API-Key: $API_KEY")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          echo "Start HTTP: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Start failed: $(echo "$RESPONSE" | sed '$d')"
+            exit 1
+          fi
+          echo "Staging deploy succeeded"
 
   deploy-prod:
     needs: [build]
@@ -126,29 +121,27 @@ jobs:
           STACK_ID: ${{ secrets.PORTAINER_STACK_ID_PROD }}
           ENDPOINT_ID: ${{ secrets.PORTAINER_ENDPOINT_ID }}
         run: |
-          set +e
-          # Fetch current stack config (preserves env vars set in Portainer)
-          STACK=$(curl -s -w "\nHTTP_CODE:%{http_code}" "$PORTAINER_URL/api/stacks/$STACK_ID" \
-            -H "X-API-Key: $API_KEY")
-          HTTP_CODE=$(echo "$STACK" | tail -1 | sed 's/HTTP_CODE://')
-          STACK=$(echo "$STACK" | sed '$d')
-          echo "Stack fetch HTTP: $HTTP_CODE"
-          if [ "$HTTP_CODE" != "200" ]; then echo "Stack fetch failed: $STACK"; exit 1; fi
+          # Extract semver major.minor from tag (refs/tags/v1.0.0 -> 1.0)
+          TAG=$(echo "$GITHUB_REF" | sed 's|refs/tags/v||' | cut -d. -f1,2)
 
-          ENV_VARS=$(echo "$STACK" | jq '.Env')
-          STACK_FILE=$(echo "$STACK" | jq -r '.StackFileContent')
+          # Stop the stack
+          curl -s -X POST "$PORTAINER_URL/api/stacks/$STACK_ID/stop?endpointId=$ENDPOINT_ID" \
+            -H "X-API-Key: $API_KEY" || true
+          sleep 2
 
-          BODY=$(jq -n --arg file "$STACK_FILE" --argjson env "$ENV_VARS" \
-            '{stackFileContent: $file, env: $env, pullImage: true}')
-
-          # Redeploy with pullImage to get the new GHCR image
-          RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X PUT \
-            "$PORTAINER_URL/api/stacks/$STACK_ID?endpointId=$ENDPOINT_ID" \
+          # Pull latest image via Portainer docker API
+          curl -s -X POST "$PORTAINER_URL/api/endpoints/$ENDPOINT_ID/docker/images/create?fromImage=ghcr.io/maheidem/llm-benchmark-studio&tag=$TAG" \
             -H "X-API-Key: $API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "$BODY")
-          HTTP_CODE=$(echo "$RESPONSE" | tail -1 | sed 's/HTTP_CODE://')
-          RESPONSE=$(echo "$RESPONSE" | sed '$d')
-          echo "Deploy HTTP: $HTTP_CODE"
-          if [ "$HTTP_CODE" != "200" ]; then echo "Deploy failed: $RESPONSE"; exit 1; fi
-          echo "Deploy succeeded"
+            -H "X-Registry-Auth: $(echo '{}' | base64)"
+
+          # Start the stack (recreates containers with new image)
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "$PORTAINER_URL/api/stacks/$STACK_ID/start?endpointId=$ENDPOINT_ID" \
+            -H "X-API-Key: $API_KEY")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          echo "Start HTTP: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Start failed: $(echo "$RESPONSE" | sed '$d')"
+            exit 1
+          fi
+          echo "Production deploy succeeded (tag: $TAG)"
