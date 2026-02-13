@@ -1,0 +1,19 @@
+services:
+  benchmark:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data        # Persist SQLite DB and Fernet key
+      - ./.env:/app/.env:ro     # API keys (read-only)
+    environment:
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      - BENCHMARK_RATE_LIMIT=${BENCHMARK_RATE_LIMIT:-2000}
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-warning}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

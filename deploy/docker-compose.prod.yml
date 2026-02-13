@@ -1,0 +1,25 @@
+services:
+  benchmark:
+    image: ghcr.io/maheidem/llm-benchmark-studio:1.0
+    ports:
+      - "8501:8501"
+    volumes:
+      - benchmark-data-prod:/app/data
+    environment:
+      - JWT_SECRET=${JWT_SECRET}
+      - FERNET_KEY=${FERNET_KEY}
+      - COOKIE_SECURE=true
+      - LOG_LEVEL=warning
+      - BENCHMARK_RATE_LIMIT=${BENCHMARK_RATE_LIMIT:-2000}
+    extra_hosts:
+      - "lm-studio:192.168.31.222"
+      - "exo3:192.168.31.222"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  benchmark-data-prod:

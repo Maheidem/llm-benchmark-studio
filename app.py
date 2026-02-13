@@ -18,12 +18,12 @@ import litellm
 import yaml
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 # Load .env before importing benchmark (needs API keys)
 _dir = Path(__file__).parent
-load_dotenv(_dir / ".env")
+load_dotenv(_dir / ".env", override=True)
 
 from benchmark import (  # noqa: E402
     AggregatedResult,
@@ -35,14 +35,161 @@ from benchmark import (  # noqa: E402
     build_targets,
     run_single,
     save_results,
+    sanitize_error,
 )
+import auth
+import db
+from keyvault import vault
 
-app = FastAPI(title="LLM Benchmark Studio")
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app_instance):
+    """Initialize database on startup."""
+    await db.init_db()
+    # Optionally bootstrap admin from env vars
+    admin_email = os.environ.get("ADMIN_EMAIL")
+    admin_pass = os.environ.get("ADMIN_PASSWORD")
+    if admin_email and admin_pass:
+        existing = await db.get_user_by_email(admin_email)
+        if not existing:
+            hashed = auth.hash_password(admin_pass)
+            await db.create_user(admin_email, hashed, role="admin")
+            print(f"  Admin account created: {admin_email}")
+    yield
+
+app = FastAPI(title="LLM Benchmark Studio", lifespan=lifespan)
 CONFIG_PATH = str(_dir / "config.yaml")
 
-# Concurrency guards
-_benchmark_lock = asyncio.Lock()
-_cancel_event = asyncio.Event()
+# ---------------------------------------------------------------------------
+# Per-user config: default config for new users + DB helpers
+# ---------------------------------------------------------------------------
+
+DEFAULT_CONFIG = {
+    "defaults": {
+        "max_tokens": 512,
+        "temperature": 0.7,
+        "context_tiers": [0],
+        "prompt": "Explain the concept of recursion in programming. Include a simple example in Python with comments.",
+    },
+    "prompt_templates": {
+        "recursion": {
+            "category": "reasoning",
+            "label": "Explain Recursion",
+            "prompt": "Explain the concept of recursion in programming. Include a simple example in Python with comments.",
+        },
+        "code_generation": {
+            "category": "code",
+            "label": "Generate Sorting Algorithm",
+            "prompt": "Write a Python function that implements merge sort. Include type hints and docstrings.",
+        },
+        "creative": {
+            "category": "creative",
+            "label": "Short Story",
+            "prompt": "Write a short story (300 words) about a robot discovering nature for the first time.",
+        },
+        "qa": {
+            "category": "short_qa",
+            "label": "Quick Q&A",
+            "prompt": "What are the three main types of machine learning? Explain each in one sentence.",
+        },
+    },
+    "providers": {
+        "openai": {
+            "display_name": "OpenAI",
+            "api_key_env": "OPENAI_API_KEY",
+            "models": [
+                {"id": "gpt-4o", "display_name": "GPT-4o", "context_window": 128000},
+                {"id": "gpt-4o-mini", "display_name": "GPT-4o Mini", "context_window": 128000},
+            ],
+        },
+        "anthropic": {
+            "display_name": "Anthropic",
+            "api_key_env": "ANTHROPIC_API_KEY",
+            "model_id_prefix": "anthropic",
+            "models": [
+                {
+                    "id": "anthropic/claude-sonnet-4-5",
+                    "display_name": "Claude Sonnet 4.5",
+                    "context_window": 200000,
+                    "skip_params": ["temperature"],
+                },
+            ],
+        },
+        "google_gemini": {
+            "display_name": "Google Gemini",
+            "api_key_env": "GEMINI_API_KEY",
+            "model_id_prefix": "gemini",
+            "models": [
+                {
+                    "id": "gemini/gemini-2.5-flash",
+                    "display_name": "Gemini 2.5 Flash",
+                    "context_window": 1000000,
+                },
+            ],
+        },
+    },
+}
+
+
+async def _get_user_config(user_id: str) -> dict:
+    """Load user's config from DB, falling back to DEFAULT_CONFIG for new users."""
+    config = await db.get_user_config(user_id)
+    if config is None:
+        await db.save_user_config(user_id, DEFAULT_CONFIG)
+        return dict(DEFAULT_CONFIG)
+    return config
+
+
+async def _save_user_config(user_id: str, config: dict):
+    """Save user's config to DB."""
+    await db.save_user_config(user_id, config)
+
+
+# Per-user concurrency guards
+_user_locks: dict[str, asyncio.Lock] = {}
+_user_cancel: dict[str, asyncio.Event] = {}
+
+
+def _get_user_lock(user_id: str) -> asyncio.Lock:
+    if user_id not in _user_locks:
+        _user_locks[user_id] = asyncio.Lock()
+    return _user_locks[user_id]
+
+
+def _get_user_cancel(user_id: str) -> asyncio.Event:
+    if user_id not in _user_cancel:
+        _user_cancel[user_id] = asyncio.Event()
+    return _user_cancel[user_id]
+
+
+# Rate limiter
+RATE_LIMIT_PER_HOUR = int(os.environ.get("BENCHMARK_RATE_LIMIT", "2000"))
+_rate_windows: dict[str, list[float]] = {}
+
+
+def _check_rate_limit(user_id: str) -> tuple[bool, int]:
+    """Check if user is within rate limit. Returns (allowed, remaining)."""
+    now = time.time()
+    if user_id not in _rate_windows:
+        _rate_windows[user_id] = []
+    window = _rate_windows[user_id]
+    # Prune entries older than 1 hour
+    cutoff = now - 3600
+    _rate_windows[user_id] = [t for t in window if t > cutoff]
+    window = _rate_windows[user_id]
+
+    remaining = RATE_LIMIT_PER_HOUR - len(window)
+    if remaining <= 0:
+        return False, 0
+    return True, remaining
+
+
+def _record_rate_limit(user_id: str):
+    """Record a benchmark execution for rate limiting."""
+    if user_id not in _rate_windows:
+        _rate_windows[user_id] = []
+    _rate_windows[user_id].append(time.time())
 
 
 # ---------------------------------------------------------------------------
@@ -55,10 +202,25 @@ async def dashboard():
     return (_dir / "index.html").read_text()
 
 
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Auth routes
+# ---------------------------------------------------------------------------
+app.post("/api/auth/register")(auth.register_handler)
+app.post("/api/auth/login")(auth.login_handler)
+app.post("/api/auth/refresh")(auth.refresh_handler)
+app.post("/api/auth/logout")(auth.logout_handler)
+app.get("/api/auth/me")(auth.me_handler)
+
+
 @app.get("/api/config")
-async def get_config():
-    """Return available providers and models from config with provider metadata."""
-    config = load_config(CONFIG_PATH)
+async def get_config(user: dict = Depends(auth.get_current_user)):
+    """Return available providers and models from per-user config."""
+    config = await _get_user_config(user["id"])
 
     providers = {}
     for prov_key, prov_cfg in config.get("providers", {}).items():
@@ -96,16 +258,15 @@ async def get_config():
 
 
 @app.put("/api/config/model")
-async def update_model_config(request: Request):
-    """Update per-model settings in config.yaml (full edit support)."""
+async def update_model_config(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Update per-model settings in user's config (full edit support)."""
     body = await request.json()
     model_id = body.get("model_id")
     provider_key = body.get("provider_key")
     if not model_id:
         return JSONResponse({"error": "model_id required"}, status_code=400)
 
-    with open(CONFIG_PATH) as f:
-        config = yaml.safe_load(f)
+    config = await _get_user_config(user["id"])
 
     # Find the model — use provider_key if given, else search all
     found = False
@@ -168,7 +329,7 @@ async def update_model_config(request: Request):
     if not found:
         return JSONResponse({"error": f"Model {model_id} not found"}, status_code=404)
 
-    _save_config(config)
+    await _save_user_config(user["id"], config)
     return {"status": "ok", "model_id": body.get("new_model_id") or model_id}
 
 
@@ -179,7 +340,7 @@ def _save_config(config: dict):
 
 
 @app.post("/api/config/model")
-async def add_model(request: Request):
+async def add_model(request: Request, user: dict = Depends(auth.get_current_user)):
     """Add a new model to a provider."""
     body = await request.json()
     prov_key = body.get("provider_key")
@@ -187,8 +348,7 @@ async def add_model(request: Request):
     if not prov_key or not model_id:
         return JSONResponse({"error": "provider_key and id required"}, status_code=400)
 
-    with open(CONFIG_PATH) as f:
-        config = yaml.safe_load(f)
+    config = await _get_user_config(user["id"])
 
     if prov_key not in config.get("providers", {}):
         return JSONResponse({"error": f"Provider '{prov_key}' not found"}, status_code=400)
@@ -215,12 +375,12 @@ async def add_model(request: Request):
         new_model["max_output_tokens"] = int(body["max_output_tokens"])
 
     prov_cfg.setdefault("models", []).append(new_model)
-    _save_config(config)
+    await _save_user_config(user["id"], config)
     return {"status": "ok", "model_id": model_id}
 
 
 @app.delete("/api/config/model")
-async def delete_model(request: Request):
+async def delete_model(request: Request, user: dict = Depends(auth.get_current_user)):
     """Remove a model from a provider."""
     body = await request.json()
     prov_key = body.get("provider_key")
@@ -228,8 +388,7 @@ async def delete_model(request: Request):
     if not prov_key or not model_id:
         return JSONResponse({"error": "provider_key and model_id required"}, status_code=400)
 
-    with open(CONFIG_PATH) as f:
-        config = yaml.safe_load(f)
+    config = await _get_user_config(user["id"])
 
     prov_cfg = config.get("providers", {}).get(prov_key)
     if not prov_cfg:
@@ -242,20 +401,19 @@ async def delete_model(request: Request):
     if len(prov_cfg["models"]) == original_len:
         return JSONResponse({"error": f"Model '{model_id}' not found"}, status_code=404)
 
-    _save_config(config)
+    await _save_user_config(user["id"], config)
     return {"status": "ok"}
 
 
 @app.post("/api/config/provider")
-async def add_provider(request: Request):
+async def add_provider(request: Request, user: dict = Depends(auth.get_current_user)):
     """Add a new provider."""
     body = await request.json()
     prov_key = body.get("provider_key")
     if not prov_key:
         return JSONResponse({"error": "provider_key required"}, status_code=400)
 
-    with open(CONFIG_PATH) as f:
-        config = yaml.safe_load(f)
+    config = await _get_user_config(user["id"])
 
     if prov_key in config.get("providers", {}):
         return JSONResponse({"error": f"Provider '{prov_key}' already exists"}, status_code=400)
@@ -271,20 +429,19 @@ async def add_provider(request: Request):
         new_prov["model_id_prefix"] = body["model_id_prefix"]
 
     config.setdefault("providers", {})[prov_key] = new_prov
-    _save_config(config)
+    await _save_user_config(user["id"], config)
     return {"status": "ok", "provider_key": prov_key}
 
 
 @app.put("/api/config/provider")
-async def update_provider(request: Request):
+async def update_provider(request: Request, user: dict = Depends(auth.get_current_user)):
     """Edit provider settings (not its models)."""
     body = await request.json()
     prov_key = body.get("provider_key")
     if not prov_key:
         return JSONResponse({"error": "provider_key required"}, status_code=400)
 
-    with open(CONFIG_PATH) as f:
-        config = yaml.safe_load(f)
+    config = await _get_user_config(user["id"])
 
     prov_cfg = config.get("providers", {}).get(prov_key)
     if not prov_cfg:
@@ -313,26 +470,134 @@ async def update_provider(request: Request):
         else:
             prov_cfg.pop("model_id_prefix", None)
 
-    _save_config(config)
+    await _save_user_config(user["id"], config)
     return {"status": "ok"}
 
 
+@app.get("/api/models/discover")
+async def discover_models(provider_key: str, user: dict = Depends(auth.get_current_user)):
+    """Discover available models from a provider's API."""
+    import httpx
+
+    config = await _get_user_config(user["id"])
+    prov_cfg = config.get("providers", {}).get(provider_key)
+    if not prov_cfg:
+        return JSONResponse({"error": f"Provider '{provider_key}' not found"}, status_code=404)
+
+    # Resolve API key: user key > global env
+    api_key = None
+    encrypted = await db.get_user_key_for_provider(user["id"], provider_key)
+    if encrypted:
+        try:
+            api_key = vault.decrypt(encrypted)
+        except Exception:
+            pass
+    if not api_key:
+        key_env = prov_cfg.get("api_key_env", "")
+        if key_env:
+            api_key = os.getenv(key_env)
+    if not api_key:
+        api_key = prov_cfg.get("api_key")
+
+    api_base = prov_cfg.get("api_base", "")
+    prefix = prov_cfg.get("model_id_prefix", "")
+    key_env = prov_cfg.get("api_key_env", "")
+
+    # Detect which API pattern to use
+    api_type = "openai"  # default
+    if prefix == "anthropic" or "ANTHROPIC" in key_env.upper():
+        api_type = "anthropic"
+    elif prefix == "gemini" or "GEMINI" in key_env.upper():
+        api_type = "gemini"
+    elif api_base:
+        api_type = "generic"
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            models = []
+
+            if api_type == "anthropic":
+                url = "https://api.anthropic.com/v1/models?limit=100"
+                headers = {"x-api-key": api_key or "", "anthropic-version": "2023-06-01"}
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json().get("data", [])
+                for m in data:
+                    mid = m.get("id", "")
+                    dn = m.get("display_name", mid)
+                    full_id = f"{prefix}/{mid}" if prefix and not mid.startswith(prefix + "/") else mid
+                    models.append({"id": full_id, "display_name": dn})
+
+            elif api_type == "gemini":
+                url = "https://generativelanguage.googleapis.com/v1beta/models"
+                params = {"key": api_key or "", "pageSize": 100}
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                data = resp.json().get("models", [])
+                for m in data:
+                    raw_name = m.get("name", "")
+                    # Strip "models/" prefix
+                    mid = raw_name.replace("models/", "", 1) if raw_name.startswith("models/") else raw_name
+                    dn = m.get("displayName", mid)
+                    full_id = f"{prefix}/{mid}" if prefix and not mid.startswith(prefix + "/") else mid
+                    models.append({"id": full_id, "display_name": dn})
+
+            elif api_type == "generic":
+                # OpenAI-compatible format against custom api_base
+                url = f"{api_base.rstrip('/')}/models"
+                headers = {}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json().get("data", [])
+                for m in data:
+                    mid = m.get("id", "")
+                    full_id = f"{prefix}/{mid}" if prefix and not mid.startswith(prefix + "/") else mid
+                    models.append({"id": full_id, "display_name": mid})
+
+            else:
+                # OpenAI
+                url = "https://api.openai.com/v1/models"
+                headers = {"Authorization": f"Bearer {api_key or ''}"}
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json().get("data", [])
+                for m in data:
+                    mid = m.get("id", "")
+                    models.append({"id": mid, "display_name": mid})
+
+            # Sort alphabetically by id
+            models.sort(key=lambda x: x["id"])
+            return {"models": models}
+
+    except httpx.HTTPStatusError as e:
+        return JSONResponse(
+            {"error": f"Provider API returned {e.response.status_code}: {e.response.text[:200]}"},
+            status_code=502,
+        )
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch models: {str(e)[:200]}"},
+            status_code=502,
+        )
+
+
 @app.delete("/api/config/provider")
-async def delete_provider(request: Request):
+async def delete_provider(request: Request, user: dict = Depends(auth.get_current_user)):
     """Remove a provider and all its models."""
     body = await request.json()
     prov_key = body.get("provider_key")
     if not prov_key:
         return JSONResponse({"error": "provider_key required"}, status_code=400)
 
-    with open(CONFIG_PATH) as f:
-        config = yaml.safe_load(f)
+    config = await _get_user_config(user["id"])
 
     if prov_key not in config.get("providers", {}):
         return JSONResponse({"error": f"Provider '{prov_key}' not found"}, status_code=404)
 
     del config["providers"][prov_key]
-    _save_config(config)
+    await _save_user_config(user["id"], config)
     return {"status": "ok"}
 
 
@@ -365,14 +630,13 @@ def _mask_value(val: str) -> str:
 
 
 @app.get("/api/env")
-async def get_env_keys():
+async def get_env_keys(user: dict = Depends(auth.require_admin)):
     """List env keys with masked values."""
     entries = _parse_env_file()
     env_keys = {name: val for name, val, _ in entries}
 
-    # Also include api_key_env refs from config that may be missing from .env
-    with open(CONFIG_PATH) as f:
-        config = yaml.safe_load(f)
+    # Also include api_key_env refs from admin's config that may be missing from .env
+    config = await _get_user_config(user["id"])
     for prov_cfg in config.get("providers", {}).values():
         ref = prov_cfg.get("api_key_env", "")
         if ref and ref not in env_keys:
@@ -389,7 +653,7 @@ async def get_env_keys():
 
 
 @app.put("/api/env")
-async def update_env_key(request: Request):
+async def update_env_key(request: Request, user: dict = Depends(auth.require_admin)):
     """Update or add an env key in .env file."""
     body = await request.json()
     name = body.get("name", "").strip()
@@ -426,7 +690,7 @@ async def update_env_key(request: Request):
 
 
 @app.delete("/api/env")
-async def delete_env_key(request: Request):
+async def delete_env_key(request: Request, user: dict = Depends(auth.require_admin)):
     """Remove an env key from .env file."""
     body = await request.json()
     name = body.get("name", "").strip()
@@ -455,15 +719,97 @@ async def delete_env_key(request: Request):
     return {"status": "ok"}
 
 
+# ---------------------------------------------------------------------------
+# Per-User API Key Management
+# ---------------------------------------------------------------------------
+
+@app.get("/api/keys")
+async def get_my_keys(user: dict = Depends(auth.get_current_user)):
+    """List the current user's API keys (provider + status, never plaintext)."""
+    user_keys = await db.get_user_keys(user["id"])
+
+    # Build provider list from user's config so user sees ALL their providers
+    config = await _get_user_config(user["id"])
+    providers = {}
+    for prov_key, prov_cfg in config.get("providers", {}).items():
+        key_env = prov_cfg.get("api_key_env", "")
+        has_global = bool(prov_cfg.get("api_key")) or (bool(os.getenv(key_env)) if key_env else False)
+        providers[prov_key] = {
+            "provider_key": prov_key,
+            "display_name": prov_cfg.get("display_name", prov_key),
+            "key_env_name": key_env,
+            "has_global_key": has_global,
+            "has_user_key": False,
+            "user_key_updated_at": None,
+        }
+
+    # Overlay user keys
+    for uk in user_keys:
+        pk = uk["provider_key"]
+        if pk in providers:
+            providers[pk]["has_user_key"] = True
+            providers[pk]["user_key_updated_at"] = uk["updated_at"]
+
+    return {"keys": list(providers.values())}
+
+
+@app.put("/api/keys")
+async def set_my_key(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Set or update the current user's API key for a provider."""
+    body = await request.json()
+    provider_key = body.get("provider_key", "").strip()
+    value = body.get("value", "")
+
+    if not provider_key:
+        return JSONResponse({"error": "provider_key required"}, status_code=400)
+    if not value:
+        return JSONResponse({"error": "value required"}, status_code=400)
+
+    # Validate provider exists in user's config
+    config = await _get_user_config(user["id"])
+    prov_cfg = config.get("providers", {}).get(provider_key)
+    if not prov_cfg:
+        return JSONResponse({"error": f"Provider '{provider_key}' not found"}, status_code=404)
+
+    key_name = prov_cfg.get("api_key_env", f"{provider_key.upper()}_API_KEY")
+    encrypted = vault.encrypt(value)
+    key_id = await db.upsert_user_key(user["id"], provider_key, key_name, encrypted)
+
+    return {"status": "ok", "key_id": key_id, "provider_key": provider_key}
+
+
+@app.delete("/api/keys")
+async def delete_my_key(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Remove the current user's API key for a provider."""
+    body = await request.json()
+    provider_key = body.get("provider_key", "").strip()
+
+    if not provider_key:
+        return JSONResponse({"error": "provider_key required"}, status_code=400)
+
+    deleted = await db.delete_user_key(user["id"], provider_key)
+    if not deleted:
+        return JSONResponse({"error": "Key not found"}, status_code=404)
+
+    return {"status": "ok"}
+
+
 @app.post("/api/benchmark/cancel")
-async def cancel_benchmark():
+async def cancel_benchmark(user: dict = Depends(auth.get_current_user)):
     """Cancel a running benchmark."""
-    _cancel_event.set()
+    _get_user_cancel(user["id"]).set()
     return {"status": "ok", "message": "Cancellation requested"}
 
 
+@app.get("/api/user/rate-limit")
+async def get_rate_limit(user: dict = Depends(auth.get_current_user)):
+    """Return the user's current rate limit status."""
+    allowed, remaining = _check_rate_limit(user["id"])
+    return {"limit": RATE_LIMIT_PER_HOUR, "remaining": remaining, "window": "1 hour"}
+
+
 @app.post("/api/benchmark")
-async def run_benchmark(request: Request):
+async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_user)):
     """Run benchmarks and stream results via SSE."""
     body = await request.json()
     model_ids = body.get("models", [])
@@ -499,14 +845,24 @@ async def run_benchmark(request: Request):
         )
     temperature = float(temperature)
 
-    # --- Concurrent benchmark guard ---
-    if _benchmark_lock.locked():
+    # --- Rate limit check ---
+    allowed, remaining = _check_rate_limit(user["id"])
+    if not allowed:
+        return JSONResponse(
+            {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} benchmarks per hour."},
+            status_code=429,
+        )
+    _record_rate_limit(user["id"])
+
+    # --- Concurrent benchmark guard (per-user) ---
+    user_lock = _get_user_lock(user["id"])
+    if user_lock.locked():
         return JSONResponse(
             {"error": "Benchmark already running"},
             status_code=409,
         )
 
-    config = load_config(CONFIG_PATH)
+    config = await _get_user_config(user["id"])
     defaults = config.get("defaults", {})
     all_targets = build_targets(config)
 
@@ -516,12 +872,23 @@ async def run_benchmark(request: Request):
     else:
         targets = all_targets
 
+    # Inject per-user API keys (user key > global fallback)
+    user_keys_cache = {}
+    for t in targets:
+        if t.provider_key and t.provider_key not in user_keys_cache:
+            encrypted = await db.get_user_key_for_provider(user["id"], t.provider_key)
+            if encrypted:
+                user_keys_cache[t.provider_key] = encrypted
+    targets = inject_user_keys(targets, user_keys_cache)
+
     if not prompt.strip():
         prompt = defaults.get("prompt", "Explain recursion in programming with a Python example.")
 
+    cancel_event = _get_user_cancel(user["id"])
+
     async def generate():
-        await _benchmark_lock.acquire()
-        _cancel_event.clear()
+        await user_lock.acquire()
+        cancel_event.clear()
         try:
             # Calculate total runs across all tiers
             total = 0
@@ -544,7 +911,7 @@ async def run_benchmark(request: Request):
                 """Run all benchmarks for one provider sequentially."""
                 for tier in context_tiers:
                     for target in prov_targets:
-                        if _cancel_event.is_set():
+                        if cancel_event.is_set():
                             return
                         headroom = target.context_window - max_tokens - 100
                         if tier > 0 and tier > headroom:
@@ -565,7 +932,7 @@ async def run_benchmark(request: Request):
                             )
 
                         for r in range(runs):
-                            if _cancel_event.is_set():
+                            if cancel_event.is_set():
                                 return
                             result = await async_run_single(
                                 target, prompt, max_tokens, temperature, tier
@@ -604,10 +971,15 @@ async def run_benchmark(request: Request):
             current = 0
             all_results = []
             while True:
-                item = await queue.get()
+                # Use timeout to send heartbeats while waiting for results
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield _sse({"type": "heartbeat"})
+                    continue
                 if item is None:
                     break
-                if _cancel_event.is_set():
+                if cancel_event.is_set():
                     # Cancel remaining tasks
                     for t in tasks:
                         t.cancel()
@@ -629,58 +1001,79 @@ async def run_benchmark(request: Request):
                     all_results.append(item)
                 yield _sse(item)
 
-            # Save results
+            # Save results to JSON file (for CLI compatibility)
             if all_results:
                 agg_results = _aggregate(all_results, config)
                 saved = save_results(agg_results, prompt, context_tiers=context_tiers)
+
+                # Save results to DB for per-user history
+                await db.save_benchmark_run(
+                    user_id=user["id"],
+                    prompt=prompt,
+                    context_tiers=json.dumps(context_tiers),
+                    results_json=json.dumps(all_results),
+                )
+
                 yield _sse({"type": "complete", "saved_to": str(saved)})
             else:
                 yield _sse({"type": "complete", "saved_to": ""})
 
         except Exception as e:
-            yield _sse({"type": "error", "message": str(e)})
+            yield _sse({"type": "error", "message": sanitize_error(str(e))})
         finally:
-            _benchmark_lock.release()
+            user_lock.release()
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
+    )
 
 
 @app.get("/api/history")
-async def get_history():
-    """Return previous benchmark runs."""
-    results_dir = _dir / "results"
-    if not results_dir.exists():
-        return JSONResponse([])
+async def get_history(user: dict = Depends(auth.get_current_user)):
+    """Get the current user's benchmark history from the database."""
+    runs = await db.get_user_benchmark_runs(user["id"])
+    # Parse results_json back to objects for the frontend
+    for run in runs:
+        if isinstance(run.get("results_json"), str):
+            run["results"] = json.loads(run["results_json"])
+            del run["results_json"]
+        if isinstance(run.get("context_tiers"), str):
+            try:
+                run["context_tiers"] = json.loads(run["context_tiers"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return {"runs": runs}
 
-    files = sorted(results_dir.glob("benchmark_*.json"), reverse=True)
-    history = []
-    for f in files[:20]:
+
+@app.get("/api/history/{run_id}")
+async def get_history_run(run_id: str, user: dict = Depends(auth.get_current_user)):
+    """Return a specific benchmark run from the database."""
+    run = await db.get_benchmark_run(run_id, user["id"])
+    if not run:
+        return JSONResponse({"error": "Run not found"}, status_code=404)
+    if isinstance(run.get("results_json"), str):
+        run["results"] = json.loads(run["results_json"])
+        del run["results_json"]
+    if isinstance(run.get("context_tiers"), str):
         try:
-            data = json.loads(f.read_text())
-            data["filename"] = f.name
-            history.append(data)
-        except Exception:
-            continue
-    return JSONResponse(history)
+            run["context_tiers"] = json.loads(run["context_tiers"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return run
 
 
-@app.get("/api/history/{filename}")
-async def get_history_file(filename: str):
-    """Return the full JSON content of a specific result file."""
-    # Validate filename to prevent path traversal
-    if not re.match(r'^benchmark_\d{8}_\d{6}\.json$', filename):
-        return JSONResponse({"error": "Invalid filename"}, status_code=400)
-
-    filepath = _dir / "results" / filename
-    if not filepath.exists():
-        return JSONResponse({"error": "File not found"}, status_code=404)
-
-    try:
-        data = json.loads(filepath.read_text())
-        data["filename"] = filename
-        return JSONResponse(data)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+@app.delete("/api/history/{run_id}")
+async def delete_history_run(run_id: str, user: dict = Depends(auth.get_current_user)):
+    """Delete a benchmark run from history."""
+    deleted = await db.delete_benchmark_run(run_id, user["id"])
+    if not deleted:
+        return JSONResponse({"error": "Run not found"}, status_code=404)
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
@@ -688,14 +1081,14 @@ async def get_history_file(filename: str):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/config/prompts")
-async def get_prompt_templates():
-    """Return prompt templates from config."""
-    config = load_config(CONFIG_PATH)
+async def get_prompt_templates(user: dict = Depends(auth.get_current_user)):
+    """Return prompt templates from user's config."""
+    config = await _get_user_config(user["id"])
     return config.get("prompt_templates", {})
 
 
 @app.post("/api/config/prompts")
-async def add_prompt_template(request: Request):
+async def add_prompt_template(request: Request, user: dict = Depends(auth.get_current_user)):
     """Add a new prompt template."""
     body = await request.json()
     key = body.get("key", "").strip()
@@ -707,8 +1100,7 @@ async def add_prompt_template(request: Request):
     if not prompt_text:
         return JSONResponse({"error": "prompt is required"}, status_code=400)
 
-    with open(CONFIG_PATH) as f:
-        config = yaml.safe_load(f)
+    config = await _get_user_config(user["id"])
 
     config.setdefault("prompt_templates", {})[key] = {
         "category": category,
@@ -716,7 +1108,7 @@ async def add_prompt_template(request: Request):
         "prompt": prompt_text,
     }
 
-    _save_config(config)
+    await _save_user_config(user["id"], config)
     return {"status": "ok", "key": key}
 
 
@@ -725,10 +1117,19 @@ async def add_prompt_template(request: Request):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/health/providers")
-async def health_check_providers():
+async def health_check_providers(user: dict = Depends(auth.get_current_user)):
     """Check connectivity to each configured provider with a tiny completion."""
-    config = load_config(CONFIG_PATH)
+    config = await _get_user_config(user["id"])
     all_targets = build_targets(config)
+
+    # Inject per-user keys so health check validates the user's actual keys
+    user_keys_cache = {}
+    for t in all_targets:
+        if t.provider_key and t.provider_key not in user_keys_cache:
+            encrypted = await db.get_user_key_for_provider(user["id"], t.provider_key)
+            if encrypted:
+                user_keys_cache[t.provider_key] = encrypted
+    all_targets = inject_user_keys(all_targets, user_keys_cache)
 
     # Pick one model per provider for the health check
     provider_targets = {}
@@ -740,7 +1141,7 @@ async def health_check_providers():
         kwargs = {
             "model": target.model_id,
             "messages": [{"role": "user", "content": "Hi"}],
-            "max_tokens": 1,
+            "max_tokens": 5,
             "timeout": 10,
         }
         if target.api_base:
@@ -758,7 +1159,7 @@ async def health_check_providers():
             return {"name": name, "status": "ok", "latency_ms": round(latency)}
         except Exception as e:
             latency = (time.perf_counter() - start) * 1000
-            return {"name": name, "status": "error", "latency_ms": round(latency), "error": str(e)[:200]}
+            return {"name": name, "status": "error", "latency_ms": round(latency), "error": sanitize_error(str(e)[:200], target.api_key)}
 
     results = await asyncio.gather(
         *[check_one(name, t) for name, t in provider_targets.items()]
@@ -769,6 +1170,36 @@ async def health_check_providers():
 # ---------------------------------------------------------------------------
 # Async benchmark execution (used by SSE endpoint)
 # ---------------------------------------------------------------------------
+
+
+def inject_user_keys(targets: list[Target], user_keys_cache: dict[str, str]) -> list[Target]:
+    """Clone targets with user-specific API keys injected.
+
+    Key resolution: user key > global key (already on target).
+    Returns a NEW list of Target objects (originals are not mutated).
+    """
+    from dataclasses import replace
+
+    injected = []
+    for target in targets:
+        if not target.provider_key:
+            injected.append(target)
+            continue
+
+        encrypted = user_keys_cache.get(target.provider_key)
+        if encrypted:
+            try:
+                decrypted = vault.decrypt(encrypted)
+                injected.append(replace(target, api_key=decrypted))
+                continue
+            except Exception:
+                pass  # Decryption failed; fall through to global key
+
+        # No user key found -- keep the global key (already on target)
+        injected.append(target)
+
+    return injected
+
 
 async def async_run_single(
     target: Target, prompt: str, max_tokens: int, temperature: float,
@@ -863,16 +1294,16 @@ async def async_run_single(
 
     except litellm.exceptions.RateLimitError as e:
         result.success = False
-        result.error = f"[rate_limited] {str(e)[:180]}"
+        result.error = f"[rate_limited] {sanitize_error(str(e)[:180], target.api_key)}"
     except litellm.exceptions.AuthenticationError as e:
         result.success = False
-        result.error = f"[auth_failed] {str(e)[:180]}"
+        result.error = f"[auth_failed] {sanitize_error(str(e)[:180], target.api_key)}"
     except litellm.exceptions.Timeout as e:
         result.success = False
-        result.error = f"[timeout] {str(e)[:180]}"
+        result.error = f"[timeout] {sanitize_error(str(e)[:180], target.api_key)}"
     except Exception as e:
         result.success = False
-        result.error = str(e)[:200]
+        result.error = sanitize_error(str(e)[:200], target.api_key)
 
     return result
 
@@ -958,10 +1389,16 @@ def _aggregate(raw_results: list[dict], config: dict) -> list[AggregatedResult]:
 if __name__ == "__main__":
     import uvicorn
 
+    # Warn if using auto-generated keys in production
+    if not os.environ.get("FERNET_KEY"):
+        print("  [!] FERNET_KEY not set. Using auto-generated key from data/.fernet_key")
+        print("  [!] Set FERNET_KEY env var in production and BACK UP the key.\n")
+
     parser = argparse.ArgumentParser(description="LLM Benchmark Studio")
     parser.add_argument("--port", type=int, default=8501, help="Port (default: 8501)")
     parser.add_argument("--host", default="0.0.0.0", help="Host (default: 0.0.0.0)")
     args = parser.parse_args()
 
     print(f"\n  LLM Benchmark Studio running at http://localhost:{args.port}\n")
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    log_level = os.environ.get("LOG_LEVEL", "warning").lower()
+    uvicorn.run(app, host=args.host, port=args.port, log_level=log_level)

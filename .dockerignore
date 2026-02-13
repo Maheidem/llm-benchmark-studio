@@ -1,7 +1,10 @@
-.env
 .venv/
-results/
 __pycache__/
 *.pyc
-data/
+.git/
 .scratchpad/
+data/
+results/
+*.md
+.env
+.env.*
