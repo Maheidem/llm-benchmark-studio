@@ -57,10 +57,11 @@ jobs:
 
       - name: Smoke test
         run: |
+          IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
           docker run -d --name smoke-test \
             -p 8501:8501 \
             -e JWT_SECRET=test-secret \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$(echo ${{ github.sha }} | cut -c1-7)
+            "$IMAGE"
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8501/healthz; then
               echo "Health check passed"
