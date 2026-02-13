@@ -621,10 +621,16 @@
             <h2 class="font-display font-bold text-lg text-zinc-100 mb-1">Tool Calling Evaluation</h2>
             <p class="text-sm text-zinc-600 font-body">Define tool suites, create test cases, and evaluate model accuracy.</p>
           </div>
-          <button onclick="teNewSuite()" class="run-btn px-4 py-2 rounded-sm text-xs flex items-center gap-2">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-            New Suite
-          </button>
+          <div class="flex items-center gap-2">
+            <button onclick="teNewSuite()" class="run-btn px-4 py-2 rounded-sm text-xs flex items-center gap-2">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+              New Suite
+            </button>
+            <button onclick="mcpOpenModal()" class="px-4 py-2 rounded-sm text-xs flex items-center gap-2 border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+              Import from MCP
+            </button>
+          </div>
         </div>
 
         <!-- Suite List Table -->
@@ -868,6 +874,68 @@
           </div>
         </div>
       </div>
+
+      <!-- MCP Import Modal -->
+      <div id="mcpModal" class="modal-overlay hidden" onclick="if(event.target===this)mcpCloseModal()">
+        <div class="modal-box" style="max-width:600px; max-height:80vh; overflow-y:auto">
+          <div class="modal-title flex items-center justify-between">
+            Import Tools from MCP Server
+            <button onclick="mcpCloseModal()" class="text-zinc-500 hover:text-zinc-300">&times;</button>
+          </div>
+
+          <!-- Step 1: Connect -->
+          <div id="mcpStep1">
+            <div class="mt-4">
+              <label class="section-label block mb-1">MCP Server URL</label>
+              <div class="flex gap-2">
+                <input id="mcpUrl" type="url" placeholder="http://localhost:3001/sse"
+                       class="flex-1 bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-200 font-mono">
+                <button onclick="mcpConnect()" id="mcpConnectBtn" class="run-btn px-4 py-2 rounded-sm text-xs">
+                  Connect
+                </button>
+              </div>
+              <p class="text-xs text-zinc-600 mt-2">Enter the SSE endpoint URL of your MCP server</p>
+            </div>
+            <div id="mcpConnectError" class="text-red-400 text-xs mt-2 hidden"></div>
+            <div id="mcpConnecting" class="text-zinc-500 text-xs mt-2 hidden">Connecting...</div>
+          </div>
+
+          <!-- Step 2: Preview & Select -->
+          <div id="mcpStep2" class="hidden">
+            <div class="text-sm text-zinc-400 mt-2 mb-3" id="mcpServerInfo"></div>
+
+            <div class="flex gap-2 mb-3">
+              <button onclick="mcpSelectAll(true)" class="text-xs text-zinc-500 hover:text-zinc-300">Select All</button>
+              <span class="text-zinc-700">|</span>
+              <button onclick="mcpSelectAll(false)" class="text-xs text-zinc-500 hover:text-zinc-300">Deselect All</button>
+            </div>
+
+            <div id="mcpToolList" class="space-y-2 mb-4" style="max-height:300px; overflow-y:auto"></div>
+
+            <div class="space-y-3 border-t border-zinc-800 pt-3">
+              <div>
+                <label class="section-label block mb-1">Suite Name</label>
+                <input id="mcpSuiteName" class="w-full bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-200">
+              </div>
+              <div>
+                <label class="section-label block mb-1">Description</label>
+                <input id="mcpSuiteDesc" class="w-full bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-200">
+              </div>
+              <label class="flex items-center gap-2 text-sm text-zinc-400">
+                <input type="checkbox" id="mcpGenTests" checked> Generate sample test cases
+              </label>
+            </div>
+
+            <div class="modal-buttons mt-4">
+              <button onclick="mcpCloseModal()" class="modal-btn modal-btn-cancel">Cancel</button>
+              <button onclick="mcpImport()" id="mcpImportBtn" class="modal-btn modal-btn-confirm">
+                Import Tools
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div>
 
   </main>
@@ -3387,6 +3455,152 @@
           await teLoadSuites();
         } catch { showToast('Failed to delete', 'error'); }
       }, { danger: true, confirmLabel: 'Delete' });
+    }
+
+    // --- MCP Import ---
+    let _mcpDiscoveredTools = [];
+
+    function mcpOpenModal() {
+      document.getElementById('mcpModal').classList.remove('hidden');
+      document.getElementById('mcpStep1').classList.remove('hidden');
+      document.getElementById('mcpStep2').classList.add('hidden');
+      document.getElementById('mcpConnectError').classList.add('hidden');
+      document.getElementById('mcpConnecting').classList.add('hidden');
+      document.getElementById('mcpUrl').value = '';
+      _mcpDiscoveredTools = [];
+    }
+
+    function mcpCloseModal() {
+      document.getElementById('mcpModal').classList.add('hidden');
+    }
+
+    async function mcpConnect() {
+      const url = document.getElementById('mcpUrl').value.trim();
+      if (!url) { showToast('Enter a server URL', 'error'); return; }
+
+      const errDiv = document.getElementById('mcpConnectError');
+      const loadDiv = document.getElementById('mcpConnecting');
+      const btn = document.getElementById('mcpConnectBtn');
+
+      errDiv.classList.add('hidden');
+      loadDiv.classList.remove('hidden');
+      btn.disabled = true;
+      btn.textContent = 'Connecting...';
+
+      try {
+        const res = await apiFetch('/api/mcp/discover', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        const data = await res.json();
+
+        if (data.error) {
+          errDiv.textContent = data.error;
+          errDiv.classList.remove('hidden');
+          return;
+        }
+
+        _mcpDiscoveredTools = data.tools;
+        mcpRenderStep2(data);
+      } catch (e) {
+        errDiv.textContent = 'Connection failed: ' + e.message;
+        errDiv.classList.remove('hidden');
+      } finally {
+        loadDiv.classList.add('hidden');
+        btn.disabled = false;
+        btn.textContent = 'Connect';
+      }
+    }
+
+    function mcpRenderStep2(data) {
+      document.getElementById('mcpStep1').classList.add('hidden');
+      document.getElementById('mcpStep2').classList.remove('hidden');
+      document.getElementById('mcpServerInfo').textContent =
+        `Connected to: ${data.server_name} (${data.tool_count} tool${data.tool_count !== 1 ? 's' : ''} found)`;
+
+      // Default suite name
+      const names = data.tools.slice(0, 3).map(t => t.name);
+      const suffix = data.tools.length > 3 ? '...' : '';
+      document.getElementById('mcpSuiteName').value = `MCP: ${names.join(', ')}${suffix}`;
+      document.getElementById('mcpSuiteDesc').value = `Imported from MCP server: ${document.getElementById('mcpUrl').value}`;
+
+      // Render tool list with checkboxes
+      const list = document.getElementById('mcpToolList');
+      list.innerHTML = data.tools.map((t, i) => {
+        const params = Object.entries((t.inputSchema || {}).properties || {});
+        const required = (t.inputSchema || {}).required || [];
+        const paramHtml = params.map(([name, schema]) => {
+          const req = required.includes(name) ? ', required' : ', optional';
+          return `<span class="text-zinc-500">${_teEsc(name)}</span> <span class="text-zinc-700">(${schema.type || '?'}${req})</span>`;
+        }).join(', ');
+
+        return `<label class="flex gap-3 p-3 rounded border border-zinc-800 hover:border-zinc-700 cursor-pointer">
+          <input type="checkbox" checked data-mcp-idx="${i}" class="mt-1 mcp-tool-check">
+          <div class="flex-1 min-w-0">
+            <div class="text-sm text-zinc-200 font-mono">${_teEsc(t.name)}</div>
+            <div class="text-xs text-zinc-500 mt-0.5">${_teEsc(t.description)}</div>
+            ${params.length ? `<div class="text-xs text-zinc-600 mt-1">Params: ${paramHtml}</div>` : ''}
+          </div>
+        </label>`;
+      }).join('');
+
+      mcpUpdateImportBtn();
+    }
+
+    function mcpSelectAll(checked) {
+      document.querySelectorAll('.mcp-tool-check').forEach(cb => cb.checked = checked);
+      mcpUpdateImportBtn();
+    }
+
+    function mcpUpdateImportBtn() {
+      const count = document.querySelectorAll('.mcp-tool-check:checked').length;
+      const btn = document.getElementById('mcpImportBtn');
+      btn.textContent = `Import ${count} Tool${count !== 1 ? 's' : ''}`;
+      btn.disabled = count === 0;
+    }
+
+    // Attach change listener via delegation for MCP checkboxes
+    document.addEventListener('change', (e) => {
+      if (e.target.classList.contains('mcp-tool-check')) mcpUpdateImportBtn();
+    });
+
+    async function mcpImport() {
+      const checked = document.querySelectorAll('.mcp-tool-check:checked');
+      const selectedTools = Array.from(checked).map(cb => _mcpDiscoveredTools[parseInt(cb.dataset.mcpIdx)]);
+
+      if (!selectedTools.length) { showToast('Select at least one tool', 'error'); return; }
+
+      const btn = document.getElementById('mcpImportBtn');
+      btn.disabled = true;
+      btn.textContent = 'Importing...';
+
+      try {
+        const res = await apiFetch('/api/mcp/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            suite_name: document.getElementById('mcpSuiteName').value.trim(),
+            suite_description: document.getElementById('mcpSuiteDesc').value.trim(),
+            tools: selectedTools,
+            generate_test_cases: document.getElementById('mcpGenTests').checked,
+          }),
+        });
+        const data = await res.json();
+
+        if (data.error) { showToast(data.error, 'error'); return; }
+
+        showToast(`Imported ${data.tools_imported} tool(s)${data.test_cases_generated ? ` with ${data.test_cases_generated} test case(s)` : ''}`, 'success');
+        mcpCloseModal();
+
+        // Navigate to the new suite editor
+        await teOpenSuite(data.suite_id);
+      } catch (e) {
+        showToast('Import failed: ' + e.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Import Tools';
+      }
     }
 
     // --- Suite Editor ---
