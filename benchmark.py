@@ -52,6 +52,8 @@ class Target:
     skip_params: Optional[list] = None
     context_window: int = 128000
     max_output_tokens: Optional[int] = None
+    api_key_env: Optional[str] = None      # env var name (e.g. "OPENAI_API_KEY")
+    provider_key: Optional[str] = None     # config key (e.g. "openai")
 
 
 @dataclass
@@ -156,6 +158,31 @@ def resolve_api_key(provider_cfg: dict) -> Optional[str]:
     return None
 
 
+def sanitize_error(error_msg: str, api_key: Optional[str] = None) -> str:
+    """Remove API keys and sensitive tokens from error messages.
+
+    Strips:
+    - The specific api_key if provided
+    - Common API key patterns (sk-*, key-*, gsk_*, AIza*)
+    - Bearer tokens
+    """
+    import re as _re
+    msg = error_msg
+
+    # Strip specific key if known
+    if api_key and len(api_key) > 8:
+        msg = msg.replace(api_key, "***")
+
+    # Strip common API key patterns
+    msg = _re.sub(r'(sk-[a-zA-Z0-9]{8})[a-zA-Z0-9-]+', r'\1***', msg)
+    msg = _re.sub(r'(key-[a-zA-Z0-9]{4})[a-zA-Z0-9-]+', r'\1***', msg)
+    msg = _re.sub(r'(gsk_[a-zA-Z0-9]{4})[a-zA-Z0-9-]+', r'\1***', msg)
+    msg = _re.sub(r'(AIza[a-zA-Z0-9]{4})[a-zA-Z0-9-]+', r'\1***', msg)
+    msg = _re.sub(r'Bearer\s+[a-zA-Z0-9._-]+', 'Bearer ***', msg)
+
+    return msg
+
+
 def build_targets(
     config: dict,
     provider_filter: Optional[str] = None,
@@ -195,6 +222,8 @@ def build_targets(
                     skip_params=model.get("skip_params"),
                     context_window=model.get("context_window", 128000),
                     max_output_tokens=model.get("max_output_tokens"),
+                    api_key_env=prov_cfg.get("api_key_env"),
+                    provider_key=prov_key,
                 )
             )
 
@@ -427,16 +456,16 @@ def run_single(
 
     except litellm.exceptions.RateLimitError as e:
         result.success = False
-        result.error = f"[rate_limited] {str(e)[:180]}"
+        result.error = f"[rate_limited] {sanitize_error(str(e)[:180], target.api_key)}"
     except litellm.exceptions.AuthenticationError as e:
         result.success = False
-        result.error = f"[auth_failed] {str(e)[:180]}"
+        result.error = f"[auth_failed] {sanitize_error(str(e)[:180], target.api_key)}"
     except litellm.exceptions.Timeout as e:
         result.success = False
-        result.error = f"[timeout] {str(e)[:180]}"
+        result.error = f"[timeout] {sanitize_error(str(e)[:180], target.api_key)}"
     except Exception as e:
         result.success = False
-        result.error = str(e)[:200]
+        result.error = sanitize_error(str(e)[:200], target.api_key)
 
     return result
 
@@ -747,7 +776,7 @@ Examples:
 
     # Load .env (keys)
     script_dir = Path(__file__).parent
-    load_dotenv(script_dir / ".env")
+    load_dotenv(script_dir / ".env", override=True)
 
     # LiteLLM verbosity
     if not args.verbose:

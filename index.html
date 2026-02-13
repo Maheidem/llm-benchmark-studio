@@ -135,6 +135,66 @@
     }
     @keyframes stripe-scroll { to { background-position: 17px 0; } }
 
+    /* Per-provider progress row */
+    .provider-progress-row {
+      display: grid;
+      grid-template-columns: 140px 1fr 52px;
+      align-items: center;
+      gap: 12px;
+    }
+    .provider-progress-row .ppr-name {
+      font-family: 'Chakra Petch', sans-serif;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .provider-progress-row .ppr-mid {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .provider-progress-row .ppr-status {
+      font-family: 'Outfit', sans-serif;
+      font-size: 11px;
+      color: #71717A;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .provider-progress-row .ppr-track {
+      background: #1c1c20;
+      height: 4px;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .provider-progress-row .ppr-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      background-image: repeating-linear-gradient(
+        -45deg, transparent, transparent 4px,
+        rgba(0,0,0,0.15) 4px, rgba(0,0,0,0.15) 8px
+      );
+      background-size: 11px 11px;
+      animation: stripe-scroll 0.6s linear infinite;
+    }
+    .provider-progress-row .ppr-fill.done {
+      animation: none;
+      background-image: none;
+    }
+    .provider-progress-row .ppr-count {
+      font-family: 'Space Mono', monospace;
+      font-size: 10px;
+      color: #52525B;
+      text-align: right;
+      white-space: nowrap;
+    }
+
     /* Pulse dot */
     .pulse-dot {
       width: 6px; height: 6px; border-radius: 50%; background: var(--lime);
@@ -243,6 +303,24 @@
   <!-- Toast container -->
   <div id="toastContainer" class="toast-container"></div>
 
+  <!-- AUTH MODAL -->
+  <div id="authModal" class="modal-overlay" style="display:none; z-index:10000;">
+    <div class="modal-box" style="max-width:380px;">
+      <div class="flex gap-4 mb-5">
+        <button id="authTabLogin" onclick="switchAuthTab('login')" class="tab tab-active text-xs">Login</button>
+        <button id="authTabRegister" onclick="switchAuthTab('register')" class="tab text-xs">Register</button>
+      </div>
+      <div id="authError" class="error-banner mb-4" style="display:none;"></div>
+      <form id="authForm" onsubmit="handleAuth(event)">
+        <label class="section-label block mb-1">Email</label>
+        <input type="email" id="authEmail" class="modal-input mb-3" required placeholder="you@example.com" autocomplete="email">
+        <label class="section-label block mb-1">Password</label>
+        <input type="password" id="authPassword" class="modal-input mb-4" required minlength="8" placeholder="Min 8 characters" autocomplete="current-password">
+        <button type="submit" id="authSubmitBtn" class="modal-btn modal-btn-confirm w-full text-center">Login</button>
+      </form>
+    </div>
+  </div>
+
   <!-- ═══════════════════════════ HEADER ═══════════════════════════ -->
   <header class="border-b px-6 py-4" style="border-color: var(--border-subtle)">
     <div class="max-w-7xl mx-auto flex items-center justify-between">
@@ -262,6 +340,10 @@
         <button onclick="showTab('benchmark')" id="tab-benchmark" class="tab tab-active">Benchmark</button>
         <button onclick="showTab('history')" id="tab-history" class="tab">History</button>
         <button onclick="showTab('settings')" id="tab-settings" class="tab">Settings</button>
+        <div id="userMenu" class="flex items-center gap-3 ml-4 pl-4" style="border-left:1px solid var(--border-subtle); display:none;">
+          <span id="userEmail" class="text-[11px] text-zinc-500 font-mono"></span>
+          <button onclick="handleLogout()" class="text-[10px] font-display tracking-wider uppercase text-zinc-600 hover:text-zinc-300 px-2 py-1 rounded" style="border:1px solid var(--border-subtle)">Logout</button>
+        </div>
       </div>
     </div>
   </header>
@@ -362,7 +444,8 @@
       <!-- PROGRESS -->
       <div id="progressSection" class="hidden mb-8 fade-in">
         <div class="card rounded-md p-5">
-          <div class="flex items-center justify-between mb-3">
+          <!-- Header: pulse dot, overall counter, cancel button -->
+          <div class="flex items-center justify-between mb-4">
             <div class="flex items-center gap-3">
               <div class="pulse-dot"></div>
               <span id="progressLabel" class="text-sm text-zinc-400 font-body">Initializing...</span>
@@ -372,9 +455,8 @@
               <button id="cancelBtn" onclick="cancelBenchmark()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color:var(--coral);border:1px solid rgba(255,59,92,0.3);" onmouseover="this.style.borderColor='rgba(255,59,92,0.6)'" onmouseout="this.style.borderColor='rgba(255,59,92,0.3)'">Cancel</button>
             </div>
           </div>
-          <div class="progress-track rounded-sm overflow-hidden">
-            <div id="progressBar" class="progress-fill" style="width: 0%"></div>
-          </div>
+          <!-- Per-provider progress rows -->
+          <div id="providerProgressPanel" class="flex flex-col gap-3"></div>
           <div id="progressSkipped" class="mt-3"></div>
         </div>
         <!-- Error banner for SSE issues -->
@@ -471,6 +553,49 @@
 
   <!-- ═══════════════════════════ SCRIPT ═══════════════════════════ -->
   <script>
+    // --- Auth state ---
+    let authToken = localStorage.getItem('auth_token') || null;
+    let currentUser = null;
+
+    // --- Auth-aware fetch wrapper ---
+    async function apiFetch(url, options = {}) {
+      if (!options.headers) options.headers = {};
+      if (authToken) {
+        options.headers['Authorization'] = `Bearer ${authToken}`;
+      }
+      if (options.body && !options.headers['Content-Type']) {
+        options.headers['Content-Type'] = 'application/json';
+      }
+      const res = await fetch(url, options);
+      if (res.status === 401) {
+        // Try refresh
+        const refreshed = await tryRefreshToken();
+        if (refreshed) {
+          options.headers['Authorization'] = `Bearer ${authToken}`;
+          return fetch(url, options);
+        }
+        // Refresh failed - show login
+        showAuthModal();
+        throw new Error('Authentication required');
+      }
+      return res;
+    }
+
+    async function tryRefreshToken() {
+      try {
+        const res = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' });
+        if (!res.ok) return false;
+        const data = await res.json();
+        authToken = data.access_token;
+        currentUser = data.user;
+        localStorage.setItem('auth_token', authToken);
+        updateAuthUI();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
     // -------------------------------------------------------------------
     // State
     // -------------------------------------------------------------------
@@ -481,8 +606,10 @@
     let ttftChart = null;
     let scatterChart = null;
     let cachedEnvKeys = [];
+    let discoveredModelsCache = {}; // providerKey -> [{id, display_name}]
     let _sseTimeout = null;
     let _lastBenchmarkBody = null;
+    let providerProgress = {}; // provider -> {currentModel, currentRun, totalRuns, completedSteps, totalSteps, status, errors[]}
 
     const POSITION_LABELS = ['P1', 'P2', 'P3'];
 
@@ -678,7 +805,7 @@
     // -------------------------------------------------------------------
     async function init() {
       try {
-        const res = await fetch('/api/config');
+        const res = await apiFetch('/api/config');
         config = await res.json();
         renderModels();
         if (config.defaults?.prompt) {
@@ -803,7 +930,7 @@
 
     async function cancelBenchmark() {
       try {
-        await fetch('/api/benchmark/cancel', { method: 'POST' });
+        await apiFetch('/api/benchmark/cancel', { method: 'POST' });
         showToast('Cancellation requested...', '');
       } catch (e) {
         showToast('Failed to cancel', 'error');
@@ -842,8 +969,12 @@
       };
       _lastBenchmarkBody = body;
 
+      // Initialize per-provider progress tracking
+      initProviderProgress(body);
+      renderProviderProgress();
+
       try {
-        const res = await fetch('/api/benchmark', {
+        const res = await apiFetch('/api/benchmark', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -900,19 +1031,149 @@
       _resetRunBtn();
     }
 
+    // -------------------------------------------------------------------
+    // Per-provider progress tracking
+    // -------------------------------------------------------------------
+    function initProviderProgress(body) {
+      providerProgress = {};
+      if (!config || !config.providers) return;
+
+      const selectedSet = new Set(body.models || []);
+      const runs = body.runs || 1;
+      const tiers = body.context_tiers || [0];
+      const maxTokens = body.max_tokens || 4096;
+
+      for (const [provider, provData] of Object.entries(config.providers)) {
+        const models = getProviderModels(provData);
+        const selectedInProvider = models.filter(m => selectedSet.has(m.model_id));
+        if (selectedInProvider.length === 0) continue;
+
+        // Count steps: for each model, for each tier, count runs (skip tiers that exceed context window)
+        let totalSteps = 0;
+        for (const m of selectedInProvider) {
+          for (const tier of tiers) {
+            const headroom = (m.context_window || Infinity) - maxTokens - 100;
+            if (tier === 0 || tier <= headroom) {
+              totalSteps += runs;
+            }
+          }
+        }
+
+        providerProgress[provider] = {
+          currentModel: null,
+          currentRun: 0,
+          totalRuns: runs,
+          completedSteps: 0,
+          totalSteps: totalSteps,
+          status: 'waiting', // waiting | running | done | error
+          errors: [],
+        };
+      }
+    }
+
+    function renderProviderProgress() {
+      const panel = document.getElementById('providerProgressPanel');
+      if (!panel) return;
+
+      // Update overall counter
+      let totalCompleted = 0, totalAll = 0;
+      for (const p of Object.values(providerProgress)) {
+        totalCompleted += p.completedSteps;
+        totalAll += p.totalSteps;
+      }
+      document.getElementById('progressCount').textContent = `${totalCompleted}/${totalAll}`;
+
+      // Update overall label
+      const runningProviders = Object.entries(providerProgress).filter(([, p]) => p.status === 'running');
+      if (runningProviders.length > 0) {
+        document.getElementById('progressLabel').textContent = `Running ${runningProviders.length} provider${runningProviders.length > 1 ? 's' : ''} in parallel`;
+      }
+
+      // Build rows
+      const rows = [];
+      for (const [name, p] of Object.entries(providerProgress)) {
+        const color = getColor(name);
+        const pct = p.totalSteps > 0 ? (p.completedSteps / p.totalSteps * 100) : 0;
+        const isDone = p.completedSteps >= p.totalSteps;
+        const hasError = p.errors.length > 0;
+
+        let statusText = '';
+        let statusIcon = '';
+        if (isDone && !hasError) {
+          statusText = 'Complete';
+          statusIcon = '<span style="color:#4ADE80;">&#10003;</span> ';
+        } else if (isDone && hasError) {
+          statusText = 'Done with errors';
+          statusIcon = '<span style="color:#FBBF24;">&#9888;</span> ';
+        } else if (p.status === 'running' && p.currentModel) {
+          const tierLabel = p.currentContextTokens > 0 ? ` @ ${p.currentContextTokens >= 1000 ? (p.currentContextTokens / 1000) + 'K' : p.currentContextTokens} ctx` : '';
+          statusText = `${p.currentModel}${tierLabel} (run ${p.currentRun}/${p.totalRuns})`;
+        } else {
+          statusText = 'Waiting\u2026';
+        }
+
+        const barColor = hasError ? '#FBBF24' : (isDone ? '#4ADE80' : color.bar);
+        const barShadow = isDone ? 'none' : `0 0 8px ${color.bar}44`;
+
+        rows.push(`
+          <div class="provider-progress-row">
+            <div class="ppr-name" style="color:${color.text};" title="${name}">${name}</div>
+            <div class="ppr-mid">
+              <div class="ppr-status">${statusIcon}${statusText}</div>
+              <div class="ppr-track">
+                <div class="ppr-fill${isDone ? ' done' : ''}" style="width:${pct.toFixed(1)}%;background-color:${barColor};box-shadow:${barShadow};"></div>
+              </div>
+            </div>
+            <div class="ppr-count">${p.completedSteps}/${p.totalSteps}</div>
+          </div>
+        `);
+      }
+
+      // Error details at the bottom
+      const errorLines = [];
+      for (const [name, p] of Object.entries(providerProgress)) {
+        for (const err of p.errors) {
+          errorLines.push(`<div class="text-[11px] font-body" style="color:#FB7185;">${name} / ${err.model}: ${err.message}</div>`);
+        }
+      }
+
+      panel.innerHTML = rows.join('') + (errorLines.length > 0 ? '<div class="mt-2 flex flex-col gap-1">' + errorLines.join('') + '</div>' : '');
+    }
+
     function handleSSE(data) {
+      const prov = data.provider;
+
       if (data.type === 'progress') {
-        const pct = (data.current / data.total * 100).toFixed(0);
-        document.getElementById('progressBar').style.width = pct + '%';
-        document.getElementById('progressCount').textContent = `${data.current}/${data.total}`;
-        const tierLabel = data.context_tokens > 0 ? ` @ ${data.context_tokens >= 1000 ? (data.context_tokens/1000)+'K' : data.context_tokens} ctx` : '';
-        document.getElementById('progressLabel').textContent = `Testing ${data.provider} / ${data.model}${tierLabel} (run ${data.run}/${data.runs})`;
+        // Update per-provider state
+        if (prov && providerProgress[prov]) {
+          const pp = providerProgress[prov];
+          pp.status = 'running';
+          pp.currentModel = data.model;
+          pp.currentRun = data.run;
+          pp.totalRuns = data.runs;
+          pp.currentContextTokens = data.context_tokens || 0;
+        }
+        renderProviderProgress();
       }
       if (data.type === 'skipped') {
         const el = document.getElementById('progressSkipped');
         el.innerHTML += `<div class="skipped-line">&#x23ED; ${data.model}: skipped (${data.reason || 'context exceeds window'})</div>`;
       }
       if (data.type === 'result') {
+        // Increment completed steps for this provider
+        if (prov && providerProgress[prov]) {
+          const pp = providerProgress[prov];
+          pp.completedSteps++;
+          if (!data.success && data.error) {
+            pp.errors.push({ model: data.model, message: data.error });
+          }
+          // Mark provider done if all steps completed
+          if (pp.completedSteps >= pp.totalSteps) {
+            pp.status = 'done';
+            pp.currentModel = null;
+          }
+          renderProviderProgress();
+        }
         currentResults.push(data);
         renderLiveResults();
       }
@@ -925,9 +1186,28 @@
         }
       }
       if (data.type === 'error') {
-        _showSSEError(data.message || 'Benchmark error');
+        // Per-provider error (has provider field) vs global error
+        if (prov && providerProgress[prov]) {
+          const pp = providerProgress[prov];
+          pp.errors.push({ model: data.model || '?', message: data.message || 'Unknown error' });
+          pp.completedSteps = pp.totalSteps; // mark as done
+          pp.status = 'error';
+          pp.currentModel = null;
+          renderProviderProgress();
+        } else {
+          _showSSEError(data.message || 'Benchmark error');
+        }
       }
       if (data.type === 'complete') {
+        // Mark all remaining providers as done
+        for (const pp of Object.values(providerProgress)) {
+          if (pp.status !== 'done' && pp.status !== 'error') {
+            pp.status = 'done';
+            pp.completedSteps = pp.totalSteps;
+            pp.currentModel = null;
+          }
+        }
+        renderProviderProgress();
         document.getElementById('progressSection').classList.add('hidden');
         document.getElementById('resultsSection').classList.remove('hidden');
         if (currentResults.length === 0 || currentResults.every(r => !r.success)) {
@@ -1488,7 +1768,7 @@
     const INPUT_CLASS = "w-full px-3 py-2 rounded-sm text-sm font-mono text-zinc-200";
 
     async function refreshConfig() {
-      const res = await fetch('/api/config');
+      const res = await apiFetch('/api/config');
       config = await res.json();
     }
 
@@ -1513,41 +1793,37 @@
       renderProviders();
     }
 
-    // ── API Keys ──
+    // ── API Keys (per-user) ──
     async function renderApiKeys() {
       const container = document.getElementById('apiKeysContainer');
       try {
-        const res = await fetch('/api/env');
+        const res = await apiFetch('/api/keys');
         const data = await res.json();
         const keys = data.keys || [];
-        cachedEnvKeys = keys;
+
         container.innerHTML = `
           <div class="card rounded-md overflow-hidden">
             <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid var(--border-subtle)">
-              <span class="section-label">API Keys</span>
-              <button onclick="toggleAddKeyForm()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">+ Add Key</button>
-            </div>
-            <div id="addKeyForm" class="hidden px-5 py-3" style="border-bottom:1px solid var(--border-subtle);background:rgba(191,255,0,0.02)">
-              <div class="grid grid-cols-2 gap-3">
-                <input id="newKeyName" placeholder="KEY_NAME" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
-                <input id="newKeyValue" placeholder="Value" type="password" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
-              </div>
-              <div class="flex gap-2 mt-2">
-                <button onclick="addEnvKey()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">Save</button>
-                <button onclick="toggleAddKeyForm()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm text-zinc-600" style="border:1px solid var(--border-subtle)">Cancel</button>
-              </div>
+              <span class="section-label">My API Keys</span>
+              <span class="text-[10px] text-zinc-600 font-body">Your keys are encrypted and only used for your benchmarks</span>
             </div>
             <div class="divide-y" style="border-color:var(--border-subtle)">
-              ${keys.length === 0 ? '<div class="px-5 py-3 text-zinc-700 text-xs font-body">No keys configured.</div>' :
+              ${keys.length === 0 ? '<div class="px-5 py-3 text-zinc-700 text-xs font-body">No providers configured.</div>' :
                 keys.map(k => `
-                  <div class="px-5 py-3 flex items-center justify-between group" id="envrow-${k.name}">
+                  <div class="px-5 py-3 flex items-center justify-between group">
                     <div class="flex items-center gap-3">
-                      <span class="text-xs font-mono text-zinc-300">${k.name}</span>
-                      <span class="text-[10px] font-mono text-zinc-600">${k.is_set ? k.masked_value : '<span style="color:var(--coral)">NOT SET</span>'}</span>
+                      <span class="text-xs font-body text-zinc-300">${k.display_name}</span>
+                      <span class="text-[10px] font-mono text-zinc-600">${k.key_env_name || k.provider_key}</span>
+                      ${k.has_user_key
+                        ? '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(191,255,0,0.08);color:var(--lime);border:1px solid rgba(191,255,0,0.2)">YOUR KEY</span>'
+                        : k.has_global_key
+                          ? '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(56,189,248,0.08);color:#38BDF8;border:1px solid rgba(56,189,248,0.2)">SHARED</span>'
+                          : '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(255,59,92,0.08);color:var(--coral);border:1px solid rgba(255,59,92,0.2)">NOT SET</span>'
+                      }
                     </div>
-                    <div class="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onclick="editEnvKey('${k.name}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 transition-colors">Edit</button>
-                      <button onclick="deleteEnvKey('${k.name}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-600 hover:text-red-400 transition-colors">Del</button>
+                    <div class="flex gap-2">
+                      <button onclick="setMyKey('${k.provider_key}','${k.display_name}')" class="text-[10px] font-display tracking-wider uppercase px-2 py-0.5 rounded-sm transition-colors ${k.has_user_key ? 'text-zinc-500 hover:text-zinc-300' : 'hover:text-zinc-200'}" style="${k.has_user_key ? '' : 'color:var(--lime);border:1px solid rgba(191,255,0,0.2)'}">${k.has_user_key ? 'Update' : 'Set Key'}</button>
+                      ${k.has_user_key ? `<button onclick="removeMyKey('${k.provider_key}','${k.display_name}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-600 hover:text-red-400 transition-colors">Remove</button>` : ''}
                     </div>
                   </div>
                 `).join('')}
@@ -1559,28 +1835,24 @@
       }
     }
 
-    function toggleAddKeyForm() {
-      document.getElementById('addKeyForm')?.classList.toggle('hidden');
-    }
-
-    async function addEnvKey() {
-      const name = document.getElementById('newKeyName').value.trim();
-      const value = document.getElementById('newKeyValue').value;
-      if (!name) return;
-      await fetch('/api/env', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name, value}) });
-      renderApiKeys();
-    }
-
-    async function editEnvKey(name) {
-      showInputModal(`Edit ${name}`, 'Enter new value...', async (newVal) => {
-        await fetch('/api/env', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name, value: newVal}) });
+    async function setMyKey(providerKey, displayName) {
+      showInputModal('Set API Key for ' + displayName, 'Paste your API key...', async (value) => {
+        await apiFetch('/api/keys', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider_key: providerKey, value })
+        });
         renderApiKeys();
       }, { inputType: 'password' });
     }
 
-    async function deleteEnvKey(name) {
-      showModal('Remove Key', `Remove <strong>${name}</strong> from .env?`, async () => {
-        await fetch('/api/env', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name}) });
+    async function removeMyKey(providerKey, displayName) {
+      showModal('Remove Key', 'Remove your personal key for <strong>' + displayName + '</strong>? You will fall back to the shared key (if one exists).', async () => {
+        await apiFetch('/api/keys', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider_key: providerKey })
+        });
         renderApiKeys();
       }, { danger: true, confirmLabel: 'Remove' });
     }
@@ -1608,6 +1880,7 @@
               ${prefix ? `<span class="text-[9px] font-mono px-1.5 py-0.5 rounded-sm" style="background:rgba(56,189,248,0.08);color:#38BDF8;border:1px solid rgba(56,189,248,0.2)">prefix: ${prefix}/</span>` : ''}
             </div>
             <div class="flex gap-2">
+              <button onclick="fetchAndShowModels('${pk}', this)" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 transition-colors">Fetch</button>
               <button onclick="editProvider('${pk}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 transition-colors">Edit</button>
               <button onclick="deleteProvider('${pk}','${provDisplayName}',${models.length})" class="text-[10px] font-display tracking-wider uppercase text-zinc-600 hover:text-red-400 transition-colors">Del</button>
             </div>
@@ -1628,12 +1901,8 @@
                 <input id="pe-ab-${pk}" value="${provData.api_base||''}" placeholder="https://..." class="${INPUT_CLASS}" style="${INPUT_STYLE}">
               </div>
               <div>
-                <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">API Key Env Var</label>
-                <select id="pe-ke-${pk}" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
-                  <option value="">— None —</option>
-                  ${cachedEnvKeys.map(k => `<option value="${k.name}" ${k.name === (provData.api_key_env||'') ? 'selected' : ''}>${k.name}${k.is_set ? '' : ' (not set)'}</option>`).join('')}
-                  ${provData.api_key_env && !cachedEnvKeys.find(k => k.name === provData.api_key_env) ? `<option value="${provData.api_key_env}" selected>${provData.api_key_env} (missing)</option>` : ''}
-                </select>
+                <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">API Key Name</label>
+                <input id="pe-ke-${pk}" value="${provData.api_key_env||''}" placeholder="e.g. OPENAI_API_KEY" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
               </div>
             </div>
             <button onclick="saveProvider('${pk}')" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">Save Provider</button>
@@ -1652,8 +1921,9 @@
                   <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Model ID</label>
                   <div class="flex items-center gap-0">
                     ${prefix ? `<span class="text-[11px] font-mono px-2 py-2 rounded-l-sm flex-shrink-0" style="background:rgba(56,189,248,0.08);color:#38BDF8;border:1px solid rgba(56,189,248,0.2);border-right:none;">${prefix}/</span>` : ''}
-                    <input id="am-id-${pk}" placeholder="${prefix ? 'model-name' : 'provider/model-name'}" class="${INPUT_CLASS} ${prefix ? 'rounded-l-none' : ''}" style="${INPUT_STYLE}" oninput="autoDeriveName('am-id-${pk}','am-dn-${pk}'); updateModelPreview('${pk}')">
+                    <input id="am-id-${pk}" placeholder="${prefix ? 'model-name' : 'provider/model-name'}" list="dl-am-${pk}" class="${INPUT_CLASS} ${prefix ? 'rounded-l-none' : ''}" style="${INPUT_STYLE}" onfocus="loadAndPopulateDatalist('${pk}', 'dl-am-${pk}')" oninput="autoDeriveName('am-id-${pk}','am-dn-${pk}'); updateModelPreview('${pk}'); autoFillDisplayName(this, '${pk}', 'am-dn-${pk}')">
                   </div>
+                  <datalist id="dl-am-${pk}"></datalist>
                   <div id="am-preview-${pk}" class="text-[9px] font-mono text-zinc-600 mt-1"></div>
                 </div>
                 <div>
@@ -1680,7 +1950,7 @@
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
             <div>
               <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Display Name</label>
-              <input id="ap-dn" placeholder="My Provider" class="${INPUT_CLASS}" style="${INPUT_STYLE}" oninput="document.getElementById('ap-key').value = uniqueProviderKey(slugify(this.value))">
+              <input id="ap-dn" placeholder="My Provider" class="${INPUT_CLASS}" style="${INPUT_STYLE}" oninput="document.getElementById('ap-key').value = uniqueProviderKey(slugify(this.value)); document.getElementById('ap-ke').value = slugify(this.value).toUpperCase().replace(/-/g,'_') + '_API_KEY'">
             </div>
             <div>
               <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Provider Key <span class="text-zinc-700 normal-case">(auto-derived, editable)</span></label>
@@ -1695,11 +1965,8 @@
               <input id="ap-ab" placeholder="https://api.example.com/v1" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
             </div>
             <div>
-              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">API Key Env Var</label>
-              <select id="ap-ke" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
-                <option value="">— None —</option>
-                ${cachedEnvKeys.map(k => `<option value="${k.name}">${k.name}${k.is_set ? '' : ' (not set)'}</option>`).join('')}
-              </select>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">API Key Name <span class="text-zinc-700 normal-case">(auto-derived)</span></label>
+              <input id="ap-ke" placeholder="e.g. OPENAI_API_KEY" class="${INPUT_CLASS}" style="${INPUT_STYLE}">
             </div>
           </div>
           <button onclick="addProvider()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">Create Provider</button>
@@ -1743,7 +2010,8 @@
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Model ID</label>
-              <input id="mid-${sid}" value="${m.model_id}" class="${INPUT_CLASS}" style="${INPUT_STYLE}" onfocus="this.style.borderColor='rgba(191,255,0,0.3)'" onblur="this.style.borderColor='var(--border-subtle)'" oninput="autoDeriveName('mid-${sid}','mdn-${sid}')">
+              <input id="mid-${sid}" value="${m.model_id}" list="dl-${sid}" class="${INPUT_CLASS}" style="${INPUT_STYLE}" onfocus="this.style.borderColor='rgba(191,255,0,0.3)'; loadAndPopulateDatalist('${provKey}', 'dl-${sid}')" onblur="this.style.borderColor='var(--border-subtle)'" oninput="autoDeriveName('mid-${sid}','mdn-${sid}'); autoFillDisplayName(this, '${provKey}', 'mdn-${sid}')">
+              <datalist id="dl-${sid}"></datalist>
             </div>
             <div>
               <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Display Name</label>
@@ -1776,6 +2044,35 @@
           <div id="save-status-${sid}" class="mt-2 text-[11px] font-body hidden"></div>
         </div>
       `;
+    }
+
+    async function loadProviderModels(provKey) {
+      if (discoveredModelsCache[provKey]) return discoveredModelsCache[provKey];
+      try {
+        const res = await apiFetch(`/api/models/discover?provider_key=${encodeURIComponent(provKey)}`);
+        const data = await res.json();
+        if (data.models) {
+          discoveredModelsCache[provKey] = data.models;
+          return data.models;
+        }
+      } catch(e) {}
+      return [];
+    }
+
+    async function loadAndPopulateDatalist(provKey, datalistId) {
+      const dl = document.getElementById(datalistId);
+      if (!dl || dl.children.length > 0) return;
+      const models = await loadProviderModels(provKey);
+      dl.innerHTML = models.map(m => `<option value="${m.id}">${m.display_name}</option>`).join('');
+    }
+
+    function autoFillDisplayName(input, provKey, dnFieldId) {
+      const models = discoveredModelsCache[provKey] || [];
+      const match = models.find(m => m.id === input.value);
+      if (match) {
+        const dnField = document.getElementById(dnFieldId);
+        if (dnField) dnField.value = match.display_name;
+      }
     }
 
     function autoDeriveName(idInputId, nameInputId) {
@@ -1833,7 +2130,7 @@
       };
 
       try {
-        const res = await fetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        const res = await apiFetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
         const result = await res.json();
         if (res.ok) {
           showStatus(statusId, true, 'Saved');
@@ -1850,7 +2147,7 @@
     // ── Model CRUD ──
     async function deleteModel(provKey, modelId, displayName) {
       showModal('Remove Model', `Remove model <strong>${displayName}</strong>?`, async () => {
-        await fetch('/api/config/model', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId}) });
+        await apiFetch('/api/config/model', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId}) });
         await refreshConfig();
         renderModels();
         renderProviders();
@@ -1870,7 +2167,7 @@
         display_name: document.getElementById(`am-dn-${provKey}`)?.value.trim() || '',
         context_window: parseInt(document.getElementById(`am-ctx-${provKey}`)?.value) || 128000,
       };
-      const res = await fetch('/api/config/model', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      const res = await apiFetch('/api/config/model', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
       if (res.ok) {
         await refreshConfig();
         renderModels();
@@ -1889,7 +2186,7 @@
         const modelData = provData?.models?.find(m => m.model_id === modelId);
         const current = [...(modelData?.skip_params || [])];
         if (!current.includes(param.trim())) current.push(param.trim());
-        await fetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, skip_params: current}) });
+        await apiFetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, skip_params: current}) });
         await refreshConfig();
         renderProviders();
       });
@@ -1899,7 +2196,7 @@
       const provData = Object.values(config.providers).find(p => p.provider_key === provKey);
       const modelData = provData?.models?.find(m => m.model_id === modelId);
       const current = (modelData?.skip_params || []).filter(p => p !== param);
-      await fetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, skip_params: current}) });
+      await apiFetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, skip_params: current}) });
       await refreshConfig();
       renderProviders();
     }
@@ -1911,16 +2208,111 @@
         { label: 'Value', placeholder: 'e.g., standard' }
       ], async (key, value) => {
         if (!key || !key.trim()) return;
-        await fetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, custom_fields: {[key.trim()]: value}}) });
+        await apiFetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, custom_fields: {[key.trim()]: value}}) });
         await refreshConfig();
         renderProviders();
       });
     }
 
     async function removeCustomField(provKey, modelId, key) {
-      await fetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, custom_fields: {[key]: null}}) });
+      await apiFetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: provKey, model_id: modelId, custom_fields: {[key]: null}}) });
       await refreshConfig();
       renderProviders();
+    }
+
+    // ── Fetch Models from Provider API ──
+    async function fetchAndShowModels(provKey, btn) {
+      const origText = btn.textContent;
+      btn.textContent = 'Loading...';
+      btn.disabled = true;
+
+      try {
+        const res = await apiFetch(`/api/models/discover?provider_key=${encodeURIComponent(provKey)}`);
+        const data = await res.json();
+
+        if (data.error) {
+          showToast(data.error, 'error');
+          return;
+        }
+
+        const models = data.models || [];
+        if (models.length === 0) {
+          showToast('No models found', 'error');
+          return;
+        }
+
+        // Get existing model IDs for this provider
+        const existingIds = new Set();
+        for (const [name, p] of Object.entries(config.providers || {})) {
+          if (p.provider_key === provKey) {
+            (p.models || []).forEach(m => existingIds.add(m.model_id));
+          }
+        }
+
+        // Build checkbox list HTML
+        const listHtml = models.map((m, i) => {
+          const exists = existingIds.has(m.id);
+          return `<label class="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-white/5 cursor-pointer ${exists ? 'opacity-40' : ''}">
+            <input type="checkbox" value="${i}" ${exists ? 'checked disabled' : ''} class="accent-lime-400">
+            <span class="text-xs font-mono text-zinc-300">${m.id}</span>
+            ${m.display_name !== m.id ? `<span class="text-[10px] text-zinc-500">${m.display_name}</span>` : ''}
+            ${exists ? '<span class="text-[9px] text-zinc-600 ml-auto">already added</span>' : ''}
+          </label>`;
+        }).join('');
+
+        // Create overlay modal
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+          <div class="card rounded-md p-5 w-full max-w-lg max-h-[70vh] flex flex-col" style="border:1px solid var(--border-subtle)">
+            <div class="flex items-center justify-between mb-3">
+              <span class="font-display text-sm tracking-wide text-zinc-200">${models.length} models available</span>
+              <button data-action="close" class="text-zinc-500 hover:text-zinc-300 text-xs cursor-pointer">Close</button>
+            </div>
+            <div class="overflow-y-auto flex-1 mb-3" id="model-pick-list">
+              ${listHtml}
+            </div>
+            <button id="add-selected-models-btn" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-2 rounded-sm self-end cursor-pointer" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">Add Selected</button>
+          </div>
+        `;
+        document.body.appendChild(overlay);
+        overlay.querySelector('[data-action="close"]').onclick = () => { overlay.classList.add('modal-closing'); setTimeout(() => overlay.remove(), 200); };
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.classList.add('modal-closing'); setTimeout(() => overlay.remove(), 200); } });
+
+        // Handle "Add Selected"
+        document.getElementById('add-selected-models-btn').onclick = async () => {
+          const checks = overlay.querySelectorAll('input[type=checkbox]:checked:not(:disabled)');
+          if (checks.length === 0) {
+            showToast('No models selected', 'error');
+            return;
+          }
+          const addBtn = document.getElementById('add-selected-models-btn');
+          addBtn.textContent = 'Adding...';
+          addBtn.disabled = true;
+
+          for (const cb of checks) {
+            const m = models[parseInt(cb.value)];
+            await apiFetch('/api/config/model', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ provider_key: provKey, id: m.id, display_name: m.display_name })
+            });
+          }
+
+          overlay.classList.add('modal-closing');
+          setTimeout(() => overlay.remove(), 200);
+          await refreshConfig();
+          renderModels();
+          renderProviders();
+          showToast(`Added ${checks.length} model(s)`);
+        };
+
+      } catch (e) {
+        showToast('Failed to fetch models: ' + e.message, 'error');
+      } finally {
+        btn.textContent = origText;
+        btn.disabled = false;
+      }
     }
 
     // ── Provider CRUD ──
@@ -1936,7 +2328,7 @@
         api_key_env: document.getElementById(`pe-ke-${pk}`)?.value || '',
         model_id_prefix: document.getElementById(`pe-prefix-${pk}`)?.value.trim() || '',
       };
-      const res = await fetch('/api/config/provider', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      const res = await apiFetch('/api/config/provider', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
       if (res.ok) {
         showStatus(`prov-status-${pk}`, true, 'Saved');
         await refreshConfig();
@@ -1950,7 +2342,7 @@
 
     async function deleteProvider(pk, displayName, modelCount) {
       showModal('Delete Provider', `Delete <strong>${displayName}</strong> and its ${modelCount} model(s)?`, async () => {
-        await fetch('/api/config/provider', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: pk}) });
+        await apiFetch('/api/config/provider', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({provider_key: pk}) });
         await refreshConfig();
         renderModels();
         renderProviders();
@@ -1970,7 +2362,7 @@
         model_id_prefix: document.getElementById('ap-prefix')?.value.trim(),
       };
       if (!body.provider_key) { showToast('Provider key is required', 'error'); return; }
-      const res = await fetch('/api/config/provider', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      const res = await apiFetch('/api/config/provider', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
       if (res.ok) {
         await refreshConfig();
         renderModels();
@@ -1988,7 +2380,7 @@
       document.getElementById('historyCompareResult').classList.add('hidden');
 
       try {
-        const res = await fetch('/api/history');
+        const res = await apiFetch('/api/history');
         const history = await res.json();
 
         if (!history.length) {
@@ -2062,7 +2454,7 @@
 
     async function loadPromptTemplates() {
       try {
-        const res = await fetch('/api/config/prompts');
+        const res = await apiFetch('/api/config/prompts');
         promptTemplates = await res.json();
         const select = document.getElementById('promptTemplateSelect');
         select.innerHTML = '<option value="">Custom</option>';
@@ -2101,7 +2493,7 @@
       btn.disabled = true;
 
       try {
-        const res = await fetch('/api/health/providers');
+        const res = await apiFetch('/api/health/providers');
         const data = await res.json();
         const healthMap = {};
         for (const p of data.providers) {
@@ -2186,7 +2578,7 @@
 
       try {
         const runs = await Promise.all(filenames.map(async fn => {
-          const res = await fetch(`/api/history/${fn}`);
+          const res = await apiFetch(`/api/history/${fn}`);
           return res.json();
         }));
 
@@ -2261,11 +2653,102 @@
       }
     }
 
+    // --- Auth functions ---
+    let authMode = 'login';
+
+    function showAuthModal() {
+      document.getElementById('authModal').style.display = 'flex';
+      document.getElementById('authEmail').focus();
+    }
+
+    function hideAuthModal() {
+      document.getElementById('authModal').style.display = 'none';
+      document.getElementById('authError').style.display = 'none';
+    }
+
+    function switchAuthTab(mode) {
+      authMode = mode;
+      document.getElementById('authTabLogin').classList.toggle('tab-active', mode === 'login');
+      document.getElementById('authTabRegister').classList.toggle('tab-active', mode === 'register');
+      document.getElementById('authSubmitBtn').textContent = mode === 'login' ? 'Login' : 'Create Account';
+      document.getElementById('authError').style.display = 'none';
+    }
+
+    async function handleAuth(e) {
+      e.preventDefault();
+      const email = document.getElementById('authEmail').value;
+      const password = document.getElementById('authPassword').value;
+      const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          document.getElementById('authError').textContent = data.error || 'Authentication failed';
+          document.getElementById('authError').style.display = 'block';
+          return;
+        }
+        authToken = data.access_token;
+        currentUser = data.user;
+        localStorage.setItem('auth_token', authToken);
+        updateAuthUI();
+        hideAuthModal();
+        init();
+      } catch (err) {
+        document.getElementById('authError').textContent = 'Connection error';
+        document.getElementById('authError').style.display = 'block';
+      }
+    }
+
+    async function handleLogout() {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+      authToken = null;
+      currentUser = null;
+      localStorage.removeItem('auth_token');
+      updateAuthUI();
+      showAuthModal();
+    }
+
+    function updateAuthUI() {
+      const menu = document.getElementById('userMenu');
+      if (currentUser) {
+        menu.style.display = 'flex';
+        document.getElementById('userEmail').textContent = currentUser.email;
+      } else {
+        menu.style.display = 'none';
+      }
+    }
+
     // -------------------------------------------------------------------
-    // Boot
+    // Boot: check auth state before loading app
     // -------------------------------------------------------------------
-    init();
-    loadPromptTemplates();
+    (async () => {
+      if (authToken) {
+        try {
+          const res = await apiFetch('/api/auth/me');
+          if (res.ok) {
+            const data = await res.json();
+            currentUser = data.user;
+            updateAuthUI();
+            init();
+            loadPromptTemplates();
+            return;
+          }
+        } catch {}
+      }
+      const refreshed = await tryRefreshToken();
+      if (refreshed) {
+        init();
+        loadPromptTemplates();
+      } else {
+        showAuthModal();
+      }
+    })();
   </script>
 </body>
 </html>
