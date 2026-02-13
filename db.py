@@ -642,6 +642,61 @@ async def delete_tool_eval_run(run_id: str, user_id: str) -> bool:
         return cursor.rowcount > 0
 
 
+# --- Analytics Queries ---
+
+_PERIOD_MAP = {
+    "7d": "-7 days",
+    "30d": "-30 days",
+    "90d": "-90 days",
+    "all": None,
+}
+
+
+def _period_filter(period: str) -> tuple[str, list]:
+    """Return (SQL WHERE clause fragment, params) for a period filter on `timestamp`."""
+    interval = _PERIOD_MAP.get(period)
+    if interval:
+        return "AND timestamp > datetime('now', ?)", [interval]
+    return "", []
+
+
+async def get_analytics_benchmark_runs(user_id: str, period: str = "all") -> list[dict]:
+    """Return benchmark runs for a user within the given period.
+
+    Each row includes id, timestamp, prompt, results_json.
+    The caller parses results_json and aggregates in Python.
+    """
+    where_extra, params = _period_filter(period)
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            f"SELECT id, timestamp, prompt, results_json "
+            f"FROM benchmark_runs WHERE user_id = ? {where_extra} "
+            f"ORDER BY timestamp DESC",
+            [user_id] + params,
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_analytics_tool_eval_runs(user_id: str, period: str = "all") -> list[dict]:
+    """Return tool eval runs for a user within the given period.
+
+    Each row includes id, timestamp, summary_json.
+    """
+    where_extra, params = _period_filter(period)
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            f"SELECT id, timestamp, summary_json "
+            f"FROM tool_eval_runs WHERE user_id = ? {where_extra} "
+            f"ORDER BY timestamp DESC",
+            [user_id] + params,
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
 # --- Audit Log ---
 
 async def cleanup_audit_log(retention_days: int = 90):

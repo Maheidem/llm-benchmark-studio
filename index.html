@@ -6,6 +6,7 @@
   <title>LLM Benchmark Studio</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
   <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
   <script>
     tailwind.config = {
@@ -341,6 +342,7 @@
         <button onclick="showTab('history')" id="tab-history" class="tab">History</button>
         <button onclick="showTab('settings')" id="tab-settings" class="tab">Settings</button>
         <button onclick="showTab('tool-eval')" id="tab-tool-eval" class="tab">Tool Eval</button>
+        <button onclick="showTab('analytics')" id="tab-analytics" class="tab">Analytics</button>
         <button onclick="showTab('admin')" id="tab-admin" class="tab" style="display:none;">Admin</button>
         <div id="userMenu" class="flex items-center gap-3 ml-4 pl-4" style="border-left:1px solid var(--border-subtle); display:none;">
           <span id="userEmail" class="text-[11px] text-zinc-500 font-mono"></span>
@@ -609,6 +611,118 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- ─── ANALYTICS TAB ─── -->
+    <div id="view-analytics" class="hidden">
+
+      <!-- Sub-nav -->
+      <div class="flex items-center justify-between mb-6">
+        <div>
+          <h2 class="font-display font-bold text-lg text-zinc-100 mb-1">Analytics</h2>
+          <p class="text-sm text-zinc-600 font-body">Leaderboards, run comparisons, and performance trends.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="analyticsShowLeaderboard()" id="an-btn-leaderboard" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm transition-colors" style="color:var(--lime);border:1px solid rgba(191,255,0,0.3);background:var(--lime-dim);">Leaderboard</button>
+          <button onclick="analyticsShowCompare()" id="an-btn-compare" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm transition-colors" style="color:#71717A;border:1px solid var(--border-subtle);">Compare</button>
+          <button onclick="analyticsShowTrends()" id="an-btn-trends" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm transition-colors" style="color:#71717A;border:1px solid var(--border-subtle);">Trends</button>
+        </div>
+      </div>
+
+      <!-- Sub-View: Leaderboard -->
+      <div id="an-leaderboard-view">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="flex items-center gap-1">
+            <button onclick="anSetLeaderboardType('benchmark')" id="an-lb-type-benchmark" class="text-[10px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color:var(--lime);border:1px solid rgba(191,255,0,0.3);background:var(--lime-dim);">Benchmark</button>
+            <button onclick="anSetLeaderboardType('tool_eval')" id="an-lb-type-tool_eval" class="text-[10px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color:#71717A;border:1px solid var(--border-subtle);">Tool Eval</button>
+          </div>
+          <select id="anLeaderboardPeriod" onchange="analyticsLoadLeaderboard()" class="text-xs font-mono px-2 py-1 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;">
+            <option value="7d">7 Days</option>
+            <option value="30d">30 Days</option>
+            <option value="90d">90 Days</option>
+            <option value="all" selected>All Time</option>
+          </select>
+        </div>
+        <div class="card rounded-md overflow-hidden">
+          <table class="w-full text-sm results-table">
+            <thead id="anLeaderboardHead">
+              <tr style="border-bottom: 1px solid var(--border-subtle)">
+                <th class="px-5 py-3 text-center section-label cursor-pointer" onclick="anSortLeaderboard('rank')">#</th>
+                <th class="px-5 py-3 text-left section-label cursor-pointer" onclick="anSortLeaderboard('model')">Model</th>
+                <th class="px-5 py-3 text-left section-label cursor-pointer" onclick="anSortLeaderboard('provider')">Provider</th>
+                <th class="px-5 py-3 text-right section-label cursor-pointer" onclick="anSortLeaderboard('avg_tps')">Avg TPS</th>
+                <th class="px-5 py-3 text-right section-label cursor-pointer" onclick="anSortLeaderboard('avg_ttft_ms')">Avg TTFT</th>
+                <th class="px-5 py-3 text-right section-label cursor-pointer" onclick="anSortLeaderboard('avg_cost')">Avg Cost</th>
+                <th class="px-5 py-3 text-center section-label cursor-pointer" onclick="anSortLeaderboard('total_runs')">Runs</th>
+                <th class="px-5 py-3 text-right section-label cursor-pointer" onclick="anSortLeaderboard('last_run')">Last Run</th>
+              </tr>
+            </thead>
+            <tbody id="anLeaderboardBody">
+              <tr><td colspan="8" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">Loading leaderboard...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Sub-View: Compare -->
+      <div id="an-compare-view" class="hidden">
+        <div class="card rounded-md p-5 mb-6">
+          <div class="flex items-center justify-between mb-4">
+            <span class="section-label">Select Runs to Compare (2-4)</span>
+            <button onclick="analyticsLoadCompare()" id="anCompareBtn" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm transition-colors" style="color:#71717A;border:1px solid var(--border-subtle);cursor:not-allowed;opacity:0.5;" disabled>Compare</button>
+          </div>
+          <div id="anCompareRunsList" class="space-y-2 max-h-64 overflow-y-auto">
+            <p class="text-zinc-600 text-xs font-body">Loading recent runs...</p>
+          </div>
+        </div>
+        <div id="anCompareCharts" class="hidden space-y-6">
+          <div class="card rounded-md p-5">
+            <label class="section-label mb-4 block">Tokens/sec Comparison</label>
+            <div style="height:320px"><canvas id="anCompareTpsChart"></canvas></div>
+          </div>
+          <div class="card rounded-md p-5">
+            <label class="section-label mb-4 block">TTFT Comparison (ms)</label>
+            <div style="height:320px"><canvas id="anCompareTtftChart"></canvas></div>
+          </div>
+        </div>
+        <div id="anCompareEmpty" class="card rounded-md p-10 text-center">
+          <p class="text-zinc-600 font-body text-sm">Select 2-4 runs above, then click Compare.</p>
+        </div>
+      </div>
+
+      <!-- Sub-View: Trends -->
+      <div id="an-trends-view" class="hidden">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="relative" id="anTrendsModelDropdown">
+            <button onclick="anToggleModelDropdown()" class="text-xs font-mono px-3 py-1.5 rounded-sm flex items-center gap-2" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);color:#A1A1AA;">
+              <span id="anTrendsModelLabel">Select Models</span>
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+            </button>
+            <div id="anTrendsModelList" class="hidden absolute top-full left-0 mt-1 w-64 max-h-48 overflow-y-auto rounded-sm z-50 p-2 space-y-1" style="background:var(--surface-raised);border:1px solid var(--border);">
+            </div>
+          </div>
+          <select id="anTrendsPeriod" onchange="analyticsLoadTrends()" class="text-xs font-mono px-2 py-1 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;">
+            <option value="7d">7 Days</option>
+            <option value="30d" selected>30 Days</option>
+            <option value="90d">90 Days</option>
+            <option value="all">All Time</option>
+          </select>
+        </div>
+        <div id="anTrendsCharts" class="hidden space-y-6">
+          <div class="card rounded-md p-5">
+            <label class="section-label mb-4 block">TPS Over Time</label>
+            <div style="height:320px"><canvas id="anTrendsTpsChart"></canvas></div>
+          </div>
+          <div class="card rounded-md p-5">
+            <label class="section-label mb-4 block">TTFT Over Time (ms)</label>
+            <div style="height:320px"><canvas id="anTrendsTtftChart"></canvas></div>
+          </div>
+        </div>
+        <div id="anTrendsEmpty" class="card rounded-md p-10 text-center">
+          <p class="text-zinc-600 font-body text-sm">Select models and a time period to see trends.</p>
+        </div>
+      </div>
+
     </div>
 
     <!-- ─── TOOL EVAL TAB ─── -->
@@ -2142,15 +2256,18 @@
       document.getElementById('view-history').classList.toggle('hidden', tab !== 'history');
       document.getElementById('view-settings').classList.toggle('hidden', tab !== 'settings');
       document.getElementById('view-tool-eval').classList.toggle('hidden', tab !== 'tool-eval');
+      document.getElementById('view-analytics').classList.toggle('hidden', tab !== 'analytics');
       document.getElementById('view-admin').classList.toggle('hidden', tab !== 'admin');
       document.getElementById('tab-benchmark').classList.toggle('tab-active', tab === 'benchmark');
       document.getElementById('tab-history').classList.toggle('tab-active', tab === 'history');
       document.getElementById('tab-settings').classList.toggle('tab-active', tab === 'settings');
       document.getElementById('tab-tool-eval').classList.toggle('tab-active', tab === 'tool-eval');
+      document.getElementById('tab-analytics').classList.toggle('tab-active', tab === 'analytics');
       document.getElementById('tab-admin').classList.toggle('tab-active', tab === 'admin');
       if (tab === 'history') loadHistory();
       if (tab === 'settings') renderSettings();
       if (tab === 'tool-eval') { showToolEvalView('suites'); teLoadSuites(); teLoadHistory(); }
+      if (tab === 'analytics') { analyticsShowLeaderboard(); }
       if (tab === 'admin') loadAdminDashboard();
     }
 
@@ -3361,6 +3478,521 @@
       const div = document.createElement('div');
       div.textContent = str;
       return div.innerHTML;
+    }
+
+    // -------------------------------------------------------------------
+    // Analytics — Leaderboard, Compare, Trends
+    // -------------------------------------------------------------------
+    const AN_CHART_COLORS = [
+      '#BFFF00', '#00d4ff', '#ff6b6b', '#ffd93d',
+      '#6bcb77', '#4d96ff', '#ff9f43', '#a855f7',
+    ];
+
+    let anLeaderboardData = [];
+    let anLeaderboardType = 'benchmark';
+    let anLeaderboardSortKey = 'avg_tps';
+    let anLeaderboardSortAsc = false;
+    let anCompareSelectedRuns = new Set();
+    let anCompareTpsChart = null;
+    let anCompareTtftChart = null;
+    let anTrendsTpsChart = null;
+    let anTrendsTtftChart = null;
+    let anTrendsSelectedModels = new Set();
+    let anTrendsModelDropdownOpen = false;
+    let anCompareRunsCache = [];
+
+    // --- Sub-view toggling ---
+    function anSetSubBtn(active) {
+      ['leaderboard', 'compare', 'trends'].forEach(v => {
+        const btn = document.getElementById('an-btn-' + v);
+        if (v === active) {
+          btn.style.color = 'var(--lime)';
+          btn.style.border = '1px solid rgba(191,255,0,0.3)';
+          btn.style.background = 'var(--lime-dim)';
+        } else {
+          btn.style.color = '#71717A';
+          btn.style.border = '1px solid var(--border-subtle)';
+          btn.style.background = 'transparent';
+        }
+      });
+    }
+
+    function analyticsShowLeaderboard() {
+      document.getElementById('an-leaderboard-view').classList.remove('hidden');
+      document.getElementById('an-compare-view').classList.add('hidden');
+      document.getElementById('an-trends-view').classList.add('hidden');
+      anSetSubBtn('leaderboard');
+      analyticsLoadLeaderboard();
+    }
+
+    function analyticsShowCompare() {
+      document.getElementById('an-leaderboard-view').classList.add('hidden');
+      document.getElementById('an-compare-view').classList.remove('hidden');
+      document.getElementById('an-trends-view').classList.add('hidden');
+      anSetSubBtn('compare');
+      anLoadCompareRuns();
+    }
+
+    function analyticsShowTrends() {
+      document.getElementById('an-leaderboard-view').classList.add('hidden');
+      document.getElementById('an-compare-view').classList.add('hidden');
+      document.getElementById('an-trends-view').classList.remove('hidden');
+      anSetSubBtn('trends');
+      anLoadTrendsModels();
+    }
+
+    // --- Leaderboard ---
+    function anSetLeaderboardType(type) {
+      anLeaderboardType = type;
+      const btnB = document.getElementById('an-lb-type-benchmark');
+      const btnT = document.getElementById('an-lb-type-tool_eval');
+      if (type === 'benchmark') {
+        btnB.style.color = 'var(--lime)'; btnB.style.border = '1px solid rgba(191,255,0,0.3)'; btnB.style.background = 'var(--lime-dim)';
+        btnT.style.color = '#71717A'; btnT.style.border = '1px solid var(--border-subtle)'; btnT.style.background = 'transparent';
+        anLeaderboardSortKey = 'avg_tps';
+      } else {
+        btnT.style.color = 'var(--lime)'; btnT.style.border = '1px solid rgba(191,255,0,0.3)'; btnT.style.background = 'var(--lime-dim)';
+        btnB.style.color = '#71717A'; btnB.style.border = '1px solid var(--border-subtle)'; btnB.style.background = 'transparent';
+        anLeaderboardSortKey = 'avg_overall_pct';
+      }
+      anLeaderboardSortAsc = false;
+      anUpdateLeaderboardHeaders();
+      analyticsLoadLeaderboard();
+    }
+
+    function anUpdateLeaderboardHeaders() {
+      const head = document.getElementById('anLeaderboardHead');
+      if (anLeaderboardType === 'benchmark') {
+        head.innerHTML = `<tr style="border-bottom: 1px solid var(--border-subtle)">
+          <th class="px-5 py-3 text-center section-label cursor-pointer" onclick="anSortLeaderboard('rank')">#</th>
+          <th class="px-5 py-3 text-left section-label cursor-pointer" onclick="anSortLeaderboard('model')">Model</th>
+          <th class="px-5 py-3 text-left section-label cursor-pointer" onclick="anSortLeaderboard('provider')">Provider</th>
+          <th class="px-5 py-3 text-right section-label cursor-pointer" onclick="anSortLeaderboard('avg_tps')">Avg TPS</th>
+          <th class="px-5 py-3 text-right section-label cursor-pointer" onclick="anSortLeaderboard('avg_ttft_ms')">Avg TTFT</th>
+          <th class="px-5 py-3 text-right section-label cursor-pointer" onclick="anSortLeaderboard('avg_cost')">Avg Cost</th>
+          <th class="px-5 py-3 text-center section-label cursor-pointer" onclick="anSortLeaderboard('total_runs')">Runs</th>
+          <th class="px-5 py-3 text-right section-label cursor-pointer" onclick="anSortLeaderboard('last_run')">Last Run</th>
+        </tr>`;
+      } else {
+        head.innerHTML = `<tr style="border-bottom: 1px solid var(--border-subtle)">
+          <th class="px-5 py-3 text-center section-label cursor-pointer" onclick="anSortLeaderboard('rank')">#</th>
+          <th class="px-5 py-3 text-left section-label cursor-pointer" onclick="anSortLeaderboard('model')">Model</th>
+          <th class="px-5 py-3 text-right section-label cursor-pointer" onclick="anSortLeaderboard('avg_tool_pct')">Avg Tool %</th>
+          <th class="px-5 py-3 text-right section-label cursor-pointer" onclick="anSortLeaderboard('avg_param_pct')">Avg Param %</th>
+          <th class="px-5 py-3 text-right section-label cursor-pointer" onclick="anSortLeaderboard('avg_overall_pct')">Avg Overall %</th>
+          <th class="px-5 py-3 text-center section-label cursor-pointer" onclick="anSortLeaderboard('total_evals')">Evals</th>
+        </tr>`;
+      }
+    }
+
+    async function analyticsLoadLeaderboard() {
+      const body = document.getElementById('anLeaderboardBody');
+      const period = document.getElementById('anLeaderboardPeriod').value;
+      const colCount = anLeaderboardType === 'benchmark' ? 8 : 6;
+      body.innerHTML = `<tr><td colspan="${colCount}" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">Loading...</td></tr>`;
+
+      try {
+        const res = await apiFetch(`/api/analytics/leaderboard?type=${anLeaderboardType}&period=${period}`);
+        if (!res.ok) throw new Error('Failed to load');
+        const data = await res.json();
+        anLeaderboardData = data.models || [];
+        anRenderLeaderboard();
+      } catch (e) {
+        body.innerHTML = `<tr><td colspan="${colCount}" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No benchmark data yet. Run some benchmarks first!</td></tr>`;
+      }
+    }
+
+    function anSortLeaderboard(key) {
+      if (key === 'rank') { anLeaderboardSortKey = anLeaderboardType === 'benchmark' ? 'avg_tps' : 'avg_overall_pct'; anLeaderboardSortAsc = false; }
+      else if (anLeaderboardSortKey === key) { anLeaderboardSortAsc = !anLeaderboardSortAsc; }
+      else { anLeaderboardSortKey = key; anLeaderboardSortAsc = false; }
+      anRenderLeaderboard();
+    }
+
+    function anRenderLeaderboard() {
+      const body = document.getElementById('anLeaderboardBody');
+      if (!anLeaderboardData.length) {
+        const colCount = anLeaderboardType === 'benchmark' ? 8 : 6;
+        body.innerHTML = `<tr><td colspan="${colCount}" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No benchmark data yet. Run some benchmarks first!</td></tr>`;
+        return;
+      }
+
+      const sorted = [...anLeaderboardData].sort((a, b) => {
+        let va = a[anLeaderboardSortKey], vb = b[anLeaderboardSortKey];
+        if (typeof va === 'string') { va = va.toLowerCase(); vb = (vb || '').toLowerCase(); }
+        if (va < vb) return anLeaderboardSortAsc ? -1 : 1;
+        if (va > vb) return anLeaderboardSortAsc ? 1 : -1;
+        return 0;
+      });
+
+      if (anLeaderboardType === 'benchmark') {
+        body.innerHTML = sorted.map((m, i) => {
+          const rank = i + 1;
+          const rowClass = rank === 1 ? 'rank-1' : '';
+          const lastRun = m.last_run ? new Date(m.last_run).toLocaleDateString() : '-';
+          const cost = m.avg_cost != null && m.avg_cost > 0 ? '$' + m.avg_cost.toFixed(4) : 'N/A';
+          return `<tr class="${rowClass}" style="border-top:1px solid var(--border-subtle)">
+            <td class="px-5 py-3 text-center font-mono text-zinc-500 text-xs">${rank}</td>
+            <td class="px-5 py-3 text-left font-body text-zinc-200 text-sm">${escapeHtml(m.model)}</td>
+            <td class="px-5 py-3 text-left font-body text-zinc-500 text-xs">${escapeHtml(m.provider || '')}</td>
+            <td class="px-5 py-3 text-right font-mono text-sm" ${rank === 1 ? 'style="color:var(--lime)"' : 'style="color:#A1A1AA"'}>${m.avg_tps.toFixed(1)}</td>
+            <td class="px-5 py-3 text-right font-mono text-sm text-zinc-400">${m.avg_ttft_ms.toFixed(0)}ms</td>
+            <td class="px-5 py-3 text-right font-mono text-xs text-zinc-500">${cost}</td>
+            <td class="px-5 py-3 text-center font-mono text-xs text-zinc-500">${m.total_runs}</td>
+            <td class="px-5 py-3 text-right font-mono text-xs text-zinc-600">${lastRun}</td>
+          </tr>`;
+        }).join('');
+      } else {
+        body.innerHTML = sorted.map((m, i) => {
+          const rank = i + 1;
+          const rowClass = rank === 1 ? 'rank-1' : '';
+          return `<tr class="${rowClass}" style="border-top:1px solid var(--border-subtle)">
+            <td class="px-5 py-3 text-center font-mono text-zinc-500 text-xs">${rank}</td>
+            <td class="px-5 py-3 text-left font-body text-zinc-200 text-sm">${escapeHtml(m.model)}</td>
+            <td class="px-5 py-3 text-right font-mono text-sm text-zinc-400">${(m.avg_tool_pct || 0).toFixed(1)}%</td>
+            <td class="px-5 py-3 text-right font-mono text-sm text-zinc-400">${(m.avg_param_pct || 0).toFixed(1)}%</td>
+            <td class="px-5 py-3 text-right font-mono text-sm" ${rank === 1 ? 'style="color:var(--lime)"' : 'style="color:#A1A1AA"'}>${(m.avg_overall_pct || 0).toFixed(1)}%</td>
+            <td class="px-5 py-3 text-center font-mono text-xs text-zinc-500">${m.total_evals || 0}</td>
+          </tr>`;
+        }).join('');
+      }
+    }
+
+    // --- Compare ---
+    async function anLoadCompareRuns() {
+      const listEl = document.getElementById('anCompareRunsList');
+      listEl.innerHTML = '<p class="text-zinc-600 text-xs font-body">Loading recent runs...</p>';
+      anCompareSelectedRuns.clear();
+      anUpdateCompareBtn();
+
+      try {
+        const res = await apiFetch('/api/history');
+        const data = await res.json();
+        anCompareRunsCache = (data.runs || []).filter(r => r.id);
+
+        if (!anCompareRunsCache.length) {
+          listEl.innerHTML = '<p class="text-zinc-600 text-xs font-body">No benchmark runs found.</p>';
+          return;
+        }
+
+        listEl.innerHTML = anCompareRunsCache.slice(0, 20).map(run => {
+          const ts = new Date(run.timestamp).toLocaleString();
+          const modelCount = (run.results || []).length;
+          const prompt = (run.prompt || '').substring(0, 50);
+          return `<label class="flex items-center gap-3 px-3 py-2 rounded-sm cursor-pointer transition-colors hover:bg-white/[0.02]" style="border:1px solid var(--border-subtle)">
+            <input type="checkbox" value="${run.id}" onchange="anToggleCompareRun(this)" class="accent-lime-400 w-3.5 h-3.5" />
+            <span class="text-xs font-mono text-zinc-500">${ts}</span>
+            <span class="text-xs font-body text-zinc-400 truncate flex-1">${escapeHtml(prompt || 'Benchmark run')}</span>
+            <span class="text-[10px] font-mono text-zinc-600">${modelCount} models</span>
+          </label>`;
+        }).join('');
+      } catch (e) {
+        listEl.innerHTML = '<p class="text-zinc-600 text-xs font-body">Failed to load runs.</p>';
+      }
+    }
+
+    function anToggleCompareRun(checkbox) {
+      if (checkbox.checked) {
+        if (anCompareSelectedRuns.size >= 4) { checkbox.checked = false; showToast('Max 4 runs', 'error'); return; }
+        anCompareSelectedRuns.add(checkbox.value);
+      } else {
+        anCompareSelectedRuns.delete(checkbox.value);
+      }
+      anUpdateCompareBtn();
+    }
+
+    function anUpdateCompareBtn() {
+      const btn = document.getElementById('anCompareBtn');
+      const n = anCompareSelectedRuns.size;
+      if (n >= 2) {
+        btn.disabled = false;
+        btn.style.color = 'var(--lime)';
+        btn.style.border = '1px solid rgba(191,255,0,0.3)';
+        btn.style.cursor = 'pointer';
+        btn.style.opacity = '1';
+      } else {
+        btn.disabled = true;
+        btn.style.color = '#71717A';
+        btn.style.border = '1px solid var(--border-subtle)';
+        btn.style.cursor = 'not-allowed';
+        btn.style.opacity = '0.5';
+      }
+    }
+
+    async function analyticsLoadCompare() {
+      if (anCompareSelectedRuns.size < 2) return;
+      const ids = Array.from(anCompareSelectedRuns).join(',');
+
+      try {
+        const res = await apiFetch(`/api/analytics/compare?runs=${ids}`);
+        if (!res.ok) throw new Error('Failed');
+        const data = await res.json();
+        anRenderCompareCharts(data.runs || []);
+      } catch (e) {
+        // Fallback: fetch runs individually from history
+        try {
+          const runs = await Promise.all(Array.from(anCompareSelectedRuns).map(async id => {
+            const r = await apiFetch(`/api/history/${id}`);
+            return r.json();
+          }));
+          anRenderCompareCharts(runs);
+        } catch (e2) {
+          showToast('Failed to load comparison data', 'error');
+        }
+      }
+    }
+
+    function anRenderCompareCharts(runs) {
+      if (!runs.length) return;
+
+      document.getElementById('anCompareCharts').classList.remove('hidden');
+      document.getElementById('anCompareEmpty').classList.add('hidden');
+
+      // Collect all models across runs
+      const allModels = new Set();
+      runs.forEach(run => {
+        (run.results || run.models || []).forEach(r => {
+          allModels.add(r.model || r.display_name);
+        });
+      });
+      const modelList = Array.from(allModels).sort();
+
+      // Build run labels
+      const runLabels = runs.map(r => {
+        const d = new Date(r.timestamp);
+        const prompt = (r.prompt || '').substring(0, 20);
+        return d.toLocaleDateString() + (prompt ? ' - ' + prompt : '');
+      });
+
+      // TPS data
+      const tpsDatasets = runs.map((run, ri) => {
+        const results = run.results || run.models || [];
+        return {
+          label: runLabels[ri],
+          data: modelList.map(m => {
+            const match = results.find(r => (r.model || r.display_name) === m);
+            return match ? (match.avg_tokens_per_second ?? match.avg_tps ?? 0) : 0;
+          }),
+          backgroundColor: AN_CHART_COLORS[ri % AN_CHART_COLORS.length] + 'CC',
+          borderColor: AN_CHART_COLORS[ri % AN_CHART_COLORS.length],
+          borderWidth: 0,
+          borderRadius: 2,
+        };
+      });
+
+      // TTFT data
+      const ttftDatasets = runs.map((run, ri) => {
+        const results = run.results || run.models || [];
+        return {
+          label: runLabels[ri],
+          data: modelList.map(m => {
+            const match = results.find(r => (r.model || r.display_name) === m);
+            return match ? (match.avg_ttft_ms ?? 0) : 0;
+          }),
+          backgroundColor: AN_CHART_COLORS[ri % AN_CHART_COLORS.length] + 'CC',
+          borderColor: AN_CHART_COLORS[ri % AN_CHART_COLORS.length],
+          borderWidth: 0,
+          borderRadius: 2,
+        };
+      });
+
+      const chartOpts = (title, unit) => ({
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 800, easing: 'easeOutQuart' },
+        plugins: {
+          legend: {
+            display: true,
+            labels: { color: '#71717A', font: { family: 'Outfit', size: 11 }, boxWidth: 12, padding: 16 }
+          },
+          tooltip: {
+            backgroundColor: '#1c1c20', borderColor: '#27272A', borderWidth: 1,
+            titleFont: { family: 'Outfit', size: 13, weight: '500' },
+            bodyFont: { family: 'Space Mono', size: 12 },
+            padding: 12, cornerRadius: 2,
+            callbacks: { label: ctx => ` ${ctx.parsed.y.toFixed(1)} ${unit}` }
+          }
+        },
+        scales: {
+          x: {
+            grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
+            ticks: { color: '#71717A', font: { family: 'Outfit', size: 11 }, maxRotation: 45 }
+          },
+          y: {
+            grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
+            ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } },
+            title: { display: true, text: title, color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' } }
+          }
+        }
+      });
+
+      // Destroy old charts
+      if (anCompareTpsChart) { anCompareTpsChart.destroy(); anCompareTpsChart = null; }
+      if (anCompareTtftChart) { anCompareTtftChart.destroy(); anCompareTtftChart = null; }
+
+      anCompareTpsChart = new Chart(document.getElementById('anCompareTpsChart'), {
+        type: 'bar',
+        data: { labels: modelList, datasets: tpsDatasets },
+        options: chartOpts('TOKENS / SECOND', 'tok/s')
+      });
+
+      anCompareTtftChart = new Chart(document.getElementById('anCompareTtftChart'), {
+        type: 'bar',
+        data: { labels: modelList, datasets: ttftDatasets },
+        options: chartOpts('TIME TO FIRST TOKEN (MS)', 'ms')
+      });
+    }
+
+    // --- Trends ---
+    async function anLoadTrendsModels() {
+      // Populate model list from leaderboard data
+      try {
+        const res = await apiFetch('/api/analytics/leaderboard?type=benchmark&period=all');
+        if (!res.ok) return;
+        const data = await res.json();
+        const models = data.models || [];
+        const listEl = document.getElementById('anTrendsModelList');
+
+        if (!models.length) {
+          listEl.innerHTML = '<p class="text-zinc-600 text-xs font-body px-2 py-1">No models found.</p>';
+          return;
+        }
+
+        listEl.innerHTML = models.map(m => {
+          const checked = anTrendsSelectedModels.has(m.model) ? 'checked' : '';
+          return `<label class="flex items-center gap-2 px-2 py-1 rounded-sm cursor-pointer hover:bg-white/[0.03] text-xs text-zinc-400 font-body">
+            <input type="checkbox" value="${escapeHtml(m.model)}" ${checked} onchange="anToggleTrendModel(this)" class="accent-lime-400 w-3 h-3" />
+            ${escapeHtml(m.model)}
+          </label>`;
+        }).join('');
+      } catch (e) { /* ignore */ }
+    }
+
+    function anToggleModelDropdown() {
+      anTrendsModelDropdownOpen = !anTrendsModelDropdownOpen;
+      document.getElementById('anTrendsModelList').classList.toggle('hidden', !anTrendsModelDropdownOpen);
+    }
+
+    // Close dropdown on outside click
+    document.addEventListener('click', (e) => {
+      const dd = document.getElementById('anTrendsModelDropdown');
+      if (dd && !dd.contains(e.target) && anTrendsModelDropdownOpen) {
+        anTrendsModelDropdownOpen = false;
+        document.getElementById('anTrendsModelList').classList.add('hidden');
+      }
+    });
+
+    function anToggleTrendModel(checkbox) {
+      if (checkbox.checked) {
+        anTrendsSelectedModels.add(checkbox.value);
+      } else {
+        anTrendsSelectedModels.delete(checkbox.value);
+      }
+      const label = document.getElementById('anTrendsModelLabel');
+      const n = anTrendsSelectedModels.size;
+      label.textContent = n === 0 ? 'Select Models' : n + ' model' + (n > 1 ? 's' : '') + ' selected';
+      if (n > 0) analyticsLoadTrends();
+    }
+
+    async function analyticsLoadTrends() {
+      if (anTrendsSelectedModels.size === 0) {
+        document.getElementById('anTrendsCharts').classList.add('hidden');
+        document.getElementById('anTrendsEmpty').classList.remove('hidden');
+        return;
+      }
+
+      const models = Array.from(anTrendsSelectedModels).join(',');
+      const period = document.getElementById('anTrendsPeriod').value;
+
+      try {
+        // Fetch TPS trends
+        const resTps = await apiFetch(`/api/analytics/trends?models=${encodeURIComponent(models)}&metric=tps&period=${period}`);
+        const dataTps = await resTps.json();
+
+        // Fetch TTFT trends
+        const resTtft = await apiFetch(`/api/analytics/trends?models=${encodeURIComponent(models)}&metric=ttft&period=${period}`);
+        const dataTtft = await resTtft.json();
+
+        anRenderTrendsCharts(dataTps, dataTtft);
+      } catch (e) {
+        showToast('Failed to load trends', 'error');
+      }
+    }
+
+    function anRenderTrendsCharts(tpsData, ttftData) {
+      document.getElementById('anTrendsCharts').classList.remove('hidden');
+      document.getElementById('anTrendsEmpty').classList.add('hidden');
+
+      const buildDatasets = (data) => {
+        return (data.series || []).map((s, i) => ({
+          label: s.model,
+          data: (s.points || []).map(p => ({ x: new Date(p.timestamp), y: p.value })),
+          borderColor: AN_CHART_COLORS[i % AN_CHART_COLORS.length],
+          backgroundColor: AN_CHART_COLORS[i % AN_CHART_COLORS.length] + '33',
+          borderWidth: 2,
+          pointRadius: 3,
+          pointBackgroundColor: AN_CHART_COLORS[i % AN_CHART_COLORS.length],
+          pointBorderColor: '#09090B',
+          pointBorderWidth: 2,
+          tension: 0.3,
+          fill: false,
+        }));
+      };
+
+      const lineOpts = (yTitle) => ({
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 800, easing: 'easeOutQuart' },
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: {
+            display: true,
+            labels: { color: '#71717A', font: { family: 'Outfit', size: 11 }, boxWidth: 12, padding: 16 }
+          },
+          tooltip: {
+            backgroundColor: '#1c1c20', borderColor: '#27272A', borderWidth: 1,
+            titleFont: { family: 'Outfit', size: 13, weight: '500' },
+            bodyFont: { family: 'Space Mono', size: 12 },
+            padding: 12, cornerRadius: 2,
+          }
+        },
+        scales: {
+          x: {
+            type: 'time',
+            time: { unit: 'day', tooltipFormat: 'MMM d, yyyy HH:mm' },
+            grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
+            ticks: { color: '#52525B', font: { family: 'Space Mono', size: 10 } }
+          },
+          y: {
+            grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
+            ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } },
+            title: { display: true, text: yTitle, color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' } }
+          }
+        }
+      });
+
+      // Destroy old charts
+      if (anTrendsTpsChart) { anTrendsTpsChart.destroy(); anTrendsTpsChart = null; }
+      if (anTrendsTtftChart) { anTrendsTtftChart.destroy(); anTrendsTtftChart = null; }
+
+      const tpsDatasets = buildDatasets(tpsData);
+      const ttftDatasets = buildDatasets(ttftData);
+
+      if (tpsDatasets.length) {
+        anTrendsTpsChart = new Chart(document.getElementById('anTrendsTpsChart'), {
+          type: 'line',
+          data: { datasets: tpsDatasets },
+          options: lineOpts('TOKENS / SECOND')
+        });
+      }
+
+      if (ttftDatasets.length) {
+        anTrendsTtftChart = new Chart(document.getElementById('anTrendsTtftChart'), {
+          type: 'line',
+          data: { datasets: ttftDatasets },
+          options: lineOpts('TTFT (MS)')
+        });
+      }
     }
 
     // -------------------------------------------------------------------
