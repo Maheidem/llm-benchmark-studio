@@ -11,6 +11,7 @@ services:
       - COOKIE_SECURE=true
       - LOG_LEVEL=info
       - BENCHMARK_RATE_LIMIT=${BENCHMARK_RATE_LIMIT:-2000}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
     extra_hosts:
       - "lm-studio:192.168.31.222"
       - "exo3:192.168.31.222"

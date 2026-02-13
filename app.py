@@ -49,15 +49,21 @@ async def lifespan(app_instance):
     await db.init_db()
     # Clean up old audit log entries
     await db.cleanup_audit_log(retention_days=90)
-    # Optionally bootstrap admin from env vars
+    # Ensure ADMIN_EMAIL user has admin role (promote existing or create new)
     admin_email = os.environ.get("ADMIN_EMAIL")
-    admin_pass = os.environ.get("ADMIN_PASSWORD")
-    if admin_email and admin_pass:
+    if admin_email:
         existing = await db.get_user_by_email(admin_email)
-        if not existing:
-            hashed = auth.hash_password(admin_pass)
-            await db.create_user(admin_email, hashed, role="admin")
-            print(f"  Admin account created: {admin_email}")
+        if existing and existing["role"] != "admin":
+            async with await db.get_db() as conn:
+                await conn.execute("UPDATE users SET role='admin' WHERE id=?", (existing["id"],))
+                await conn.commit()
+            print(f"  Promoted to admin: {admin_email}")
+        elif not existing:
+            admin_pass = os.environ.get("ADMIN_PASSWORD")
+            if admin_pass:
+                hashed = auth.hash_password(admin_pass)
+                await db.create_user(admin_email, hashed, role="admin")
+                print(f"  Admin account created: {admin_email}")
     yield
 
 app = FastAPI(title="LLM Benchmark Studio", lifespan=lifespan)
