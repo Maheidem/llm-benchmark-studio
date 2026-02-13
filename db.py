@@ -147,7 +147,8 @@ async def store_refresh_token(user_id: str, token_hash: str, expires_at: str):
     """Store a hashed refresh token."""
     async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute(
-            "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
+            "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(token_hash) DO UPDATE SET user_id=excluded.user_id, expires_at=excluded.expires_at",
             (user_id, token_hash, expires_at),
         )
         await db.commit()
