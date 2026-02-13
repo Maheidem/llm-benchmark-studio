@@ -4,6 +4,7 @@ Uses aiosqlite for async SQLite with WAL mode.
 All tables are created on first startup via init_db().
 """
 
+import json
 import aiosqlite
 import uuid
 from pathlib import Path
@@ -84,6 +85,33 @@ async def init_db():
             )
         """)
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS rate_limits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                benchmarks_per_hour INTEGER NOT NULL DEFAULT 20,
+                max_concurrent INTEGER NOT NULL DEFAULT 1,
+                max_runs_per_benchmark INTEGER NOT NULL DEFAULT 10,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_by TEXT REFERENCES users(id)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                user_id TEXT REFERENCES users(id),
+                username TEXT NOT NULL,
+                action TEXT NOT NULL,
+                resource_type TEXT,
+                resource_id TEXT,
+                detail TEXT,
+                ip_address TEXT,
+                user_agent TEXT
+            )
+        """)
+
         # Indexes for common queries
         await db.execute("CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash ON refresh_tokens(token_hash)")
@@ -91,6 +119,9 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_user_configs_user ON user_configs(user_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_benchmark_runs_user ON benchmark_runs(user_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_benchmark_runs_ts ON benchmark_runs(user_id, timestamp DESC)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)")
 
         await db.commit()
 
@@ -334,3 +365,51 @@ async def delete_benchmark_run(run_id: str, user_id: str) -> bool:
         )
         await db.commit()
         return cursor.rowcount > 0
+
+
+# --- Audit Log ---
+
+async def log_audit(
+    user_id: Optional[str],
+    username: str,
+    action: str,
+    resource_type: Optional[str] = None,
+    resource_id: Optional[str] = None,
+    detail: Optional[dict] = None,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+):
+    """Write an audit log entry. Fire-and-forget, never raises."""
+    try:
+        async with aiosqlite.connect(str(DB_PATH)) as conn:
+            await conn.execute(
+                """INSERT INTO audit_log
+                   (user_id, username, action, resource_type, resource_id, detail, ip_address, user_agent)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    user_id,
+                    username,
+                    action,
+                    resource_type,
+                    resource_id,
+                    json.dumps(detail) if detail else None,
+                    ip_address,
+                    user_agent,
+                ),
+            )
+            await conn.commit()
+    except Exception:
+        pass  # Audit logging must never break the app
+
+
+async def cleanup_audit_log(retention_days: int = 90):
+    """Delete audit entries older than retention_days."""
+    try:
+        async with aiosqlite.connect(str(DB_PATH)) as conn:
+            await conn.execute(
+                "DELETE FROM audit_log WHERE timestamp < datetime('now', ?)",
+                (f'-{retention_days} days',),
+            )
+            await conn.commit()
+    except Exception:
+        pass

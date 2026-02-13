@@ -9,6 +9,8 @@ JWT-based auth with:
 
 import os
 import hashlib
+import time
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -17,6 +19,47 @@ from fastapi.responses import JSONResponse
 from jose import jwt, JWTError, ExpiredSignatureError
 
 import db
+
+
+# --- Login Rate Limiter ---
+
+class LoginRateLimiter:
+    """IP-based rate limiter for login attempts."""
+
+    def __init__(self, max_attempts: int = 5, window_seconds: int = 300, lockout_seconds: int = 900):
+        self.max_attempts = max_attempts
+        self.window = window_seconds
+        self.lockout = lockout_seconds
+        self._attempts: dict[str, list[float]] = defaultdict(list)
+        self._lockouts: dict[str, float] = {}
+
+    def check(self, ip: str) -> tuple[bool, int]:
+        """Return (allowed, retry_after_seconds). allowed=False means blocked."""
+        now = time.time()
+
+        # Check lockout
+        if ip in self._lockouts:
+            remaining = self._lockouts[ip] - now
+            if remaining > 0:
+                return False, int(remaining)
+            del self._lockouts[ip]
+
+        # Prune old attempts
+        cutoff = now - self.window
+        self._attempts[ip] = [t for t in self._attempts[ip] if t > cutoff]
+
+        if len(self._attempts[ip]) >= self.max_attempts:
+            self._lockouts[ip] = now + self.lockout
+            return False, self.lockout
+
+        return True, 0
+
+    def record_attempt(self, ip: str):
+        """Record a failed login attempt."""
+        self._attempts[ip].append(time.time())
+
+
+login_limiter = LoginRateLimiter()
 
 # --- Config ---
 JWT_SECRET = os.environ.get("JWT_SECRET", "CHANGE-ME-IN-PRODUCTION-" + os.urandom(16).hex())
@@ -93,7 +136,7 @@ async def get_current_user(request: Request) -> dict:
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    if payload.get("type") != "access":
+    if payload.get("type") not in ("access", "cli"):
         raise HTTPException(status_code=401, detail="Invalid token type")
 
     user_id = payload.get("sub")
@@ -144,6 +187,18 @@ async def register_handler(request: Request) -> JSONResponse:
     hashed = hash_password(password)
     user = await db.create_user(email, hashed, role)
 
+    # Audit: user registration
+    ip = request.client.host if request.client else None
+    await db.log_audit(
+        user_id=user["id"],
+        username=email,
+        action="user_register",
+        resource_type="user",
+        detail={"username": email},
+        ip_address=ip,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+
     # Generate tokens
     access = create_access_token(user["id"], user["role"])
     refresh = create_refresh_token(user["id"])
@@ -171,6 +226,17 @@ async def register_handler(request: Request) -> JSONResponse:
 
 async def login_handler(request: Request) -> JSONResponse:
     """POST /api/auth/login - Authenticate and return tokens."""
+    ip = request.client.host if request.client else "unknown"
+
+    # Rate limit check
+    allowed, retry_after = login_limiter.check(ip)
+    if not allowed:
+        return JSONResponse(
+            {"error": f"Too many login attempts. Try again in {retry_after} seconds."},
+            status_code=429,
+            headers={"Retry-After": str(retry_after)},
+        )
+
     try:
         body = await request.json()
     except Exception:
@@ -180,6 +246,17 @@ async def login_handler(request: Request) -> JSONResponse:
 
     user = await db.get_user_by_email(email)
     if not user or not verify_password(password, user["password_hash"]):
+        login_limiter.record_attempt(ip)
+        # Audit: failed login
+        await db.log_audit(
+            user_id=user["id"] if user else None,
+            username=email,
+            action="user_login_failed",
+            resource_type="user",
+            detail={"reason": "bad_password"},
+            ip_address=ip,
+            user_agent=request.headers.get("user-agent", ""),
+        )
         return JSONResponse({"error": "Invalid email or password"}, status_code=401)
 
     access = create_access_token(user["id"], user["role"])
@@ -187,6 +264,17 @@ async def login_handler(request: Request) -> JSONResponse:
 
     expires = (datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)).isoformat()
     await db.store_refresh_token(user["id"], hash_token(refresh), expires)
+
+    # Audit: successful login
+    await db.log_audit(
+        user_id=user["id"],
+        username=email,
+        action="user_login",
+        resource_type="user",
+        detail={"method": "password"},
+        ip_address=ip,
+        user_agent=request.headers.get("user-agent", ""),
+    )
 
     response = JSONResponse({
         "user": {"id": user["id"], "email": user["email"], "role": user["role"]},
@@ -232,6 +320,18 @@ async def refresh_handler(request: Request) -> JSONResponse:
 
     # Issue new access token (refresh token stays the same until expiry)
     access = create_access_token(user["id"], user["role"])
+
+    # Audit: token refresh
+    ip = request.client.host if request.client else None
+    await db.log_audit(
+        user_id=user["id"],
+        username=user.get("email", ""),
+        action="token_refresh",
+        resource_type="user",
+        ip_address=ip,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+
     return JSONResponse({
         "user": {"id": user["id"], "email": user["email"], "role": user["role"]},
         "access_token": access,
@@ -241,8 +341,30 @@ async def refresh_handler(request: Request) -> JSONResponse:
 async def logout_handler(request: Request) -> JSONResponse:
     """POST /api/auth/logout - Revoke refresh token."""
     refresh = request.cookies.get("refresh_token")
+
+    # Try to identify the user for audit logging
+    user_id = None
+    username = ""
     if refresh:
+        try:
+            payload = decode_token(refresh)
+            user_id = payload.get("sub")
+            user = await db.get_user_by_id(user_id) if user_id else None
+            username = user.get("email", "") if user else ""
+        except Exception:
+            pass
         await db.delete_refresh_token(hash_token(refresh))
+
+    # Audit: logout
+    ip = request.client.host if request.client else None
+    await db.log_audit(
+        user_id=user_id,
+        username=username or "unknown",
+        action="user_logout",
+        resource_type="user",
+        ip_address=ip,
+        user_agent=request.headers.get("user-agent", ""),
+    )
 
     response = JSONResponse({"status": "ok"})
     response.delete_cookie("refresh_token", path="/api/auth")

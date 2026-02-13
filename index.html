@@ -340,6 +340,7 @@
         <button onclick="showTab('benchmark')" id="tab-benchmark" class="tab tab-active">Benchmark</button>
         <button onclick="showTab('history')" id="tab-history" class="tab">History</button>
         <button onclick="showTab('settings')" id="tab-settings" class="tab">Settings</button>
+        <button onclick="showTab('admin')" id="tab-admin" class="tab" style="display:none;">Admin</button>
         <div id="userMenu" class="flex items-center gap-3 ml-4 pl-4" style="border-left:1px solid var(--border-subtle); display:none;">
           <span id="userEmail" class="text-[11px] text-zinc-500 font-mono"></span>
           <button onclick="handleLogout()" class="text-[10px] font-display tracking-wider uppercase text-zinc-600 hover:text-zinc-300 px-2 py-1 rounded" style="border:1px solid var(--border-subtle)">Logout</button>
@@ -546,6 +547,66 @@
       <!-- Providers + Models -->
       <div id="settingsContainer" class="space-y-6">
         <p class="text-zinc-600 text-sm font-body">Loading configuration...</p>
+      </div>
+    </div>
+
+    <!-- ─── ADMIN TAB ─── -->
+    <div id="view-admin" class="hidden">
+      <div class="mb-6">
+        <h2 class="font-display font-bold text-lg text-zinc-100 mb-1">Admin Dashboard</h2>
+        <p class="text-sm text-zinc-600 font-body">User management, system stats, and audit log.</p>
+      </div>
+
+      <!-- Stats Cards -->
+      <div id="adminStatsCards" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6"></div>
+
+      <!-- System Health -->
+      <div id="adminSystemHealth" class="card rounded-md p-5 mb-6"></div>
+
+      <!-- User Management -->
+      <div class="card rounded-md p-5 mb-6">
+        <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase mb-4">User Management</h3>
+        <div id="adminUsersTable" class="overflow-x-auto"></div>
+      </div>
+
+      <!-- Audit Log -->
+      <div class="card rounded-md p-5">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase">Audit Log</h3>
+          <div class="flex items-center gap-3">
+            <select id="auditFilterUser" onchange="loadAuditLog()" class="text-xs font-mono px-2 py-1 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;">
+              <option value="">All Users</option>
+            </select>
+            <select id="auditFilterAction" onchange="loadAuditLog()" class="text-xs font-mono px-2 py-1 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;">
+              <option value="">All Actions</option>
+              <option value="user_login">Login</option>
+              <option value="user_login_failed">Login Failed</option>
+              <option value="user_register">Register</option>
+              <option value="user_logout">Logout</option>
+              <option value="benchmark_start">Benchmark Start</option>
+              <option value="benchmark_complete">Benchmark Complete</option>
+              <option value="benchmark_cancel">Benchmark Cancel</option>
+              <option value="admin_user_update">Admin User Update</option>
+              <option value="admin_rate_limit">Admin Rate Limit</option>
+              <option value="token_refresh">Token Refresh</option>
+            </select>
+            <select id="auditFilterSince" onchange="loadAuditLog()" class="text-xs font-mono px-2 py-1 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;">
+              <option value="">All Time</option>
+              <option value="1h">Last Hour</option>
+              <option value="24h">Last 24h</option>
+              <option value="7d">Last 7 Days</option>
+              <option value="30d">Last 30 Days</option>
+            </select>
+          </div>
+        </div>
+        <div id="adminAuditTable" class="overflow-x-auto"></div>
+        <div class="flex items-center justify-between mt-3">
+          <span id="auditPageInfo" class="text-[10px] font-mono text-zinc-600"></span>
+          <div class="flex gap-2">
+            <button onclick="auditPrevPage()" id="auditPrevBtn" class="text-[10px] font-display tracking-wider uppercase px-3 py-1 rounded-sm" style="border:1px solid var(--border-subtle);color:#71717A;" disabled>Prev</button>
+            <button onclick="auditNextPage()" id="auditNextBtn" class="text-[10px] font-display tracking-wider uppercase px-3 py-1 rounded-sm" style="border:1px solid var(--border-subtle);color:#71717A;">Next</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1752,11 +1813,14 @@
       document.getElementById('view-benchmark').classList.toggle('hidden', tab !== 'benchmark');
       document.getElementById('view-history').classList.toggle('hidden', tab !== 'history');
       document.getElementById('view-settings').classList.toggle('hidden', tab !== 'settings');
+      document.getElementById('view-admin').classList.toggle('hidden', tab !== 'admin');
       document.getElementById('tab-benchmark').classList.toggle('tab-active', tab === 'benchmark');
       document.getElementById('tab-history').classList.toggle('tab-active', tab === 'history');
       document.getElementById('tab-settings').classList.toggle('tab-active', tab === 'settings');
+      document.getElementById('tab-admin').classList.toggle('tab-active', tab === 'admin');
       if (tab === 'history') loadHistory();
       if (tab === 'settings') renderSettings();
+      if (tab === 'admin') loadAdminDashboard();
     }
 
     // -------------------------------------------------------------------
@@ -2669,6 +2733,305 @@
       }
     }
 
+    // -------------------------------------------------------------------
+    // Admin Dashboard
+    // -------------------------------------------------------------------
+    let auditPage = 0;
+    const AUDIT_PAGE_SIZE = 50;
+
+    async function loadAdminDashboard() {
+      await Promise.all([loadAdminStats(), loadAdminSystem(), loadAdminUsers(), loadAuditLog()]);
+    }
+
+    async function loadAdminStats() {
+      try {
+        const res = await apiFetch('/api/admin/stats');
+        if (!res.ok) return;
+        const stats = await res.json();
+        const container = document.getElementById('adminStatsCards');
+        container.innerHTML = `
+          <div class="card rounded-md p-4">
+            <div class="text-[10px] font-display tracking-wider uppercase text-zinc-600 mb-1">Benchmarks (24h)</div>
+            <div class="text-2xl font-display font-bold text-zinc-100">${stats.benchmarks_24h || 0}</div>
+          </div>
+          <div class="card rounded-md p-4">
+            <div class="text-[10px] font-display tracking-wider uppercase text-zinc-600 mb-1">Benchmarks (7d)</div>
+            <div class="text-2xl font-display font-bold text-zinc-100">${stats.benchmarks_7d || 0}</div>
+          </div>
+          <div class="card rounded-md p-4">
+            <div class="text-[10px] font-display tracking-wider uppercase text-zinc-600 mb-1">Benchmarks (30d)</div>
+            <div class="text-2xl font-display font-bold text-zinc-100">${stats.benchmarks_30d || 0}</div>
+          </div>
+          <div class="card rounded-md p-4">
+            <div class="text-[10px] font-display tracking-wider uppercase text-zinc-600 mb-1">Total Users</div>
+            <div class="text-2xl font-display font-bold text-zinc-100">${stats.total_users || 0}</div>
+          </div>
+        `;
+
+        // Populate audit user filter from top_users + keys_by_provider info
+        const userFilter = document.getElementById('auditFilterUser');
+        const existingOptions = userFilter.querySelectorAll('option:not(:first-child)');
+        existingOptions.forEach(o => o.remove());
+        if (stats.top_users) {
+          stats.top_users.forEach(u => {
+            const opt = document.createElement('option');
+            opt.value = u.username;
+            opt.textContent = u.username;
+            userFilter.appendChild(opt);
+          });
+        }
+      } catch {}
+    }
+
+    async function loadAdminSystem() {
+      try {
+        const res = await apiFetch('/api/admin/system');
+        if (!res.ok) return;
+        const sys = await res.json();
+        const container = document.getElementById('adminSystemHealth');
+        const upHours = Math.floor((sys.process_uptime_s || 0) / 3600);
+        const upMins = Math.floor(((sys.process_uptime_s || 0) % 3600) / 60);
+        container.innerHTML = `
+          <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase mb-4">System Health</h3>
+          <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <div>
+              <div class="text-[10px] font-display tracking-wider uppercase text-zinc-600 mb-1">DB Size</div>
+              <div class="text-sm font-mono text-zinc-300">${sys.db_size_mb} MB</div>
+            </div>
+            <div>
+              <div class="text-[10px] font-display tracking-wider uppercase text-zinc-600 mb-1">Results Files</div>
+              <div class="text-sm font-mono text-zinc-300">${sys.results_count} (${sys.results_size_mb} MB)</div>
+            </div>
+            <div>
+              <div class="text-[10px] font-display tracking-wider uppercase text-zinc-600 mb-1">Uptime</div>
+              <div class="text-sm font-mono text-zinc-300">${upHours}h ${upMins}m</div>
+            </div>
+            <div>
+              <div class="text-[10px] font-display tracking-wider uppercase text-zinc-600 mb-1">Benchmark Active</div>
+              <div class="text-sm font-mono ${sys.benchmark_active ? 'text-yellow-400' : 'text-zinc-500'}">${sys.benchmark_active ? 'Running' : 'Idle'}</div>
+            </div>
+          </div>
+        `;
+      } catch {}
+    }
+
+    async function loadAdminUsers() {
+      try {
+        const res = await apiFetch('/api/admin/users');
+        if (!res.ok) return;
+        const data = await res.json();
+        const container = document.getElementById('adminUsersTable');
+        if (!data.users || data.users.length === 0) {
+          container.innerHTML = '<p class="text-zinc-600 text-sm">No users found.</p>';
+          return;
+        }
+        let html = `<table class="w-full text-xs results-table">
+          <thead><tr class="text-[10px] font-display tracking-wider uppercase text-zinc-500">
+            <th class="text-left px-3 py-2">Email</th>
+            <th class="text-left px-3 py-2">Role</th>
+            <th class="text-right px-3 py-2">Benchmarks</th>
+            <th class="text-right px-3 py-2">Keys</th>
+            <th class="text-left px-3 py-2">Last Login</th>
+            <th class="text-left px-3 py-2">Created</th>
+            <th class="text-right px-3 py-2">Actions</th>
+          </tr></thead><tbody>`;
+
+        for (const u of data.users) {
+          const isCurrentUser = currentUser && u.id === currentUser.id;
+          const lastLogin = u.last_login ? new Date(u.last_login + 'Z').toLocaleDateString() : 'Never';
+          const created = u.created_at ? new Date(u.created_at + 'Z').toLocaleDateString() : '-';
+          html += `<tr>
+            <td class="px-3 py-2 font-mono text-zinc-300">${escapeHtml(u.email)}</td>
+            <td class="px-3 py-2">
+              <select onchange="changeUserRole('${u.id}', this.value)" class="text-xs font-mono px-1 py-0.5 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);color:${u.role === 'admin' ? '#BFFF00' : '#A1A1AA'};outline:none;" ${isCurrentUser ? 'disabled title="Cannot change own role"' : ''}>
+                <option value="user" ${u.role === 'user' ? 'selected' : ''}>user</option>
+                <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>admin</option>
+              </select>
+            </td>
+            <td class="px-3 py-2 text-right font-mono text-zinc-400">${u.benchmark_count || 0}</td>
+            <td class="px-3 py-2 text-right font-mono text-zinc-400">${u.key_count || 0}</td>
+            <td class="px-3 py-2 text-zinc-500">${lastLogin}</td>
+            <td class="px-3 py-2 text-zinc-500">${created}</td>
+            <td class="px-3 py-2 text-right">
+              <button onclick="showRateLimitModal('${u.id}', '${escapeHtml(u.email)}')" class="text-[10px] font-display tracking-wider uppercase px-2 py-1 rounded-sm" style="border:1px solid var(--border-subtle);color:#71717A;">Limits</button>
+            </td>
+          </tr>`;
+        }
+        html += '</tbody></table>';
+        container.innerHTML = html;
+      } catch {}
+    }
+
+    async function changeUserRole(userId, newRole) {
+      try {
+        const res = await apiFetch(`/api/admin/users/${userId}/role`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role: newRole }),
+        });
+        if (res.ok) {
+          showToast('Role updated', 'success');
+        } else {
+          const data = await res.json();
+          showToast(data.error || 'Failed to update role', 'error');
+          loadAdminUsers(); // Revert UI
+        }
+      } catch {
+        showToast('Failed to update role', 'error');
+        loadAdminUsers();
+      }
+    }
+
+    async function showRateLimitModal(userId, email) {
+      try {
+        const res = await apiFetch(`/api/admin/users/${userId}/rate-limit`);
+        const limits = res.ok ? await res.json() : { benchmarks_per_hour: 20, max_concurrent: 1, max_runs_per_benchmark: 10 };
+
+        const html = `
+          <div class="modal-overlay" id="rateLimitModal" style="z-index:10000;" onclick="if(event.target===this)this.remove()">
+            <div class="modal-box" style="max-width:380px;">
+              <h3 class="font-display font-semibold text-sm text-zinc-100 mb-1">Rate Limits</h3>
+              <p class="text-xs text-zinc-500 mb-4">${escapeHtml(email)}</p>
+              <div class="space-y-3">
+                <div>
+                  <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Benchmarks Per Hour</label>
+                  <input type="number" id="rl_bph" value="${limits.benchmarks_per_hour}" min="1" max="1000" class="modal-input w-full">
+                </div>
+                <div>
+                  <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Max Concurrent</label>
+                  <input type="number" id="rl_mc" value="${limits.max_concurrent}" min="1" max="10" class="modal-input w-full">
+                </div>
+                <div>
+                  <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Max Runs Per Benchmark</label>
+                  <input type="number" id="rl_mrpb" value="${limits.max_runs_per_benchmark}" min="1" max="50" class="modal-input w-full">
+                </div>
+              </div>
+              <div class="flex gap-2 mt-5">
+                <button onclick="document.getElementById('rateLimitModal').remove()" class="modal-btn flex-1">Cancel</button>
+                <button onclick="saveRateLimit('${userId}')" class="modal-btn modal-btn-confirm flex-1">Save</button>
+              </div>
+            </div>
+          </div>`;
+        document.body.insertAdjacentHTML('beforeend', html);
+      } catch {}
+    }
+
+    async function saveRateLimit(userId) {
+      const bph = parseInt(document.getElementById('rl_bph').value) || 20;
+      const mc = parseInt(document.getElementById('rl_mc').value) || 1;
+      const mrpb = parseInt(document.getElementById('rl_mrpb').value) || 10;
+
+      try {
+        const res = await apiFetch(`/api/admin/users/${userId}/rate-limit`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ benchmarks_per_hour: bph, max_concurrent: mc, max_runs_per_benchmark: mrpb }),
+        });
+        if (res.ok) {
+          showToast('Rate limits updated', 'success');
+          document.getElementById('rateLimitModal').remove();
+        } else {
+          const data = await res.json();
+          showToast(data.error || 'Failed to save', 'error');
+        }
+      } catch {
+        showToast('Failed to save rate limits', 'error');
+      }
+    }
+
+    async function loadAuditLog() {
+      try {
+        const userFilter = document.getElementById('auditFilterUser').value;
+        const actionFilter = document.getElementById('auditFilterAction').value;
+        const sinceFilter = document.getElementById('auditFilterSince').value;
+
+        let sinceParam = '';
+        if (sinceFilter) {
+          const now = new Date();
+          const map = { '1h': 3600000, '24h': 86400000, '7d': 604800000, '30d': 2592000000 };
+          const ms = map[sinceFilter] || 0;
+          if (ms) sinceParam = new Date(now.getTime() - ms).toISOString().replace('T', ' ').slice(0, 19);
+        }
+
+        const params = new URLSearchParams();
+        if (userFilter) params.set('user', userFilter);
+        if (actionFilter) params.set('action', actionFilter);
+        if (sinceParam) params.set('since', sinceParam);
+        params.set('limit', AUDIT_PAGE_SIZE);
+        params.set('offset', auditPage * AUDIT_PAGE_SIZE);
+
+        const res = await apiFetch(`/api/admin/audit?${params.toString()}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const container = document.getElementById('adminAuditTable');
+
+        if (!data.entries || data.entries.length === 0) {
+          container.innerHTML = '<p class="text-zinc-600 text-sm">No audit entries found.</p>';
+          document.getElementById('auditPageInfo').textContent = '';
+          document.getElementById('auditPrevBtn').disabled = true;
+          document.getElementById('auditNextBtn').disabled = true;
+          return;
+        }
+
+        const actionColors = {
+          user_login: 'text-green-400', user_login_failed: 'text-red-400',
+          user_register: 'text-blue-400', user_logout: 'text-zinc-500',
+          benchmark_start: 'text-yellow-400', benchmark_complete: 'text-green-400',
+          benchmark_cancel: 'text-orange-400', admin_user_update: 'text-purple-400',
+          admin_rate_limit: 'text-purple-400', token_refresh: 'text-zinc-500',
+        };
+
+        let html = `<table class="w-full text-xs results-table">
+          <thead><tr class="text-[10px] font-display tracking-wider uppercase text-zinc-500">
+            <th class="text-left px-3 py-2">Time</th>
+            <th class="text-left px-3 py-2">User</th>
+            <th class="text-left px-3 py-2">Action</th>
+            <th class="text-left px-3 py-2">Resource</th>
+            <th class="text-left px-3 py-2">Detail</th>
+            <th class="text-left px-3 py-2">IP</th>
+          </tr></thead><tbody>`;
+
+        for (const e of data.entries) {
+          const ts = e.timestamp ? new Date(e.timestamp + 'Z').toLocaleString() : '-';
+          const color = actionColors[e.action] || 'text-zinc-400';
+          let detail = '';
+          if (e.detail) {
+            try { detail = typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail); } catch { detail = ''; }
+            if (detail.length > 60) detail = detail.slice(0, 57) + '...';
+          }
+          html += `<tr>
+            <td class="px-3 py-2 text-zinc-500 whitespace-nowrap">${ts}</td>
+            <td class="px-3 py-2 font-mono text-zinc-400">${escapeHtml(e.username || '')}</td>
+            <td class="px-3 py-2 font-mono ${color}">${escapeHtml(e.action || '')}</td>
+            <td class="px-3 py-2 text-zinc-500">${escapeHtml(e.resource_type || '')}${e.resource_id ? ':' + escapeHtml(e.resource_id) : ''}</td>
+            <td class="px-3 py-2 text-zinc-600 font-mono" title="${escapeHtml(detail)}">${escapeHtml(detail)}</td>
+            <td class="px-3 py-2 text-zinc-600 font-mono">${escapeHtml(e.ip_address || '')}</td>
+          </tr>`;
+        }
+        html += '</tbody></table>';
+        container.innerHTML = html;
+
+        const from = auditPage * AUDIT_PAGE_SIZE + 1;
+        const to = from + data.entries.length - 1;
+        document.getElementById('auditPageInfo').textContent = `${from}-${to}`;
+        document.getElementById('auditPrevBtn').disabled = auditPage === 0;
+        document.getElementById('auditNextBtn').disabled = data.entries.length < AUDIT_PAGE_SIZE;
+      } catch {}
+    }
+
+    function auditPrevPage() {
+      if (auditPage > 0) { auditPage--; loadAuditLog(); }
+    }
+    function auditNextPage() {
+      auditPage++; loadAuditLog();
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
     // --- Auth functions ---
     let authMode = 'login';
 
@@ -2732,11 +3095,14 @@
 
     function updateAuthUI() {
       const menu = document.getElementById('userMenu');
+      const adminTab = document.getElementById('tab-admin');
       if (currentUser) {
         menu.style.display = 'flex';
         document.getElementById('userEmail').textContent = currentUser.email;
+        adminTab.style.display = currentUser.role === 'admin' ? '' : 'none';
       } else {
         menu.style.display = 'none';
+        adminTab.style.display = 'none';
       }
     }
 

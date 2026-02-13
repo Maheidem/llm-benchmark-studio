@@ -744,6 +744,98 @@ def save_results(
 
 
 # ---------------------------------------------------------------------------
+# Remote benchmark (CLI -> server API via SSE)
+# ---------------------------------------------------------------------------
+
+def run_remote_benchmark(
+    server_url: str,
+    token: str,
+    model_ids: list[str],
+    runs: int,
+    max_tokens: int,
+    temperature: float,
+    prompt: str,
+    context_tiers: list[int],
+):
+    """Run benchmark via server API with JWT auth, streaming results via SSE."""
+    import httpx
+
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "models": model_ids,
+        "runs": runs,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "prompt": prompt,
+        "context_tiers": context_tiers,
+    }
+
+    console.print(f"  [dim]Connecting to {server_url}...[/dim]")
+
+    try:
+        with httpx.Client(timeout=httpx.Timeout(5.0, read=300.0)) as client:
+            # Validate auth by fetching config
+            config_resp = client.get(f"{server_url}/api/config", headers=headers)
+            if config_resp.status_code == 401:
+                console.print("[red]Authentication failed. Check your token.[/red]")
+                return
+            if config_resp.status_code != 200:
+                console.print(f"[red]Server error ({config_resp.status_code}) fetching config.[/red]")
+                return
+
+            console.print(f"  [dim]Authenticated. Starting remote benchmark...[/dim]\n")
+
+            # Start benchmark via SSE stream
+            with client.stream(
+                "POST",
+                f"{server_url}/api/benchmark",
+                json=payload,
+                headers=headers,
+            ) as response:
+                if response.status_code != 200:
+                    console.print(f"[red]Server error: {response.status_code}[/red]")
+                    return
+
+                results = []
+                for line in response.iter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = json.loads(line[6:])
+
+                    if data["type"] == "progress":
+                        console.print(
+                            f"  [{data['current']}/{data['total']}] {data['provider']} / "
+                            f"{data['model']} (run {data['run']}/{data['runs']})...",
+                            end=" ",
+                        )
+                    elif data["type"] == "result":
+                        if data["success"]:
+                            console.print(
+                                f"[green]OK[/green] {data['tokens_per_second']:.1f} tok/s"
+                            )
+                        else:
+                            console.print(f"[red]FAIL[/red] {data.get('error', '')[:80]}")
+                        results.append(data)
+                    elif data["type"] == "complete":
+                        saved_to = data.get("saved_to", "")
+                        if saved_to:
+                            console.print(f"\n  Saved to: {saved_to}")
+                    elif data["type"] == "error":
+                        console.print(f"[red]Error: {data['message']}[/red]")
+                    elif data["type"] == "cancelled":
+                        console.print("[yellow]Benchmark cancelled by server.[/yellow]")
+
+        console.print(f"\n  [green]Remote benchmark complete. {len(results)} results received.[/green]")
+
+    except httpx.ConnectError:
+        console.print(f"[red]Could not connect to {server_url}. Is the server running?[/red]")
+    except httpx.ReadTimeout:
+        console.print("[red]Server read timeout. The benchmark may still be running on the server.[/red]")
+    except Exception as e:
+        console.print(f"[red]Remote benchmark error: {e}[/red]")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -772,6 +864,8 @@ Examples:
     parser.add_argument("--verbose", action="store_true", help="Show LiteLLM debug output")
     parser.add_argument("--context-tiers", help="Comma-separated context token tiers (e.g., 0,1000,5000)")
     parser.add_argument("--no-warmup", action="store_true", help="Skip warm-up run before measured runs")
+    parser.add_argument("--token", help="JWT token for remote API mode (delegates to server)")
+    parser.add_argument("--server", default="http://localhost:8501", help="Server URL for remote mode (default: http://localhost:8501)")
     args = parser.parse_args()
 
     # Load .env (keys)
@@ -809,6 +903,21 @@ Examples:
     context_tiers = None
     if args.context_tiers:
         context_tiers = [int(x.strip()) for x in args.context_tiers.split(",")]
+
+    # Remote mode: delegate to server API when --token is provided
+    if args.token:
+        model_ids = [t.model_id for t in targets]
+        run_remote_benchmark(
+            server_url=args.server,
+            token=args.token,
+            model_ids=model_ids,
+            runs=runs,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            prompt=prompt,
+            context_tiers=context_tiers or [0],
+        )
+        return
 
     # Header
     console.print(

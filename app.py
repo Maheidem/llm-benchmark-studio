@@ -47,6 +47,8 @@ from contextlib import asynccontextmanager
 async def lifespan(app_instance):
     """Initialize database on startup."""
     await db.init_db()
+    # Clean up old audit log entries
+    await db.cleanup_audit_log(retention_days=90)
     # Optionally bootstrap admin from env vars
     admin_email = os.environ.get("ADMIN_EMAIL")
     admin_pass = os.environ.get("ADMIN_PASSWORD")
@@ -59,6 +61,63 @@ async def lifespan(app_instance):
     yield
 
 app = FastAPI(title="LLM Benchmark Studio", lifespan=lifespan)
+
+# ---------------------------------------------------------------------------
+# Security Headers Middleware
+# ---------------------------------------------------------------------------
+from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.middleware.cors import CORSMiddleware
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add security headers to all responses."""
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+
+        # Content Security Policy
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "img-src 'self' data:; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self';"
+        )
+
+        # Prevent MIME sniffing
+        response.headers["X-Content-Type-Options"] = "nosniff"
+
+        # Prevent clickjacking
+        response.headers["X-Frame-Options"] = "DENY"
+
+        # Referrer policy
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+        # Permissions policy (disable unused browser features)
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=(), payment=()"
+        )
+
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# CORS configuration (only enabled when CORS_ORIGINS is set)
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
 CONFIG_PATH = str(_dir / "config.yaml")
 
 # ---------------------------------------------------------------------------
@@ -215,6 +274,233 @@ app.post("/api/auth/login")(auth.login_handler)
 app.post("/api/auth/refresh")(auth.refresh_handler)
 app.post("/api/auth/logout")(auth.logout_handler)
 app.get("/api/auth/me")(auth.me_handler)
+
+
+@app.post("/api/auth/cli-token")
+async def generate_cli_token(user: dict = Depends(auth.get_current_user)):
+    """Generate a long-lived JWT for CLI usage (30 days)."""
+    from datetime import timedelta, datetime, timezone
+    from jose import jwt as jose_jwt
+
+    expire = datetime.now(timezone.utc) + timedelta(days=30)
+    payload = {
+        "sub": user["id"],
+        "role": user["role"],
+        "exp": expire,
+        "type": "cli",
+    }
+    token = jose_jwt.encode(payload, auth.JWT_SECRET, algorithm=auth.JWT_ALGORITHM)
+    return {"token": token, "expires_in_days": 30}
+
+
+# ---------------------------------------------------------------------------
+# Admin endpoints (all require admin role)
+# ---------------------------------------------------------------------------
+_process_start_time = time.time()
+
+
+@app.get("/api/admin/users")
+async def admin_list_users(current_user: dict = Depends(auth.require_admin)):
+    """List all users with last login, benchmark count, key count."""
+    conn = await db.get_db()
+    try:
+        cursor = await conn.execute("""
+            SELECT u.id, u.email, u.role, u.created_at,
+                   (SELECT MAX(timestamp) FROM audit_log
+                    WHERE user_id = u.id AND action = 'user_login') as last_login,
+                   (SELECT COUNT(*) FROM benchmark_runs
+                    WHERE user_id = u.id) as benchmark_count,
+                   (SELECT COUNT(*) FROM user_api_keys
+                    WHERE user_id = u.id) as key_count
+            FROM users u
+            ORDER BY u.created_at DESC
+        """)
+        rows = await cursor.fetchall()
+        return {"users": [dict(r) for r in rows]}
+    finally:
+        await conn.close()
+
+
+@app.put("/api/admin/users/{user_id}/role")
+async def admin_update_role(user_id: str, request: Request, current_user: dict = Depends(auth.require_admin)):
+    """Change a user's role (admin/user). Cannot change own role."""
+    body = await request.json()
+    new_role = body.get("role")
+    if new_role not in ("admin", "user"):
+        return JSONResponse({"error": "role must be 'admin' or 'user'"}, status_code=400)
+    if user_id == current_user["id"]:
+        return JSONResponse({"error": "Cannot change your own role"}, status_code=400)
+
+    conn = await db.get_db()
+    try:
+        await conn.execute("UPDATE users SET role = ?, updated_at = datetime('now') WHERE id = ?", (new_role, user_id))
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    await db.log_audit(
+        current_user["id"], current_user.get("email", ""), "admin_user_update",
+        resource_type="user", resource_id=str(user_id),
+        detail={"change": "role", "new_role": new_role},
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+    return {"status": "ok"}
+
+
+@app.get("/api/admin/stats")
+async def admin_stats(current_user: dict = Depends(auth.require_admin)):
+    """Usage statistics: benchmark counts, top users, keys by provider."""
+    conn = await db.get_db()
+    try:
+        stats = {}
+
+        # Benchmark counts by time window
+        for label, interval in [("24h", "-1 day"), ("7d", "-7 days"), ("30d", "-30 days")]:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) as cnt FROM benchmark_runs WHERE timestamp > datetime('now', ?)",
+                (interval,),
+            )
+            row = await cursor.fetchone()
+            stats[f"benchmarks_{label}"] = row["cnt"]
+
+        # Top users by benchmark count
+        cursor = await conn.execute("""
+            SELECT u.email as username, COUNT(*) as cnt
+            FROM benchmark_runs br JOIN users u ON br.user_id = u.id
+            GROUP BY br.user_id ORDER BY cnt DESC LIMIT 10
+        """)
+        rows = await cursor.fetchall()
+        stats["top_users"] = [dict(r) for r in rows]
+
+        # Keys by provider
+        cursor = await conn.execute("""
+            SELECT provider_key as provider, COUNT(*) as user_count
+            FROM user_api_keys GROUP BY provider_key
+        """)
+        rows = await cursor.fetchall()
+        stats["keys_by_provider"] = [dict(r) for r in rows]
+
+        # Total users
+        cursor = await conn.execute("SELECT COUNT(*) as cnt FROM users")
+        row = await cursor.fetchone()
+        stats["total_users"] = row["cnt"]
+
+        return stats
+    finally:
+        await conn.close()
+
+
+@app.get("/api/admin/system")
+async def admin_system_health(current_user: dict = Depends(auth.require_admin)):
+    """System health: db size, results count, uptime, benchmark status."""
+    db_path = db.DB_PATH
+    results_dir = _dir / "results"
+
+    db_size_mb = 0
+    if db_path.exists():
+        db_size_mb = round(db_path.stat().st_size / 1024 / 1024, 2)
+
+    results_count = 0
+    results_size_mb = 0
+    if results_dir.exists():
+        json_files = list(results_dir.glob("*.json"))
+        results_count = len(json_files)
+        results_size_mb = round(sum(f.stat().st_size for f in json_files) / 1024 / 1024, 2)
+
+    return {
+        "db_size_mb": db_size_mb,
+        "results_size_mb": results_size_mb,
+        "results_count": results_count,
+        "benchmark_active": any(lock.locked() for lock in _user_locks.values()),
+        "process_uptime_s": round(time.time() - _process_start_time),
+    }
+
+
+@app.get("/api/admin/audit")
+async def admin_audit_log(
+    request: Request,
+    user: str = None,
+    action: str = None,
+    since: str = None,
+    limit: int = 100,
+    offset: int = 0,
+    current_user: dict = Depends(auth.require_admin),
+):
+    """Audit log with optional filters and pagination."""
+    conn = await db.get_db()
+    try:
+        query = "SELECT * FROM audit_log WHERE 1=1"
+        params = []
+
+        if user:
+            query += " AND username = ?"
+            params.append(user)
+        if action:
+            query += " AND action = ?"
+            params.append(action)
+        if since:
+            query += " AND timestamp > ?"
+            params.append(since)
+
+        query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+        return {"entries": [dict(r) for r in rows]}
+    finally:
+        await conn.close()
+
+
+@app.put("/api/admin/users/{user_id}/rate-limit")
+async def admin_set_rate_limit(user_id: str, request: Request, current_user: dict = Depends(auth.require_admin)):
+    """Set per-user rate limits."""
+    body = await request.json()
+    conn = await db.get_db()
+    try:
+        await conn.execute("""
+            INSERT INTO rate_limits (user_id, benchmarks_per_hour, max_concurrent, max_runs_per_benchmark, updated_by)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                benchmarks_per_hour = excluded.benchmarks_per_hour,
+                max_concurrent = excluded.max_concurrent,
+                max_runs_per_benchmark = excluded.max_runs_per_benchmark,
+                updated_at = datetime('now'),
+                updated_by = excluded.updated_by
+        """, (
+            user_id,
+            body.get("benchmarks_per_hour", 20),
+            body.get("max_concurrent", 1),
+            body.get("max_runs_per_benchmark", 10),
+            current_user["id"],
+        ))
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    await db.log_audit(
+        current_user["id"], current_user.get("email", ""), "admin_rate_limit",
+        resource_type="config", resource_id=str(user_id),
+        detail=body,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+    return {"status": "ok"}
+
+
+@app.get("/api/admin/users/{user_id}/rate-limit")
+async def admin_get_rate_limit(user_id: str, current_user: dict = Depends(auth.require_admin)):
+    """Get per-user rate limits (returns defaults if none set)."""
+    conn = await db.get_db()
+    try:
+        cursor = await conn.execute("SELECT * FROM rate_limits WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if row:
+            return dict(row)
+        return {"user_id": user_id, "benchmarks_per_hour": 20, "max_concurrent": 1, "max_runs_per_benchmark": 10}
+    finally:
+        await conn.close()
 
 
 @app.get("/api/config")
@@ -795,9 +1081,19 @@ async def delete_my_key(request: Request, user: dict = Depends(auth.get_current_
 
 
 @app.post("/api/benchmark/cancel")
-async def cancel_benchmark(user: dict = Depends(auth.get_current_user)):
+async def cancel_benchmark(request: Request, user: dict = Depends(auth.get_current_user)):
     """Cancel a running benchmark."""
     _get_user_cancel(user["id"]).set()
+
+    await db.log_audit(
+        user_id=user["id"],
+        username=user.get("email", ""),
+        action="benchmark_cancel",
+        resource_type="benchmark",
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+
     return {"status": "ok", "message": "Cancellation requested"}
 
 
@@ -853,6 +1149,17 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
             status_code=429,
         )
     _record_rate_limit(user["id"])
+
+    # Audit: benchmark start
+    await db.log_audit(
+        user_id=user["id"],
+        username=user.get("email", ""),
+        action="benchmark_start",
+        resource_type="benchmark",
+        detail={"models": model_ids, "runs": runs, "context_tiers": context_tiers},
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent", ""),
+    )
 
     # --- Concurrent benchmark guard (per-user) ---
     user_lock = _get_user_lock(user["id"])
@@ -1012,6 +1319,17 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
                     prompt=prompt,
                     context_tiers=json.dumps(context_tiers),
                     results_json=json.dumps(all_results),
+                )
+
+                # Audit: benchmark complete
+                await db.log_audit(
+                    user_id=user["id"],
+                    username=user.get("email", ""),
+                    action="benchmark_complete",
+                    resource_type="benchmark",
+                    detail={"models": model_ids, "result_count": len(all_results)},
+                    ip_address=request.client.host if request.client else None,
+                    user_agent=request.headers.get("user-agent", ""),
                 )
 
                 yield _sse({"type": "complete", "saved_to": str(saved)})
