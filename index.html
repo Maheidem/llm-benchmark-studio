@@ -340,6 +340,7 @@
         <button onclick="showTab('benchmark')" id="tab-benchmark" class="tab tab-active">Benchmark</button>
         <button onclick="showTab('history')" id="tab-history" class="tab">History</button>
         <button onclick="showTab('settings')" id="tab-settings" class="tab">Settings</button>
+        <button onclick="showTab('tool-eval')" id="tab-tool-eval" class="tab">Tool Eval</button>
         <button onclick="showTab('admin')" id="tab-admin" class="tab" style="display:none;">Admin</button>
         <div id="userMenu" class="flex items-center gap-3 ml-4 pl-4" style="border-left:1px solid var(--border-subtle); display:none;">
           <span id="userEmail" class="text-[11px] text-zinc-500 font-mono"></span>
@@ -605,6 +606,265 @@
           <div class="flex gap-2">
             <button onclick="auditPrevPage()" id="auditPrevBtn" class="text-[10px] font-display tracking-wider uppercase px-3 py-1 rounded-sm" style="border:1px solid var(--border-subtle);color:#71717A;" disabled>Prev</button>
             <button onclick="auditNextPage()" id="auditNextBtn" class="text-[10px] font-display tracking-wider uppercase px-3 py-1 rounded-sm" style="border:1px solid var(--border-subtle);color:#71717A;">Next</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── TOOL EVAL TAB ─── -->
+    <div id="view-tool-eval" class="hidden">
+
+      <!-- Sub-View 1: Suite List (default) -->
+      <div id="te-suites-view">
+        <div class="flex items-center justify-between mb-6">
+          <div>
+            <h2 class="font-display font-bold text-lg text-zinc-100 mb-1">Tool Calling Evaluation</h2>
+            <p class="text-sm text-zinc-600 font-body">Define tool suites, create test cases, and evaluate model accuracy.</p>
+          </div>
+          <button onclick="teNewSuite()" class="run-btn px-4 py-2 rounded-sm text-xs flex items-center gap-2">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+            New Suite
+          </button>
+        </div>
+
+        <!-- Suite List Table -->
+        <div class="card rounded-md overflow-hidden mb-6">
+          <table class="w-full text-sm results-table">
+            <thead>
+              <tr style="border-bottom: 1px solid var(--border-subtle)">
+                <th class="px-5 py-3 text-left section-label">Name</th>
+                <th class="px-5 py-3 text-center section-label">Tools</th>
+                <th class="px-5 py-3 text-center section-label">Cases</th>
+                <th class="px-5 py-3 text-right section-label">Last Updated</th>
+                <th class="px-5 py-3 text-right section-label"></th>
+              </tr>
+            </thead>
+            <tbody id="teSuitesBody">
+              <tr><td colspan="5" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">Loading suites...</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Eval History Section -->
+        <div class="mb-6">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase">Eval History</h3>
+          </div>
+          <div class="card rounded-md overflow-hidden">
+            <table class="w-full text-sm results-table">
+              <thead>
+                <tr style="border-bottom: 1px solid var(--border-subtle)">
+                  <th class="px-5 py-3 text-left section-label">Timestamp</th>
+                  <th class="px-5 py-3 text-left section-label">Suite</th>
+                  <th class="px-5 py-3 text-left section-label">Models</th>
+                  <th class="px-5 py-3 text-right section-label">Overall</th>
+                  <th class="px-5 py-3 text-right section-label"></th>
+                </tr>
+              </thead>
+              <tbody id="teHistoryBody">
+                <tr><td colspan="5" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No eval runs yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sub-View 2: Suite Editor -->
+      <div id="te-editor-view" class="hidden">
+        <div class="flex items-center justify-between mb-6">
+          <button onclick="showToolEvalView('suites')" class="flex items-center gap-2 text-zinc-500 hover:text-zinc-300 transition-colors text-sm font-body">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+            Back to Suites
+          </button>
+          <button onclick="teStartRunFromEditor()" class="run-btn px-4 py-2 rounded-sm text-xs flex items-center gap-2">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            Run Eval
+          </button>
+        </div>
+
+        <!-- Suite Name + Description -->
+        <div class="card rounded-md p-5 mb-6">
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div>
+              <label class="section-label mb-2 block">Suite Name</label>
+              <input id="teSuiteName" class="w-full px-3 py-2 rounded-sm text-sm font-body text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" placeholder="e.g., Customer Support Tools" onchange="teSaveSuiteMeta()">
+            </div>
+            <div>
+              <label class="section-label mb-2 block">Description</label>
+              <input id="teSuiteDesc" class="w-full px-3 py-2 rounded-sm text-sm font-body text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" placeholder="Optional description" onchange="teSaveSuiteMeta()">
+            </div>
+          </div>
+        </div>
+
+        <!-- Tools Section -->
+        <div class="card rounded-md p-5 mb-6">
+          <div class="flex items-center justify-between mb-4">
+            <label class="section-label">Tools <span id="teToolCount" class="text-zinc-600">(0)</span></label>
+            <button onclick="teAddTool()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color: var(--lime); border: 1px solid rgba(191,255,0,0.2);" onmouseover="this.style.borderColor='rgba(191,255,0,0.5)'" onmouseout="this.style.borderColor='rgba(191,255,0,0.2)'">+ Add Tool</button>
+          </div>
+          <div id="teToolsList" class="space-y-2">
+            <p class="text-zinc-600 text-xs font-body">No tools defined yet.</p>
+          </div>
+          <!-- Inline tool JSON editor (hidden by default) -->
+          <div id="teToolEditor" class="hidden mt-4" style="border-top:1px solid var(--border-subtle);padding-top:16px;">
+            <label class="section-label mb-2 block">Tool JSON <span class="text-zinc-600 normal-case">(OpenAI function calling format)</span></label>
+            <textarea id="teToolJson" rows="12" class="prompt-input w-full rounded-sm px-4 py-3 font-mono text-xs" placeholder='{"type":"function","function":{"name":"my_tool","description":"...","parameters":{...}}}'></textarea>
+            <div id="teToolJsonError" class="hidden text-xs mt-1" style="color:var(--coral)"></div>
+            <div class="flex justify-end gap-2 mt-3">
+              <button onclick="teCancelToolEdit()" class="modal-btn modal-btn-cancel text-xs">Cancel</button>
+              <button onclick="teSaveToolJson()" class="modal-btn modal-btn-confirm text-xs">Save Tool</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Test Cases Section -->
+        <div class="card rounded-md p-5 mb-6">
+          <div class="flex items-center justify-between mb-4">
+            <label class="section-label">Test Cases <span id="teCaseCount" class="text-zinc-600">(0)</span></label>
+            <div class="flex gap-2">
+              <button onclick="teImportCasesJson()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color:#38BDF8;border:1px solid rgba(56,189,248,0.2);" onmouseover="this.style.borderColor='rgba(56,189,248,0.5)'" onmouseout="this.style.borderColor='rgba(56,189,248,0.2)'">Import JSON</button>
+              <button onclick="teAddCase()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color: var(--lime); border: 1px solid rgba(191,255,0,0.2);" onmouseover="this.style.borderColor='rgba(191,255,0,0.5)'" onmouseout="this.style.borderColor='rgba(191,255,0,0.2)'">+ Add Case</button>
+            </div>
+          </div>
+          <div id="teCasesList" class="space-y-2">
+            <p class="text-zinc-600 text-xs font-body">No test cases defined yet.</p>
+          </div>
+          <!-- Inline case editor (hidden by default) -->
+          <div id="teCaseEditor" class="hidden mt-4" style="border-top:1px solid var(--border-subtle);padding-top:16px;">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label class="section-label mb-2 block">Prompt</label>
+                <textarea id="teCasePrompt" rows="3" class="prompt-input w-full rounded-sm px-3 py-2 text-sm" placeholder="Enter the user message..."></textarea>
+              </div>
+              <div>
+                <label class="section-label mb-2 block">Expected Tool</label>
+                <div class="flex items-center gap-2 mb-2">
+                  <label class="flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" id="teCaseNoTool" onchange="teToggleNoTool()" class="accent-[var(--lime)]">
+                    <span class="text-xs text-zinc-500 font-body">No tool expected</span>
+                  </label>
+                </div>
+                <input id="teCaseExpTool" class="w-full px-3 py-2 rounded-sm text-sm font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" placeholder="tool_name or comma-separated names">
+                <label class="section-label mt-3 mb-2 block">Expected Params <span class="text-zinc-600 normal-case">(JSON, optional)</span></label>
+                <textarea id="teCaseExpParams" rows="3" class="prompt-input w-full rounded-sm px-3 py-2 font-mono text-xs" placeholder='{"param_name": "value"}'></textarea>
+              </div>
+            </div>
+            <div id="teCaseError" class="hidden text-xs mb-2" style="color:var(--coral)"></div>
+            <div class="flex justify-end gap-2">
+              <button onclick="teCancelCaseEdit()" class="modal-btn modal-btn-cancel text-xs">Cancel</button>
+              <button onclick="teSaveCaseEdit()" class="modal-btn modal-btn-confirm text-xs">Save Case</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sub-View 3: Run / Results -->
+      <div id="te-run-view" class="hidden">
+        <div class="flex items-center justify-between mb-6">
+          <button onclick="teBackFromRun()" class="flex items-center gap-2 text-zinc-500 hover:text-zinc-300 transition-colors text-sm font-body">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+            Back
+          </button>
+          <h3 id="teRunTitle" class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase"></h3>
+        </div>
+
+        <!-- Model selection for eval -->
+        <div class="card rounded-md p-5 mb-6">
+          <div class="flex items-center justify-between mb-4">
+            <label class="section-label">Select Models</label>
+            <div class="flex gap-2">
+              <button onclick="teSelectAllModels()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color: var(--lime); border: 1px solid rgba(191,255,0,0.2);" onmouseover="this.style.borderColor='rgba(191,255,0,0.5)'" onmouseout="this.style.borderColor='rgba(191,255,0,0.2)'">All</button>
+              <button onclick="teClearModels()" class="text-[11px] font-display font-medium tracking-wider uppercase text-zinc-600 px-3 py-1 rounded-sm border transition-colors" style="border-color: var(--border-subtle)" onmouseover="this.style.borderColor='var(--border)'" onmouseout="this.style.borderColor='var(--border-subtle)'">Clear</button>
+            </div>
+          </div>
+          <div id="teModelGrid" class="flex flex-col gap-1"></div>
+          <div class="flex items-center gap-4 mt-4 pt-4" style="border-top:1px solid var(--border-subtle)">
+            <div>
+              <span class="text-zinc-500 font-body text-xs">Temperature</span>
+              <input id="teTemperature" type="number" min="0" max="2" step="0.1" value="0.0" class="ml-2 w-16 px-2 py-1 rounded-sm text-sm font-mono text-zinc-200 text-center" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
+            </div>
+            <div class="ml-auto flex gap-2">
+              <button id="teCancelEvalBtn" onclick="teCancelEval()" class="hidden text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color:var(--coral);border:1px solid rgba(255,59,92,0.3);" onmouseover="this.style.borderColor='rgba(255,59,92,0.6)'" onmouseout="this.style.borderColor='rgba(255,59,92,0.3)'">Cancel</button>
+              <button id="teStartBtn" onclick="teStartEval()" class="run-btn px-6 py-2 rounded-sm text-xs flex items-center gap-2">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                Start Eval
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Progress Section -->
+        <div id="teProgressSection" class="hidden mb-6 fade-in">
+          <div class="card rounded-md p-5">
+            <div class="flex items-center justify-between mb-3">
+              <div class="flex items-center gap-3">
+                <div class="pulse-dot"></div>
+                <span id="teProgressLabel" class="text-sm text-zinc-400 font-body">Initializing...</span>
+              </div>
+              <span id="teProgressCount" class="text-xs font-mono text-zinc-600">0/0</span>
+            </div>
+            <div class="progress-track rounded-full overflow-hidden">
+              <div id="teProgressBar" class="progress-fill" style="width:0%"></div>
+            </div>
+          </div>
+          <div id="teSSEBanner" class="hidden error-banner mt-3">
+            <span id="teSSEBannerMsg">Connection lost</span>
+          </div>
+        </div>
+
+        <!-- Summary Section -->
+        <div id="teSummarySection" class="hidden mb-6 fade-in">
+          <div class="card rounded-md overflow-hidden">
+            <div class="px-5 py-3" style="border-bottom:1px solid var(--border-subtle)">
+              <span class="section-label">Results Summary</span>
+              <span id="teSummaryInfo" class="text-xs font-body text-zinc-600 ml-2"></span>
+            </div>
+            <table class="w-full text-sm results-table">
+              <thead>
+                <tr style="border-bottom: 1px solid var(--border-subtle)">
+                  <th class="px-5 py-3 text-left section-label cursor-pointer" onclick="teSortSummary('model_name')">Model</th>
+                  <th class="px-5 py-3 text-right section-label cursor-pointer" onclick="teSortSummary('tool_accuracy_pct')">Tool %</th>
+                  <th class="px-5 py-3 text-right section-label cursor-pointer" onclick="teSortSummary('param_accuracy_pct')">Param %</th>
+                  <th class="px-5 py-3 text-right section-label cursor-pointer" onclick="teSortSummary('overall_pct')">Overall</th>
+                  <th class="px-5 py-3 text-right section-label">Cases</th>
+                </tr>
+              </thead>
+              <tbody id="teSummaryBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Detailed Results (drill-down) -->
+        <div id="teDetailSection" class="hidden mb-6 fade-in">
+          <div class="card rounded-md p-5">
+            <div class="flex items-center justify-between mb-4">
+              <span class="section-label">Detailed Results</span>
+              <button onclick="document.getElementById('teDetailSection').classList.add('hidden')" class="text-zinc-600 hover:text-zinc-400 text-xs font-body">Close</button>
+            </div>
+            <div id="teDetailContent" class="space-y-3"></div>
+          </div>
+        </div>
+
+        <!-- Live Results Table -->
+        <div id="teLiveSection" class="hidden mb-6 fade-in">
+          <div class="card rounded-md overflow-hidden">
+            <div class="px-5 py-3" style="border-bottom:1px solid var(--border-subtle)">
+              <span class="section-label">Live Results</span>
+            </div>
+            <div id="teLiveResults" class="max-h-96 overflow-y-auto">
+              <table class="w-full text-sm results-table">
+                <thead>
+                  <tr style="border-bottom: 1px solid var(--border-subtle)">
+                    <th class="px-5 py-2 text-left section-label">Model</th>
+                    <th class="px-5 py-2 text-left section-label">Test Case</th>
+                    <th class="px-5 py-2 text-left section-label">Expected</th>
+                    <th class="px-5 py-2 text-left section-label">Actual</th>
+                    <th class="px-5 py-2 text-right section-label">Score</th>
+                  </tr>
+                </thead>
+                <tbody id="teLiveBody"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -1813,13 +2073,16 @@
       document.getElementById('view-benchmark').classList.toggle('hidden', tab !== 'benchmark');
       document.getElementById('view-history').classList.toggle('hidden', tab !== 'history');
       document.getElementById('view-settings').classList.toggle('hidden', tab !== 'settings');
+      document.getElementById('view-tool-eval').classList.toggle('hidden', tab !== 'tool-eval');
       document.getElementById('view-admin').classList.toggle('hidden', tab !== 'admin');
       document.getElementById('tab-benchmark').classList.toggle('tab-active', tab === 'benchmark');
       document.getElementById('tab-history').classList.toggle('tab-active', tab === 'history');
       document.getElementById('tab-settings').classList.toggle('tab-active', tab === 'settings');
+      document.getElementById('tab-tool-eval').classList.toggle('tab-active', tab === 'tool-eval');
       document.getElementById('tab-admin').classList.toggle('tab-active', tab === 'admin');
       if (tab === 'history') loadHistory();
       if (tab === 'settings') renderSettings();
+      if (tab === 'tool-eval') { showToolEvalView('suites'); teLoadSuites(); teLoadHistory(); }
       if (tab === 'admin') loadAdminDashboard();
     }
 
@@ -3030,6 +3293,885 @@
       const div = document.createElement('div');
       div.textContent = str;
       return div.innerHTML;
+    }
+
+    // -------------------------------------------------------------------
+    // Tool Eval — Suite CRUD, Test Cases, Eval Execution, History
+    // -------------------------------------------------------------------
+    let teSuites = [];
+    let teCurrentSuite = null;       // full suite object when editing
+    let teEditingToolIndex = -1;     // -1 = adding new, >=0 = editing existing
+    let teEditingCaseId = null;      // null = adding new, string = editing existing
+    let teSelectedModels = new Set();
+    let teEvalResults = [];          // live results from SSE
+    let teEvalSummaries = [];        // model summaries from SSE
+    let teSummarySortKey = 'overall_pct';
+    let teSummarySortAsc = false;
+    let teEvalHistory = [];
+    let _teSSETimeout = null;
+    let teRunSuiteId = null;         // suite_id for current run view
+
+    function showToolEvalView(view) {
+      document.getElementById('te-suites-view').classList.toggle('hidden', view !== 'suites');
+      document.getElementById('te-editor-view').classList.toggle('hidden', view !== 'editor');
+      document.getElementById('te-run-view').classList.toggle('hidden', view !== 'run');
+    }
+
+    // --- Suite List ---
+    async function teLoadSuites() {
+      try {
+        const res = await apiFetch('/api/tool-suites');
+        if (!res.ok) { showToast('Failed to load suites', 'error'); return; }
+        const data = await res.json();
+        teSuites = data.suites || [];
+        teRenderSuites();
+      } catch (e) {
+        showToast('Failed to load suites', 'error');
+      }
+    }
+
+    function teRenderSuites() {
+      const body = document.getElementById('teSuitesBody');
+      if (!teSuites.length) {
+        body.innerHTML = '<tr><td colspan="5" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No tool suites yet. Click "New Suite" to create one.</td></tr>';
+        return;
+      }
+      body.innerHTML = teSuites.map(s => {
+        const updated = s.updated_at ? _teTimeAgo(s.updated_at) : '';
+        return `<tr>
+          <td class="px-5 py-3"><button onclick="teOpenSuite('${s.id}')" class="text-zinc-200 hover:text-white font-body text-sm underline decoration-zinc-700 hover:decoration-zinc-400 transition-colors">${_teEsc(s.name || 'Untitled')}</button></td>
+          <td class="px-5 py-3 text-center font-mono text-xs text-zinc-500">${s.tool_count || 0}</td>
+          <td class="px-5 py-3 text-center font-mono text-xs text-zinc-500">${s.test_case_count || 0}</td>
+          <td class="px-5 py-3 text-right text-xs text-zinc-600 font-body">${updated}</td>
+          <td class="px-5 py-3 text-right">
+            <button onclick="teDeleteSuite('${s.id}','${_teEsc(s.name)}')" class="text-zinc-700 hover:text-red-400 transition-colors text-xs font-display tracking-wider uppercase">Delete</button>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    function _teTimeAgo(dateStr) {
+      try {
+        const d = new Date(dateStr + (dateStr.includes('Z') || dateStr.includes('+') ? '' : 'Z'));
+        const diff = (Date.now() - d.getTime()) / 1000;
+        if (diff < 60) return 'just now';
+        if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+        if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+        return Math.floor(diff/86400) + 'd ago';
+      } catch { return dateStr; }
+    }
+
+    function _teEsc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+    async function teNewSuite() {
+      try {
+        const res = await apiFetch('/api/tool-suites', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'New Suite', description: '', tools: [] }),
+        });
+        if (!res.ok) { showToast('Failed to create suite', 'error'); return; }
+        const data = await res.json();
+        showToast('Suite created', 'success');
+        await teOpenSuite(data.suite_id);
+      } catch (e) {
+        showToast('Failed to create suite', 'error');
+      }
+    }
+
+    function teDeleteSuite(id, name) {
+      showModal('Delete Suite', `Delete "${name}" and all its test cases? This cannot be undone.`, async () => {
+        try {
+          const res = await apiFetch(`/api/tool-suites/${id}`, { method: 'DELETE' });
+          if (!res.ok) { showToast('Failed to delete', 'error'); return; }
+          showToast('Suite deleted', 'success');
+          await teLoadSuites();
+        } catch { showToast('Failed to delete', 'error'); }
+      }, { danger: true, confirmLabel: 'Delete' });
+    }
+
+    // --- Suite Editor ---
+    async function teOpenSuite(suiteId) {
+      try {
+        const res = await apiFetch(`/api/tool-suites/${suiteId}`);
+        if (!res.ok) { showToast('Suite not found', 'error'); return; }
+        teCurrentSuite = await res.json();
+        teRenderEditor();
+        showToolEvalView('editor');
+      } catch (e) {
+        showToast('Failed to load suite', 'error');
+      }
+    }
+
+    function teRenderEditor() {
+      if (!teCurrentSuite) return;
+      document.getElementById('teSuiteName').value = teCurrentSuite.name || '';
+      document.getElementById('teSuiteDesc').value = teCurrentSuite.description || '';
+      teRenderToolsList();
+      teRenderCasesList();
+      // Hide editors
+      document.getElementById('teToolEditor').classList.add('hidden');
+      document.getElementById('teCaseEditor').classList.add('hidden');
+    }
+
+    async function teSaveSuiteMeta() {
+      if (!teCurrentSuite) return;
+      const name = document.getElementById('teSuiteName').value.trim();
+      const description = document.getElementById('teSuiteDesc').value.trim();
+      if (!name) { showToast('Name is required', 'error'); return; }
+      try {
+        const res = await apiFetch(`/api/tool-suites/${teCurrentSuite.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({ name, description }),
+        });
+        if (!res.ok) { showToast('Failed to save', 'error'); return; }
+        teCurrentSuite.name = name;
+        teCurrentSuite.description = description;
+      } catch { showToast('Failed to save', 'error'); }
+    }
+
+    // --- Tools ---
+    function teRenderToolsList() {
+      const tools = teCurrentSuite?.tools || [];
+      const container = document.getElementById('teToolsList');
+      document.getElementById('teToolCount').textContent = `(${tools.length})`;
+      if (!tools.length) {
+        container.innerHTML = '<p class="text-zinc-600 text-xs font-body">No tools defined yet.</p>';
+        return;
+      }
+      container.innerHTML = tools.map((t, i) => {
+        const fn = t.function || {};
+        return `<div class="flex items-center justify-between px-3 py-2 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);">
+          <div class="flex-1 min-w-0">
+            <span class="text-sm font-mono text-zinc-200">${_teEsc(fn.name || 'unnamed')}</span>
+            <span class="text-xs text-zinc-600 ml-2 font-body">${_teEsc(fn.description || '')}</span>
+          </div>
+          <div class="flex gap-2 ml-3 flex-shrink-0">
+            <button onclick="teEditTool(${i})" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300">Edit</button>
+            <button onclick="teDeleteTool(${i})" class="text-[10px] font-display tracking-wider uppercase text-zinc-700 hover:text-red-400">Delete</button>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    function teAddTool() {
+      teEditingToolIndex = -1;
+      document.getElementById('teToolJson').value = JSON.stringify({
+        type: "function",
+        function: {
+          name: "my_tool",
+          description: "Description of what this tool does",
+          parameters: {
+            type: "object",
+            properties: {},
+            required: []
+          }
+        }
+      }, null, 2);
+      document.getElementById('teToolJsonError').classList.add('hidden');
+      document.getElementById('teToolEditor').classList.remove('hidden');
+    }
+
+    function teEditTool(index) {
+      teEditingToolIndex = index;
+      const tools = teCurrentSuite?.tools || [];
+      document.getElementById('teToolJson').value = JSON.stringify(tools[index], null, 2);
+      document.getElementById('teToolJsonError').classList.add('hidden');
+      document.getElementById('teToolEditor').classList.remove('hidden');
+    }
+
+    function teCancelToolEdit() {
+      document.getElementById('teToolEditor').classList.add('hidden');
+      teEditingToolIndex = -1;
+    }
+
+    async function teSaveToolJson() {
+      const jsonStr = document.getElementById('teToolJson').value.trim();
+      const errEl = document.getElementById('teToolJsonError');
+      let tool;
+      try {
+        tool = JSON.parse(jsonStr);
+      } catch (e) {
+        errEl.textContent = 'Invalid JSON: ' + e.message;
+        errEl.classList.remove('hidden');
+        return;
+      }
+      // Structural validation
+      if (!tool || typeof tool !== 'object') { errEl.textContent = 'Tool must be a JSON object'; errEl.classList.remove('hidden'); return; }
+      if (tool.type !== 'function') { errEl.textContent = 'tool.type must be "function"'; errEl.classList.remove('hidden'); return; }
+      if (!tool.function?.name) { errEl.textContent = 'tool.function.name is required'; errEl.classList.remove('hidden'); return; }
+      errEl.classList.add('hidden');
+
+      const tools = [...(teCurrentSuite?.tools || [])];
+      if (teEditingToolIndex >= 0) {
+        tools[teEditingToolIndex] = tool;
+      } else {
+        tools.push(tool);
+      }
+
+      try {
+        const res = await apiFetch(`/api/tool-suites/${teCurrentSuite.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({ tools }),
+        });
+        if (!res.ok) { showToast('Failed to save tools', 'error'); return; }
+        teCurrentSuite.tools = tools;
+        teRenderToolsList();
+        teCancelToolEdit();
+        showToast('Tool saved', 'success');
+      } catch { showToast('Failed to save tools', 'error'); }
+    }
+
+    function teDeleteTool(index) {
+      const fn = teCurrentSuite?.tools?.[index]?.function || {};
+      showModal('Delete Tool', `Delete "${fn.name || 'unnamed'}"?`, async () => {
+        const tools = [...(teCurrentSuite?.tools || [])];
+        tools.splice(index, 1);
+        try {
+          const res = await apiFetch(`/api/tool-suites/${teCurrentSuite.id}`, {
+            method: 'PUT',
+            body: JSON.stringify({ tools }),
+          });
+          if (!res.ok) { showToast('Failed to delete tool', 'error'); return; }
+          teCurrentSuite.tools = tools;
+          teRenderToolsList();
+          showToast('Tool deleted', 'success');
+        } catch { showToast('Failed to delete tool', 'error'); }
+      }, { danger: true, confirmLabel: 'Delete' });
+    }
+
+    // --- Test Cases ---
+    function teRenderCasesList() {
+      const cases = teCurrentSuite?.test_cases || [];
+      const container = document.getElementById('teCasesList');
+      document.getElementById('teCaseCount').textContent = `(${cases.length})`;
+      if (!cases.length) {
+        container.innerHTML = '<p class="text-zinc-600 text-xs font-body">No test cases defined yet.</p>';
+        return;
+      }
+      container.innerHTML = cases.map((c, i) => {
+        const expTool = c.expected_tool;
+        let expStr;
+        if (expTool === null || expTool === undefined) {
+          expStr = '<span class="text-zinc-600">(no tool call)</span>';
+        } else if (Array.isArray(expTool)) {
+          expStr = expTool.join(' | ');
+        } else {
+          expStr = expTool;
+        }
+        const paramsStr = c.expected_params ? '(' + Object.entries(c.expected_params).map(([k,v]) => `${k}=${JSON.stringify(v)}`).join(', ') + ')' : '';
+        return `<div class="flex items-start justify-between px-3 py-2 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);">
+          <div class="flex-1 min-w-0">
+            <div class="text-sm text-zinc-300 font-body mb-0.5">#${i+1} "${_teEsc(_teTruncate(c.prompt, 80))}"</div>
+            <div class="text-xs font-mono text-zinc-500">Expected: ${expStr}${paramsStr ? ' ' + _teEsc(paramsStr) : ''}</div>
+          </div>
+          <div class="flex gap-2 ml-3 flex-shrink-0 mt-1">
+            <button onclick="teEditCase('${c.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300">Edit</button>
+            <button onclick="teDeleteCase('${c.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-700 hover:text-red-400">Delete</button>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    function _teTruncate(s, max) {
+      s = s || '';
+      return s.length > max ? s.slice(0, max) + '...' : s;
+    }
+
+    function teAddCase() {
+      teEditingCaseId = null;
+      document.getElementById('teCasePrompt').value = '';
+      document.getElementById('teCaseExpTool').value = '';
+      document.getElementById('teCaseExpParams').value = '';
+      document.getElementById('teCaseNoTool').checked = false;
+      document.getElementById('teCaseExpTool').disabled = false;
+      document.getElementById('teCaseError').classList.add('hidden');
+      document.getElementById('teCaseEditor').classList.remove('hidden');
+    }
+
+    function teEditCase(caseId) {
+      const c = (teCurrentSuite?.test_cases || []).find(x => x.id === caseId);
+      if (!c) return;
+      teEditingCaseId = caseId;
+      document.getElementById('teCasePrompt').value = c.prompt || '';
+      const isNoTool = c.expected_tool === null || c.expected_tool === undefined;
+      document.getElementById('teCaseNoTool').checked = isNoTool;
+      document.getElementById('teCaseExpTool').disabled = isNoTool;
+      if (isNoTool) {
+        document.getElementById('teCaseExpTool').value = '';
+      } else if (Array.isArray(c.expected_tool)) {
+        document.getElementById('teCaseExpTool').value = c.expected_tool.join(', ');
+      } else {
+        document.getElementById('teCaseExpTool').value = c.expected_tool || '';
+      }
+      document.getElementById('teCaseExpParams').value = c.expected_params ? JSON.stringify(c.expected_params, null, 2) : '';
+      document.getElementById('teCaseError').classList.add('hidden');
+      document.getElementById('teCaseEditor').classList.remove('hidden');
+    }
+
+    function teCancelCaseEdit() {
+      document.getElementById('teCaseEditor').classList.add('hidden');
+      teEditingCaseId = null;
+    }
+
+    function teToggleNoTool() {
+      const checked = document.getElementById('teCaseNoTool').checked;
+      document.getElementById('teCaseExpTool').disabled = checked;
+      if (checked) document.getElementById('teCaseExpTool').value = '';
+    }
+
+    async function teSaveCaseEdit() {
+      const errEl = document.getElementById('teCaseError');
+      const prompt = document.getElementById('teCasePrompt').value.trim();
+      if (!prompt) { errEl.textContent = 'Prompt is required'; errEl.classList.remove('hidden'); return; }
+
+      const isNoTool = document.getElementById('teCaseNoTool').checked;
+      let expected_tool = null;
+      if (!isNoTool) {
+        const toolVal = document.getElementById('teCaseExpTool').value.trim();
+        if (!toolVal) { errEl.textContent = 'Expected tool is required (or check "No tool expected")'; errEl.classList.remove('hidden'); return; }
+        if (toolVal.includes(',')) {
+          expected_tool = toolVal.split(',').map(s => s.trim()).filter(Boolean);
+          if (!expected_tool.length) { errEl.textContent = 'Enter at least one tool name'; errEl.classList.remove('hidden'); return; }
+        } else {
+          expected_tool = toolVal;
+        }
+      }
+
+      let expected_params = null;
+      const paramsStr = document.getElementById('teCaseExpParams').value.trim();
+      if (paramsStr) {
+        try {
+          expected_params = JSON.parse(paramsStr);
+          if (typeof expected_params !== 'object' || Array.isArray(expected_params)) {
+            errEl.textContent = 'Expected params must be a JSON object';
+            errEl.classList.remove('hidden');
+            return;
+          }
+        } catch (e) {
+          errEl.textContent = 'Invalid JSON in expected params: ' + e.message;
+          errEl.classList.remove('hidden');
+          return;
+        }
+      }
+      errEl.classList.add('hidden');
+
+      const caseData = { prompt, expected_tool, expected_params };
+
+      try {
+        if (teEditingCaseId) {
+          // Update existing
+          const res = await apiFetch(`/api/tool-suites/${teCurrentSuite.id}/cases/${teEditingCaseId}`, {
+            method: 'PUT',
+            body: JSON.stringify(caseData),
+          });
+          if (!res.ok) { showToast('Failed to save', 'error'); return; }
+        } else {
+          // Create new
+          const res = await apiFetch(`/api/tool-suites/${teCurrentSuite.id}/cases`, {
+            method: 'POST',
+            body: JSON.stringify(caseData),
+          });
+          if (!res.ok) { showToast('Failed to save', 'error'); return; }
+        }
+        // Reload suite to get updated case list
+        await teOpenSuite(teCurrentSuite.id);
+        teCancelCaseEdit();
+        showToast('Test case saved', 'success');
+      } catch { showToast('Failed to save test case', 'error'); }
+    }
+
+    function teDeleteCase(caseId) {
+      showModal('Delete Test Case', 'Delete this test case?', async () => {
+        try {
+          const res = await apiFetch(`/api/tool-suites/${teCurrentSuite.id}/cases/${caseId}`, { method: 'DELETE' });
+          if (!res.ok) { showToast('Failed to delete', 'error'); return; }
+          await teOpenSuite(teCurrentSuite.id);
+          showToast('Test case deleted', 'success');
+        } catch { showToast('Failed to delete', 'error'); }
+      }, { danger: true, confirmLabel: 'Delete' });
+    }
+
+    function teImportCasesJson() {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = `<div class="modal-box" style="max-width:600px;">
+        <div class="modal-title">Import Test Cases (JSON)</div>
+        <div class="modal-message">Paste a JSON array of test cases. Each must have "prompt" and "expected_tool" fields.</div>
+        <textarea class="modal-input font-mono text-xs" style="height:200px;resize:vertical;margin-bottom:16px;" placeholder='[{"prompt":"...","expected_tool":"...","expected_params":{...}}]'></textarea>
+        <div class="text-xs mb-3" style="color:var(--coral);display:none;" id="teImportErr"></div>
+        <div class="modal-buttons">
+          <button class="modal-btn modal-btn-cancel" data-action="cancel">Cancel</button>
+          <button class="modal-btn modal-btn-confirm" data-action="confirm">Import</button>
+        </div>
+      </div>`;
+      const textarea = overlay.querySelector('textarea');
+      overlay.querySelector('[data-action="cancel"]').onclick = () => _closeModal(overlay);
+      overlay.querySelector('[data-action="confirm"]').onclick = async () => {
+        const errEl = overlay.querySelector('#teImportErr');
+        let cases;
+        try {
+          cases = JSON.parse(textarea.value.trim());
+        } catch (e) {
+          errEl.textContent = 'Invalid JSON: ' + e.message;
+          errEl.style.display = 'block';
+          return;
+        }
+        if (!Array.isArray(cases) || !cases.length) {
+          errEl.textContent = 'Must be a non-empty JSON array';
+          errEl.style.display = 'block';
+          return;
+        }
+        for (let i = 0; i < cases.length; i++) {
+          if (!cases[i].prompt) {
+            errEl.textContent = `Case ${i+1}: "prompt" is required`;
+            errEl.style.display = 'block';
+            return;
+          }
+        }
+        try {
+          const res = await apiFetch(`/api/tool-suites/${teCurrentSuite.id}/cases`, {
+            method: 'POST',
+            body: JSON.stringify({ cases }),
+          });
+          if (!res.ok) { showToast('Import failed', 'error'); return; }
+          _closeModal(overlay);
+          await teOpenSuite(teCurrentSuite.id);
+          showToast(`Imported ${cases.length} test cases`, 'success');
+        } catch { showToast('Import failed', 'error'); }
+      };
+      overlay.onclick = (e) => { if (e.target === overlay) _closeModal(overlay); };
+      document.body.appendChild(overlay);
+      setTimeout(() => textarea.focus(), 50);
+    }
+
+    // --- Run Eval ---
+    function teStartRunFromEditor() {
+      if (!teCurrentSuite) return;
+      const cases = teCurrentSuite.test_cases || [];
+      if (!cases.length) { showToast('Add at least one test case first', 'error'); return; }
+      const tools = teCurrentSuite.tools || [];
+      if (!tools.length) { showToast('Add at least one tool first', 'error'); return; }
+      teRunSuiteId = teCurrentSuite.id;
+      document.getElementById('teRunTitle').textContent = 'Run Eval: ' + (teCurrentSuite.name || 'Untitled');
+      teRenderEvalModelGrid();
+      _teResetRunView();
+      showToolEvalView('run');
+    }
+
+    function teBackFromRun() {
+      if (teRunSuiteId && teCurrentSuite?.id === teRunSuiteId) {
+        showToolEvalView('editor');
+      } else {
+        showToolEvalView('suites');
+      }
+    }
+
+    function teRenderEvalModelGrid() {
+      const grid = document.getElementById('teModelGrid');
+      grid.innerHTML = '';
+      teSelectedModels.clear();
+      if (!config || !config.providers) return;
+
+      for (const [provider, provData] of Object.entries(config.providers)) {
+        const color = getColor(provider);
+        const models = getProviderModels(provData);
+        if (!models.length) continue;
+
+        const group = document.createElement('div');
+        group.className = 'provider-group';
+        group.style.borderColor = color.border;
+
+        const header = document.createElement('div');
+        header.className = 'provider-group-header';
+        header.innerHTML = `
+          <div class="provider-group-dot" style="background:${color.text}"></div>
+          <span class="provider-group-label" style="color:${color.text}">${provider}</span>
+          <span class="provider-group-count">${models.length}</span>
+        `;
+        header.onclick = () => {
+          const cards = group.querySelectorAll('.model-card');
+          const allSel = [...cards].every(c => c.classList.contains('selected'));
+          cards.forEach(c => {
+            if (allSel) { teSelectedModels.delete(c.dataset.modelId); c.classList.remove('selected'); }
+            else { teSelectedModels.add(c.dataset.modelId); c.classList.add('selected'); }
+          });
+        };
+        group.appendChild(header);
+
+        const subgrid = document.createElement('div');
+        subgrid.className = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pl-3';
+        for (const m of models) {
+          const card = document.createElement('div');
+          card.className = 'model-card rounded-sm px-4 py-3 flex items-center gap-3';
+          card.dataset.modelId = m.model_id;
+          card.onclick = (e) => {
+            e.stopPropagation();
+            if (teSelectedModels.has(m.model_id)) {
+              teSelectedModels.delete(m.model_id);
+              card.classList.remove('selected');
+            } else {
+              teSelectedModels.add(m.model_id);
+              card.classList.add('selected');
+            }
+          };
+          card.innerHTML = `
+            <div class="check-dot flex-shrink-0"></div>
+            <div class="flex-1 min-w-0">
+              <div class="text-[13px] font-medium text-zinc-200 truncate font-body">${m.display_name}</div>
+            </div>
+          `;
+          subgrid.appendChild(card);
+        }
+        group.appendChild(subgrid);
+        grid.appendChild(group);
+      }
+    }
+
+    function teSelectAllModels() {
+      document.querySelectorAll('#teModelGrid .model-card').forEach(c => {
+        teSelectedModels.add(c.dataset.modelId);
+        c.classList.add('selected');
+      });
+    }
+
+    function teClearModels() {
+      teSelectedModels.clear();
+      document.querySelectorAll('#teModelGrid .model-card').forEach(c => c.classList.remove('selected'));
+    }
+
+    function _teResetRunView() {
+      teEvalResults = [];
+      teEvalSummaries = [];
+      document.getElementById('teProgressSection').classList.add('hidden');
+      document.getElementById('teSummarySection').classList.add('hidden');
+      document.getElementById('teDetailSection').classList.add('hidden');
+      document.getElementById('teLiveSection').classList.add('hidden');
+      document.getElementById('teSSEBanner').classList.add('hidden');
+      document.getElementById('teLiveBody').innerHTML = '';
+      document.getElementById('teSummaryBody').innerHTML = '';
+      document.getElementById('teStartBtn').disabled = false;
+      document.getElementById('teStartBtn').innerHTML = '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> Start Eval';
+      document.getElementById('teCancelEvalBtn').classList.add('hidden');
+    }
+
+    async function teStartEval() {
+      if (teSelectedModels.size === 0) { showToast('Select at least one model', 'error'); return; }
+      if (!teRunSuiteId) { showToast('No suite selected', 'error'); return; }
+
+      const btn = document.getElementById('teStartBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Running...';
+      document.getElementById('teCancelEvalBtn').classList.remove('hidden');
+
+      teEvalResults = [];
+      teEvalSummaries = [];
+      document.getElementById('teLiveBody').innerHTML = '';
+      document.getElementById('teSummaryBody').innerHTML = '';
+      document.getElementById('teProgressSection').classList.remove('hidden');
+      document.getElementById('teLiveSection').classList.remove('hidden');
+      document.getElementById('teSummarySection').classList.add('hidden');
+      document.getElementById('teDetailSection').classList.add('hidden');
+      document.getElementById('teSSEBanner').classList.add('hidden');
+      document.getElementById('teProgressBar').style.width = '0%';
+      document.getElementById('teProgressLabel').textContent = 'Initializing...';
+      document.getElementById('teProgressCount').textContent = '0/0';
+
+      const body = {
+        suite_id: teRunSuiteId,
+        models: Array.from(teSelectedModels),
+        temperature: parseFloat(document.getElementById('teTemperature').value) || 0.0,
+      };
+
+      try {
+        const res = await apiFetch('/api/tool-eval', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        if (res.status === 409) {
+          showToast('A benchmark or eval is already running', 'error');
+          _teResetStartBtn();
+          return;
+        }
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          showToast(err.error || `Server error (${res.status})`, 'error');
+          _teResetStartBtn();
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        const resetTimeout = () => {
+          if (_teSSETimeout) clearTimeout(_teSSETimeout);
+          _teSSETimeout = setTimeout(() => {
+            _teShowSSEError('Connection lost - no data received for 30 seconds');
+            _teResetStartBtn();
+          }, 30000);
+        };
+        resetTimeout();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          resetTimeout();
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try { _teHandleSSE(JSON.parse(line.slice(6))); } catch (e) {}
+            }
+          }
+        }
+        if (_teSSETimeout) clearTimeout(_teSSETimeout);
+      } catch (e) {
+        console.error('Eval error:', e);
+        _teShowSSEError('Connection error: ' + (e.message || 'Network failure'));
+      }
+
+      _teResetStartBtn();
+    }
+
+    function _teResetStartBtn() {
+      const btn = document.getElementById('teStartBtn');
+      btn.disabled = false;
+      btn.innerHTML = '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> Start Eval';
+      document.getElementById('teCancelEvalBtn').classList.add('hidden');
+    }
+
+    function _teShowSSEError(msg) {
+      const banner = document.getElementById('teSSEBanner');
+      document.getElementById('teSSEBannerMsg').textContent = msg;
+      banner.classList.remove('hidden');
+    }
+
+    async function teCancelEval() {
+      try {
+        await apiFetch('/api/tool-eval/cancel', { method: 'POST' });
+        showToast('Cancellation requested...', '');
+      } catch { showToast('Failed to cancel', 'error'); }
+    }
+
+    function _teHandleSSE(data) {
+      if (data.type === 'progress') {
+        const pct = data.total > 0 ? Math.round((data.current / data.total) * 100) : 0;
+        document.getElementById('teProgressBar').style.width = pct + '%';
+        document.getElementById('teProgressCount').textContent = `${data.current}/${data.total}`;
+        document.getElementById('teProgressLabel').textContent = `Testing ${data.model || ''}...`;
+      }
+
+      if (data.type === 'result') {
+        teEvalResults.push(data);
+        _teAddLiveRow(data);
+      }
+
+      if (data.type === 'model_summary') {
+        teEvalSummaries.push(data);
+        teRenderSummaryTable();
+        document.getElementById('teSummarySection').classList.remove('hidden');
+      }
+
+      if (data.type === 'complete') {
+        document.getElementById('teProgressLabel').textContent = 'Complete!';
+        document.getElementById('teProgressBar').style.width = '100%';
+        const total = teEvalResults.length;
+        const models = teEvalSummaries.length;
+        document.getElementById('teSummaryInfo').textContent = `${total} evaluations across ${models} model${models > 1 ? 's' : ''}`;
+        showToast('Eval complete!', 'success');
+        // Refresh history
+        teLoadHistory();
+      }
+
+      if (data.type === 'cancelled') {
+        document.getElementById('teProgressLabel').textContent = 'Cancelled';
+        showToast('Eval cancelled', '');
+      }
+
+      if (data.type === 'error') {
+        _teShowSSEError(data.message || 'Unknown error');
+      }
+
+      // heartbeat: just resets timeout (handled in resetTimeout)
+    }
+
+    function _teScoreColor(pct) {
+      if (pct >= 80) return 'var(--lime)';
+      if (pct >= 50) return '#FBBF24';
+      return 'var(--coral)';
+    }
+
+    function _teAddLiveRow(r) {
+      const body = document.getElementById('teLiveBody');
+      const overallPct = (r.overall_score * 100).toFixed(0);
+      const color = _teScoreColor(r.overall_score * 100);
+      const actualTool = r.actual_tool || '(none)';
+      const expectedTool = r.expected_tool || '(none)';
+      const prompt = _teTruncate(r.prompt || r.test_case_id || '', 40);
+      body.insertAdjacentHTML('beforeend', `<tr>
+        <td class="px-5 py-2 text-xs font-mono text-zinc-300">${_teEsc(r.model_name || r.model_id || '')}</td>
+        <td class="px-5 py-2 text-xs font-body text-zinc-400">${_teEsc(prompt)}</td>
+        <td class="px-5 py-2 text-xs font-mono text-zinc-500">${_teEsc(typeof expectedTool === 'object' ? JSON.stringify(expectedTool) : expectedTool)}</td>
+        <td class="px-5 py-2 text-xs font-mono" style="color:${r.success !== false ? 'var(--lime)' : 'var(--coral)'}">${_teEsc(actualTool)}</td>
+        <td class="px-5 py-2 text-right text-xs font-mono font-bold" style="color:${color}">${overallPct}%</td>
+      </tr>`);
+      // Auto-scroll
+      const liveDiv = document.getElementById('teLiveResults');
+      liveDiv.scrollTop = liveDiv.scrollHeight;
+    }
+
+    function teRenderSummaryTable() {
+      const sorted = [...teEvalSummaries].sort((a, b) => {
+        const aVal = a[teSummarySortKey] ?? 0;
+        const bVal = b[teSummarySortKey] ?? 0;
+        if (typeof aVal === 'string') return teSummarySortAsc ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+        return teSummarySortAsc ? aVal - bVal : bVal - aVal;
+      });
+
+      const body = document.getElementById('teSummaryBody');
+      body.innerHTML = sorted.map(s => {
+        const toolColor = _teScoreColor(s.tool_accuracy_pct);
+        const paramColor = _teScoreColor(s.param_accuracy_pct ?? 0);
+        const overallColor = _teScoreColor(s.overall_pct);
+        return `<tr class="cursor-pointer" onclick="teShowModelDetail('${_teEsc(s.model_id)}')">
+          <td class="px-5 py-3 text-sm font-body text-zinc-200">${_teEsc(s.model_name || s.model_id)}</td>
+          <td class="px-5 py-3 text-right text-sm font-mono font-bold" style="color:${toolColor}">${(s.tool_accuracy_pct ?? 0).toFixed(1)}%</td>
+          <td class="px-5 py-3 text-right text-sm font-mono font-bold" style="color:${paramColor}">${s.param_accuracy_pct != null ? s.param_accuracy_pct.toFixed(1) + '%' : '-'}</td>
+          <td class="px-5 py-3 text-right text-sm font-mono font-bold" style="color:${overallColor}">${(s.overall_pct ?? 0).toFixed(1)}%</td>
+          <td class="px-5 py-3 text-right text-xs font-mono text-zinc-500">${s.cases_run || 0}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function teSortSummary(key) {
+      if (teSummarySortKey === key) {
+        teSummarySortAsc = !teSummarySortAsc;
+      } else {
+        teSummarySortKey = key;
+        teSummarySortAsc = key === 'model_name';
+      }
+      teRenderSummaryTable();
+    }
+
+    function teShowModelDetail(modelId) {
+      const results = teEvalResults.filter(r => r.model_id === modelId);
+      if (!results.length) return;
+      const content = document.getElementById('teDetailContent');
+      const modelName = results[0].model_name || modelId;
+      content.innerHTML = `<div class="text-sm font-display font-semibold text-zinc-200 tracking-wider uppercase mb-3">${_teEsc(modelName)}</div>` +
+        results.map((r, i) => {
+          const expTool = r.expected_tool;
+          let expStr;
+          if (expTool === null || expTool === undefined) expStr = '(no tool call)';
+          else if (Array.isArray(expTool)) expStr = expTool.join(' | ');
+          else expStr = expTool;
+
+          const actTool = r.actual_tool || '(no tool call)';
+          const expParams = r.expected_params ? JSON.stringify(r.expected_params) : '';
+          const actParams = r.actual_params ? JSON.stringify(r.actual_params) : '';
+          const match = r.tool_selection_score === 1.0;
+          const icon = match ? '<span style="color:var(--lime)">OK</span>' : '<span style="color:var(--coral)">X</span>';
+
+          return `<div class="px-3 py-2 rounded-sm text-xs" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);">
+            <div class="text-zinc-300 font-body mb-1">#${i+1} "${_teEsc(_teTruncate(r.prompt || '', 80))}"</div>
+            <div class="font-mono text-zinc-500">Expected: ${_teEsc(expStr)}${expParams ? '(' + _teEsc(expParams) + ')' : ''}</div>
+            <div class="font-mono" style="color:${match ? 'var(--lime)' : 'var(--coral)'}">Actual: &nbsp; ${_teEsc(actTool)}${actParams ? '(' + _teEsc(actParams) + ')' : ''} ${icon}</div>
+            ${r.error ? '<div style="color:var(--coral)">Error: ' + _teEsc(r.error) + '</div>' : ''}
+          </div>`;
+        }).join('');
+      document.getElementById('teDetailSection').classList.remove('hidden');
+    }
+
+    // --- Eval History ---
+    async function teLoadHistory() {
+      try {
+        const res = await apiFetch('/api/tool-eval/history');
+        if (!res.ok) return;
+        const data = await res.json();
+        teEvalHistory = data.runs || [];
+        teRenderHistory();
+      } catch {}
+    }
+
+    function teRenderHistory() {
+      const body = document.getElementById('teHistoryBody');
+      if (!teEvalHistory.length) {
+        body.innerHTML = '<tr><td colspan="5" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No eval runs yet.</td></tr>';
+        return;
+      }
+      body.innerHTML = teEvalHistory.map(r => {
+        const models = r.models_json ? (typeof r.models_json === 'string' ? JSON.parse(r.models_json) : r.models_json) : [];
+        const summaries = r.summary_json ? (typeof r.summary_json === 'string' ? JSON.parse(r.summary_json) : r.summary_json) : [];
+        const avgOverall = summaries.length > 0 ? (summaries.reduce((s, x) => s + (x.overall_pct || 0), 0) / summaries.length).toFixed(1) : '-';
+        const overallColor = avgOverall !== '-' ? _teScoreColor(parseFloat(avgOverall)) : '#71717A';
+        const ts = _teTimeAgo(r.timestamp);
+        const modelStr = models.length <= 2 ? models.join(', ') : models.length + ' models';
+        return `<tr>
+          <td class="px-5 py-3 text-xs text-zinc-500 font-body">${ts}</td>
+          <td class="px-5 py-3 text-sm font-body text-zinc-300">${_teEsc(r.suite_name || '')}</td>
+          <td class="px-5 py-3 text-xs font-mono text-zinc-500">${_teEsc(modelStr)}</td>
+          <td class="px-5 py-3 text-right text-sm font-mono font-bold" style="color:${overallColor}">${avgOverall}${avgOverall !== '-' ? '%' : ''}</td>
+          <td class="px-5 py-3 text-right">
+            <button onclick="teViewHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 mr-2">View</button>
+            <button onclick="teDeleteHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-700 hover:text-red-400">Delete</button>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    async function teViewHistoryRun(runId) {
+      try {
+        const res = await apiFetch(`/api/tool-eval/history/${runId}`);
+        if (!res.ok) { showToast('Failed to load run details', 'error'); return; }
+        const run = await res.json();
+
+        // Parse stored JSON fields
+        const results = typeof run.results_json === 'string' ? JSON.parse(run.results_json) : (run.results_json || []);
+        const summaries = typeof run.summary_json === 'string' ? JSON.parse(run.summary_json) : (run.summary_json || []);
+
+        // Populate run view with historical data
+        teRunSuiteId = run.suite_id;
+        document.getElementById('teRunTitle').textContent = 'History: ' + (run.suite_name || 'Untitled');
+        teRenderEvalModelGrid();
+        _teResetRunView();
+
+        // Populate results
+        teEvalResults = results;
+        teEvalSummaries = summaries;
+
+        // Show summary
+        teRenderSummaryTable();
+        document.getElementById('teSummarySection').classList.remove('hidden');
+        const total = results.length;
+        const models = summaries.length;
+        document.getElementById('teSummaryInfo').textContent = `${total} evaluations across ${models} model${models > 1 ? 's' : ''}`;
+
+        // Show live results
+        document.getElementById('teLiveSection').classList.remove('hidden');
+        const liveBody = document.getElementById('teLiveBody');
+        liveBody.innerHTML = '';
+        results.forEach(r => _teAddLiveRow(r));
+
+        showToolEvalView('run');
+      } catch (e) {
+        showToast('Failed to load run', 'error');
+      }
+    }
+
+    function teDeleteHistoryRun(runId) {
+      showModal('Delete Eval Run', 'Delete this eval run? This cannot be undone.', async () => {
+        try {
+          const res = await apiFetch(`/api/tool-eval/history/${runId}`, { method: 'DELETE' });
+          if (!res.ok) { showToast('Failed to delete', 'error'); return; }
+          showToast('Eval run deleted', 'success');
+          await teLoadHistory();
+        } catch { showToast('Failed to delete', 'error'); }
+      }, { danger: true, confirmLabel: 'Delete' });
     }
 
     // --- Auth functions ---

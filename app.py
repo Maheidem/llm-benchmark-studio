@@ -1437,6 +1437,614 @@ async def add_prompt_template(request: Request, user: dict = Depends(auth.get_cu
 
 
 # ---------------------------------------------------------------------------
+# Tool Eval: Suites, Test Cases, Eval Execution, History
+# ---------------------------------------------------------------------------
+
+
+def _validate_tools(tools: list) -> str | None:
+    """Return error message if tools are invalid, None if ok."""
+    if not isinstance(tools, list) or len(tools) == 0:
+        return "tools must be a non-empty array"
+    for i, tool in enumerate(tools):
+        if not isinstance(tool, dict):
+            return f"tools[{i}] must be an object"
+        if tool.get("type") != "function":
+            return f"tools[{i}].type must be 'function'"
+        fn = tool.get("function", {})
+        if not fn.get("name"):
+            return f"tools[{i}].function.name is required"
+    return None
+
+
+def _parse_expected_tool(value):
+    """Parse expected_tool from DB storage format to Python type.
+
+    DB stores: None (NULL), "tool_name" (string), or '["a","b"]' (JSON array).
+    Returns: None, str, or list[str].
+    """
+    if value is None:
+        return None
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, list):
+            return parsed
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return value
+
+
+def _serialize_expected_tool(value) -> str | None:
+    """Serialize expected_tool for DB storage.
+
+    Accepts: None, str, or list[str].
+    Returns: None, "tool_name", or '["a","b"]'.
+    """
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return json.dumps(value)
+    return str(value)
+
+
+# --- Tool Suites ---
+
+@app.get("/api/tool-suites")
+async def list_tool_suites(user: dict = Depends(auth.get_current_user)):
+    """List user's tool suites."""
+    suites = await db.get_tool_suites(user["id"])
+    return {"suites": suites}
+
+
+@app.post("/api/tool-suites")
+async def create_tool_suite(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Create a new tool suite."""
+    body = await request.json()
+    name = body.get("name", "").strip()
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    description = body.get("description", "")
+    tools = body.get("tools", [])
+    err = _validate_tools(tools)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    suite_id = await db.create_tool_suite(user["id"], name, description, json.dumps(tools))
+    return {"status": "ok", "suite_id": suite_id}
+
+
+@app.get("/api/tool-suites/{suite_id}")
+async def get_tool_suite(suite_id: str, user: dict = Depends(auth.get_current_user)):
+    """Get full suite with tools and test cases."""
+    suite = await db.get_tool_suite(suite_id, user["id"])
+    if not suite:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    suite["tools"] = json.loads(suite["tools_json"])
+    del suite["tools_json"]
+    cases = await db.get_test_cases(suite_id)
+    for c in cases:
+        c["expected_tool"] = _parse_expected_tool(c["expected_tool"])
+        if c["expected_params"]:
+            try:
+                c["expected_params"] = json.loads(c["expected_params"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    suite["test_cases"] = cases
+    return suite
+
+
+@app.put("/api/tool-suites/{suite_id}")
+async def update_tool_suite(suite_id: str, request: Request, user: dict = Depends(auth.get_current_user)):
+    """Update suite name/description/tools."""
+    body = await request.json()
+    name = body.get("name")
+    description = body.get("description")
+    tools = body.get("tools")
+    tools_json = None
+    if tools is not None:
+        err = _validate_tools(tools)
+        if err:
+            return JSONResponse({"error": err}, status_code=400)
+        tools_json = json.dumps(tools)
+    updated = await db.update_tool_suite(suite_id, user["id"], name=name, description=description, tools_json=tools_json)
+    if not updated:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+@app.delete("/api/tool-suites/{suite_id}")
+async def delete_tool_suite(suite_id: str, user: dict = Depends(auth.get_current_user)):
+    """Delete a suite and its test cases."""
+    deleted = await db.delete_tool_suite(suite_id, user["id"])
+    if not deleted:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+# --- Test Cases ---
+
+@app.get("/api/tool-suites/{suite_id}/cases")
+async def list_test_cases(suite_id: str, user: dict = Depends(auth.get_current_user)):
+    """List test cases for a suite."""
+    suite = await db.get_tool_suite(suite_id, user["id"])
+    if not suite:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    cases = await db.get_test_cases(suite_id)
+    for c in cases:
+        c["expected_tool"] = _parse_expected_tool(c["expected_tool"])
+        if c["expected_params"]:
+            try:
+                c["expected_params"] = json.loads(c["expected_params"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return {"cases": cases}
+
+
+@app.post("/api/tool-suites/{suite_id}/cases")
+async def create_test_cases(suite_id: str, request: Request, user: dict = Depends(auth.get_current_user)):
+    """Add test case(s) to a suite. Supports single or bulk via 'cases' array."""
+    suite = await db.get_tool_suite(suite_id, user["id"])
+    if not suite:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    body = await request.json()
+
+    # Bulk mode
+    if "cases" in body and isinstance(body["cases"], list):
+        created = 0
+        for item in body["cases"]:
+            prompt = item.get("prompt", "").strip()
+            if not prompt:
+                continue
+            expected_tool = _serialize_expected_tool(item.get("expected_tool"))
+            expected_params = json.dumps(item["expected_params"]) if item.get("expected_params") is not None else None
+            param_scoring = item.get("param_scoring", "exact")
+            await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring)
+            created += 1
+        return {"status": "ok", "created": created}
+
+    # Single mode
+    prompt = body.get("prompt", "").strip()
+    if not prompt:
+        return JSONResponse({"error": "prompt is required"}, status_code=400)
+    expected_tool = _serialize_expected_tool(body.get("expected_tool"))
+    expected_params = json.dumps(body["expected_params"]) if body.get("expected_params") is not None else None
+    param_scoring = body.get("param_scoring", "exact")
+    case_id = await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring)
+    return {"status": "ok", "case_id": case_id}
+
+
+@app.put("/api/tool-suites/{suite_id}/cases/{case_id}")
+async def update_test_case(suite_id: str, case_id: str, request: Request, user: dict = Depends(auth.get_current_user)):
+    """Update a test case."""
+    suite = await db.get_tool_suite(suite_id, user["id"])
+    if not suite:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    body = await request.json()
+    prompt = body.get("prompt")
+    expected_tool = _serialize_expected_tool(body.get("expected_tool")) if "expected_tool" in body else None
+    expected_params = json.dumps(body["expected_params"]) if "expected_params" in body and body["expected_params"] is not None else None
+    param_scoring = body.get("param_scoring")
+    updated = await db.update_test_case(case_id, suite_id, prompt=prompt, expected_tool=expected_tool, expected_params=expected_params, param_scoring=param_scoring)
+    if not updated:
+        return JSONResponse({"error": "Test case not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+@app.delete("/api/tool-suites/{suite_id}/cases/{case_id}")
+async def delete_test_case(suite_id: str, case_id: str, user: dict = Depends(auth.get_current_user)):
+    """Delete a test case."""
+    suite = await db.get_tool_suite(suite_id, user["id"])
+    if not suite:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    deleted = await db.delete_test_case(case_id, suite_id)
+    if not deleted:
+        return JSONResponse({"error": "Test case not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+# --- Eval History ---
+
+@app.get("/api/tool-eval/history")
+async def list_tool_eval_runs(user: dict = Depends(auth.get_current_user)):
+    """List user's past eval runs."""
+    runs = await db.get_tool_eval_runs(user["id"])
+    for run in runs:
+        if isinstance(run.get("models_json"), str):
+            run["models"] = json.loads(run["models_json"])
+            del run["models_json"]
+        if isinstance(run.get("summary_json"), str):
+            run["summary"] = json.loads(run["summary_json"])
+            del run["summary_json"]
+    return {"runs": runs}
+
+
+@app.get("/api/tool-eval/history/{eval_id}")
+async def get_tool_eval_run(eval_id: str, user: dict = Depends(auth.get_current_user)):
+    """Get full eval run details."""
+    run = await db.get_tool_eval_run(eval_id, user["id"])
+    if not run:
+        return JSONResponse({"error": "Eval run not found"}, status_code=404)
+    if isinstance(run.get("models_json"), str):
+        run["models"] = json.loads(run["models_json"])
+        del run["models_json"]
+    if isinstance(run.get("results_json"), str):
+        run["results"] = json.loads(run["results_json"])
+        del run["results_json"]
+    if isinstance(run.get("summary_json"), str):
+        run["summary"] = json.loads(run["summary_json"])
+        del run["summary_json"]
+    return run
+
+
+@app.delete("/api/tool-eval/history/{eval_id}")
+async def delete_tool_eval_run(eval_id: str, user: dict = Depends(auth.get_current_user)):
+    """Delete an eval run."""
+    deleted = await db.delete_tool_eval_run(eval_id, user["id"])
+    if not deleted:
+        return JSONResponse({"error": "Eval run not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+# --- Eval Engine: Scoring ---
+
+def score_tool_selection(expected_tool, actual_tool: str | None) -> float:
+    """Score tool selection accuracy for one test case.
+
+    Args:
+        expected_tool: str, list[str], or None
+        actual_tool: str or None (what the model actually called)
+
+    Returns: 1.0 or 0.0
+    """
+    if expected_tool is None:
+        return 1.0 if actual_tool is None else 0.0
+    if actual_tool is None:
+        return 0.0
+    if isinstance(expected_tool, list):
+        return 1.0 if actual_tool.lower() in [e.lower() for e in expected_tool] else 0.0
+    return 1.0 if actual_tool.lower() == expected_tool.lower() else 0.0
+
+
+def score_params(expected_params: dict | None, actual_params: dict | None) -> float | None:
+    """Score parameter accuracy for one test case.
+
+    Returns: float 0.0-1.0, or None if params not scored.
+    """
+    if expected_params is None:
+        return None
+    if not expected_params:
+        return 1.0  # empty dict = nothing to check
+    if actual_params is None:
+        return 0.0
+
+    correct = 0
+    total = len(expected_params)
+    for key, expected_val in expected_params.items():
+        if key not in actual_params:
+            continue
+        actual_val = actual_params[key]
+        # String comparison: case-insensitive
+        if isinstance(expected_val, str) and isinstance(actual_val, str):
+            if expected_val.lower() == actual_val.lower():
+                correct += 1
+        # Numeric comparison
+        elif isinstance(expected_val, (int, float)) and isinstance(actual_val, (int, float)):
+            if float(expected_val) == float(actual_val):
+                correct += 1
+        # Exact match for everything else
+        elif expected_val == actual_val:
+            correct += 1
+
+    return correct / total if total > 0 else 1.0
+
+
+def compute_overall_score(tool_score: float, param_score: float | None) -> float:
+    """Compute weighted overall score.
+
+    When params scored: 0.6 * tool_score + 0.4 * param_score
+    When params not scored: tool_score
+    """
+    if param_score is None:
+        return tool_score
+    return 0.6 * tool_score + 0.4 * param_score
+
+
+# --- Eval Engine: Single Eval Execution ---
+
+async def run_single_eval(
+    target: Target,
+    tools: list[dict],
+    test_case: dict,
+    temperature: float,
+) -> dict:
+    """Run one test case against one model. Returns result dict.
+
+    Uses litellm.acompletion() (non-streaming, since we need tool_calls).
+    """
+    # Parse expected values
+    expected_tool = _parse_expected_tool(test_case.get("expected_tool"))
+    expected_params = test_case.get("expected_params")
+    if isinstance(expected_params, str):
+        try:
+            expected_params = json.loads(expected_params)
+        except (json.JSONDecodeError, TypeError):
+            expected_params = None
+
+    result = {
+        "model_id": target.model_id,
+        "test_case_id": test_case["id"],
+        "prompt": test_case["prompt"],
+        "expected_tool": expected_tool,
+        "expected_params": expected_params,
+        "actual_tool": None,
+        "actual_params": None,
+        "tool_selection_score": 0.0,
+        "param_accuracy": None,
+        "overall_score": 0.0,
+        "success": True,
+        "error": "",
+        "latency_ms": 0,
+    }
+
+    kwargs = {
+        "model": target.model_id,
+        "messages": [{"role": "user", "content": test_case["prompt"]}],
+        "tools": tools,
+        "tool_choice": "auto",
+        "max_tokens": 1024,
+        "timeout": 60,
+        "num_retries": 1,
+    }
+    if target.api_base:
+        kwargs["api_base"] = target.api_base
+    if target.api_key:
+        kwargs["api_key"] = target.api_key
+    # Only add temperature if not skipped
+    if "temperature" not in (target.skip_params or []):
+        kwargs["temperature"] = temperature
+    # Remove other skipped params
+    if target.skip_params:
+        for p in target.skip_params:
+            if p != "temperature":
+                kwargs.pop(p, None)
+
+    try:
+        start = time.perf_counter()
+        response = await litellm.acompletion(**kwargs)
+        latency_ms = (time.perf_counter() - start) * 1000
+
+        message = response.choices[0].message
+        if message.tool_calls and len(message.tool_calls) > 0:
+            result["actual_tool"] = message.tool_calls[0].function.name
+            try:
+                result["actual_params"] = json.loads(message.tool_calls[0].function.arguments)
+            except (json.JSONDecodeError, TypeError):
+                result["actual_params"] = None
+        else:
+            result["actual_tool"] = None
+            result["actual_params"] = None
+
+        result["latency_ms"] = round(latency_ms)
+
+    except Exception as e:
+        result["success"] = False
+        result["error"] = sanitize_error(str(e)[:200], target.api_key)
+        return result
+
+    # Score
+    result["tool_selection_score"] = score_tool_selection(expected_tool, result["actual_tool"])
+    result["param_accuracy"] = score_params(expected_params, result["actual_params"])
+    result["overall_score"] = compute_overall_score(result["tool_selection_score"], result["param_accuracy"])
+
+    return result
+
+
+# --- Eval Engine: Summary Computation ---
+
+def _compute_eval_summaries(results: list[dict], targets: list[Target]) -> list[dict]:
+    """Compute per-model aggregate scores from individual results."""
+    target_map = {t.model_id: t for t in targets}
+
+    # Group by model_id
+    by_model: dict[str, list[dict]] = {}
+    for r in results:
+        by_model.setdefault(r["model_id"], []).append(r)
+
+    summaries = []
+    for model_id, model_results in by_model.items():
+        target = target_map.get(model_id)
+        model_name = target.display_name if target else model_id
+        provider = target.provider if target else ""
+
+        tool_scores = [r["tool_selection_score"] for r in model_results if r["success"]]
+        param_scores = [r["param_accuracy"] for r in model_results if r["success"] and r["param_accuracy"] is not None]
+        overall_scores = [r["overall_score"] for r in model_results if r["success"]]
+
+        tool_acc = (sum(tool_scores) / len(tool_scores) * 100) if tool_scores else 0.0
+        param_acc = (sum(param_scores) / len(param_scores) * 100) if param_scores else 0.0
+        overall = (sum(overall_scores) / len(overall_scores) * 100) if overall_scores else 0.0
+        cases_passed = sum(1 for r in model_results if r["success"] and r["overall_score"] == 1.0)
+
+        summaries.append({
+            "model_id": model_id,
+            "model_name": model_name,
+            "provider": provider,
+            "tool_accuracy_pct": round(tool_acc, 1),
+            "param_accuracy_pct": round(param_acc, 1),
+            "overall_pct": round(overall, 1),
+            "cases_run": len(model_results),
+            "cases_passed": cases_passed,
+        })
+
+    return summaries
+
+
+# --- Eval Engine: SSE Endpoint ---
+
+@app.post("/api/tool-eval")
+async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Run tool calling eval and stream results via SSE."""
+    body = await request.json()
+    suite_id = body.get("suite_id")
+    model_ids = body.get("models", [])
+    temperature = body.get("temperature", 0.0)
+
+    # --- Validation ---
+    if not suite_id:
+        return JSONResponse({"error": "suite_id is required"}, status_code=400)
+    if not isinstance(model_ids, list) or len(model_ids) == 0:
+        return JSONResponse({"error": "models must be a non-empty list"}, status_code=400)
+    if not isinstance(temperature, (int, float)) or float(temperature) < 0.0 or float(temperature) > 2.0:
+        return JSONResponse({"error": "temperature must be between 0.0 and 2.0"}, status_code=400)
+    temperature = float(temperature)
+
+    # Load suite + test cases
+    suite = await db.get_tool_suite(suite_id, user["id"])
+    if not suite:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    cases = await db.get_test_cases(suite_id)
+    if not cases:
+        return JSONResponse({"error": "Suite has no test cases"}, status_code=400)
+    tools = json.loads(suite["tools_json"])
+
+    # Rate limit check
+    allowed, remaining = _check_rate_limit(user["id"])
+    if not allowed:
+        return JSONResponse(
+            {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} per hour."},
+            status_code=429,
+        )
+    _record_rate_limit(user["id"])
+
+    # Concurrent guard (shared with benchmarks)
+    user_lock = _get_user_lock(user["id"])
+    if user_lock.locked():
+        return JSONResponse(
+            {"error": "A benchmark or eval is already running"},
+            status_code=409,
+        )
+
+    # Build targets from user config
+    config = await _get_user_config(user["id"])
+    all_targets = build_targets(config)
+    targets = [t for t in all_targets if t.model_id in model_ids]
+    if not targets:
+        return JSONResponse({"error": "No matching models found in config"}, status_code=400)
+
+    # Inject per-user API keys
+    user_keys_cache = {}
+    for t in targets:
+        if t.provider_key and t.provider_key not in user_keys_cache:
+            encrypted = await db.get_user_key_for_provider(user["id"], t.provider_key)
+            if encrypted:
+                user_keys_cache[t.provider_key] = encrypted
+    targets = inject_user_keys(targets, user_keys_cache)
+
+    cancel_event = _get_user_cancel(user["id"])
+
+    async def generate():
+        await user_lock.acquire()
+        cancel_event.clear()
+        try:
+            total = len(targets) * len(cases)
+            queue = asyncio.Queue()
+
+            # Group targets by provider
+            provider_groups: dict[str, list[Target]] = {}
+            for target in targets:
+                provider_groups.setdefault(target.provider, []).append(target)
+
+            async def run_provider(prov_targets):
+                """Run all test cases for models in this provider."""
+                for target in prov_targets:
+                    for case in cases:
+                        if cancel_event.is_set():
+                            return
+                        result = await run_single_eval(target, tools, case, temperature)
+                        await queue.put(result)
+
+            # Launch provider groups in parallel
+            tasks = [asyncio.create_task(run_provider(g))
+                     for g in provider_groups.values()]
+
+            async def sentinel():
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await queue.put(None)
+
+            asyncio.create_task(sentinel())
+
+            # Consume and emit SSE events
+            current = 0
+            all_results = []
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield _sse({"type": "heartbeat"})
+                    continue
+                if item is None:
+                    break
+                if cancel_event.is_set():
+                    for t in tasks:
+                        t.cancel()
+                    yield _sse({"type": "cancelled"})
+                    return
+
+                current += 1
+                # Find target display name
+                target_map = {t.model_id: t for t in targets}
+                t = target_map.get(item["model_id"])
+                model_display = t.display_name if t else item["model_id"]
+
+                yield _sse({
+                    "type": "progress",
+                    "current": current,
+                    "total": total,
+                    "model": model_display,
+                    "test_case": item["test_case_id"],
+                })
+                yield _sse({"type": "result", **item})
+                all_results.append(item)
+
+            # Compute per-model summaries
+            summaries = _compute_eval_summaries(all_results, targets)
+            for s in summaries:
+                yield _sse({"type": "model_summary", **s})
+
+            # Save to DB
+            eval_id = await db.save_tool_eval_run(
+                user_id=user["id"],
+                suite_id=suite["id"],
+                suite_name=suite["name"],
+                models_json=json.dumps(model_ids),
+                results_json=json.dumps(all_results),
+                summary_json=json.dumps(summaries),
+                temperature=temperature,
+            )
+
+            yield _sse({"type": "complete", "eval_id": eval_id})
+
+        except Exception as e:
+            yield _sse({"type": "error", "message": sanitize_error(str(e))})
+        finally:
+            user_lock.release()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
+    )
+
+
+@app.post("/api/tool-eval/cancel")
+async def cancel_tool_eval(user: dict = Depends(auth.get_current_user)):
+    """Cancel a running tool eval."""
+    _get_user_cancel(user["id"]).set()
+    return {"status": "ok", "message": "Cancellation requested"}
+
+
+# ---------------------------------------------------------------------------
 # Provider health check
 # ---------------------------------------------------------------------------
 
