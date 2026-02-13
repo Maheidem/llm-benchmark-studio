@@ -25,6 +25,6 @@ EXPOSE 8501
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8501/')" || exit 1
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8501/healthz')" || exit 1
 
 CMD ["uv", "run", "python", "app.py", "--host", "0.0.0.0"]

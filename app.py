@@ -202,6 +202,11 @@ async def dashboard():
     return (_dir / "index.html").read_text()
 
 
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
+
 # ---------------------------------------------------------------------------
 # Auth routes
 # ---------------------------------------------------------------------------
@@ -1395,4 +1400,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     print(f"\n  LLM Benchmark Studio running at http://localhost:{args.port}\n")
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    log_level = os.environ.get("LOG_LEVEL", "warning").lower()
+    uvicorn.run(app, host=args.host, port=args.port, log_level=log_level)

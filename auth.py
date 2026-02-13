@@ -23,6 +23,7 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "CHANGE-ME-IN-PRODUCTION-" + os.urando
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 15
 REFRESH_TOKEN_EXPIRE_DAYS = 7
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() in ("true", "1", "yes")
 
 
 # --- Password helpers ---
@@ -160,7 +161,7 @@ async def register_handler(request: Request) -> JSONResponse:
         key="refresh_token",
         value=refresh,
         httponly=True,
-        secure=False,  # Set True in production with HTTPS
+        secure=COOKIE_SECURE,
         samesite="strict",
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 86400,
         path="/api/auth",
@@ -195,7 +196,7 @@ async def login_handler(request: Request) -> JSONResponse:
         key="refresh_token",
         value=refresh,
         httponly=True,
-        secure=False,
+        secure=COOKIE_SECURE,
         samesite="strict",
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 86400,
         path="/api/auth",
