@@ -86,23 +86,32 @@ jobs:
           STACK_ID: ${{ secrets.PORTAINER_STACK_ID_STAGING }}
           ENDPOINT_ID: ${{ secrets.PORTAINER_ENDPOINT_ID }}
         run: |
+          set +e
           # Fetch current stack config (preserves env vars set in Portainer)
-          STACK=$(curl -s --fail-with-body "$PORTAINER_URL/api/stacks/$STACK_ID" \
+          STACK=$(curl -s -w "\nHTTP_CODE:%{http_code}" "$PORTAINER_URL/api/stacks/$STACK_ID" \
             -H "X-API-Key: $API_KEY")
-          echo "Stack fetch status: $?"
+          HTTP_CODE=$(echo "$STACK" | tail -1 | sed 's/HTTP_CODE://')
+          STACK=$(echo "$STACK" | sed '$d')
+          echo "Stack fetch HTTP: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then echo "Stack fetch failed: $STACK"; exit 1; fi
+
           ENV_VARS=$(echo "$STACK" | jq '.Env')
           STACK_FILE=$(echo "$STACK" | jq -r '.StackFileContent')
 
+          BODY=$(jq -n --arg file "$STACK_FILE" --argjson env "$ENV_VARS" \
+            '{stackFileContent: $file, env: $env, pullImage: true}')
+
           # Redeploy with pullImage to get the new GHCR image
-          RESPONSE=$(curl -s --fail-with-body -X PUT \
+          RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X PUT \
             "$PORTAINER_URL/api/stacks/$STACK_ID?endpointId=$ENDPOINT_ID" \
             -H "X-API-Key: $API_KEY" \
             -H "Content-Type: application/json" \
-            -d "$(jq -n \
-              --arg file "$STACK_FILE" \
-              --argjson env "$ENV_VARS" \
-              '{stackFileContent: $file, env: $env, pullImage: true}')")
-          echo "Deploy response: $RESPONSE"
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1 | sed 's/HTTP_CODE://')
+          RESPONSE=$(echo "$RESPONSE" | sed '$d')
+          echo "Deploy HTTP: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then echo "Deploy failed: $RESPONSE"; exit 1; fi
+          echo "Deploy succeeded"
 
   deploy-prod:
     needs: [build]
@@ -117,20 +126,29 @@ jobs:
           STACK_ID: ${{ secrets.PORTAINER_STACK_ID_PROD }}
           ENDPOINT_ID: ${{ secrets.PORTAINER_ENDPOINT_ID }}
         run: |
+          set +e
           # Fetch current stack config (preserves env vars set in Portainer)
-          STACK=$(curl -s --fail-with-body "$PORTAINER_URL/api/stacks/$STACK_ID" \
+          STACK=$(curl -s -w "\nHTTP_CODE:%{http_code}" "$PORTAINER_URL/api/stacks/$STACK_ID" \
             -H "X-API-Key: $API_KEY")
-          echo "Stack fetch status: $?"
+          HTTP_CODE=$(echo "$STACK" | tail -1 | sed 's/HTTP_CODE://')
+          STACK=$(echo "$STACK" | sed '$d')
+          echo "Stack fetch HTTP: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then echo "Stack fetch failed: $STACK"; exit 1; fi
+
           ENV_VARS=$(echo "$STACK" | jq '.Env')
           STACK_FILE=$(echo "$STACK" | jq -r '.StackFileContent')
 
+          BODY=$(jq -n --arg file "$STACK_FILE" --argjson env "$ENV_VARS" \
+            '{stackFileContent: $file, env: $env, pullImage: true}')
+
           # Redeploy with pullImage to get the new GHCR image
-          RESPONSE=$(curl -s --fail-with-body -X PUT \
+          RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X PUT \
             "$PORTAINER_URL/api/stacks/$STACK_ID?endpointId=$ENDPOINT_ID" \
             -H "X-API-Key: $API_KEY" \
             -H "Content-Type: application/json" \
-            -d "$(jq -n \
-              --arg file "$STACK_FILE" \
-              --argjson env "$ENV_VARS" \
-              '{stackFileContent: $file, env: $env, pullImage: true}')")
-          echo "Deploy response: $RESPONSE"
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1 | sed 's/HTTP_CODE://')
+          RESPONSE=$(echo "$RESPONSE" | sed '$d')
+          echo "Deploy HTTP: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then echo "Deploy failed: $RESPONSE"; exit 1; fi
+          echo "Deploy succeeded"
