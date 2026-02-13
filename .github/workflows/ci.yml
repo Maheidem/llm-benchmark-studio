@@ -87,20 +87,22 @@ jobs:
           ENDPOINT_ID: ${{ secrets.PORTAINER_ENDPOINT_ID }}
         run: |
           # Fetch current stack config (preserves env vars set in Portainer)
-          STACK=$(curl -sf "$PORTAINER_URL/api/stacks/$STACK_ID" \
+          STACK=$(curl -s --fail-with-body "$PORTAINER_URL/api/stacks/$STACK_ID" \
             -H "X-API-Key: $API_KEY")
+          echo "Stack fetch status: $?"
           ENV_VARS=$(echo "$STACK" | jq '.Env')
           STACK_FILE=$(echo "$STACK" | jq -r '.StackFileContent')
 
           # Redeploy with pullImage to get the new GHCR image
-          curl -sf -X PUT \
+          RESPONSE=$(curl -s --fail-with-body -X PUT \
             "$PORTAINER_URL/api/stacks/$STACK_ID?endpointId=$ENDPOINT_ID" \
             -H "X-API-Key: $API_KEY" \
             -H "Content-Type: application/json" \
             -d "$(jq -n \
               --arg file "$STACK_FILE" \
               --argjson env "$ENV_VARS" \
-              '{stackFileContent: $file, env: $env, pullImage: true}')"
+              '{stackFileContent: $file, env: $env, pullImage: true}')")
+          echo "Deploy response: $RESPONSE"
 
   deploy-prod:
     needs: [build]
@@ -116,17 +118,19 @@ jobs:
           ENDPOINT_ID: ${{ secrets.PORTAINER_ENDPOINT_ID }}
         run: |
           # Fetch current stack config (preserves env vars set in Portainer)
-          STACK=$(curl -sf "$PORTAINER_URL/api/stacks/$STACK_ID" \
+          STACK=$(curl -s --fail-with-body "$PORTAINER_URL/api/stacks/$STACK_ID" \
             -H "X-API-Key: $API_KEY")
+          echo "Stack fetch status: $?"
           ENV_VARS=$(echo "$STACK" | jq '.Env')
           STACK_FILE=$(echo "$STACK" | jq -r '.StackFileContent')
 
           # Redeploy with pullImage to get the new GHCR image
-          curl -sf -X PUT \
+          RESPONSE=$(curl -s --fail-with-body -X PUT \
             "$PORTAINER_URL/api/stacks/$STACK_ID?endpointId=$ENDPOINT_ID" \
             -H "X-API-Key: $API_KEY" \
             -H "Content-Type: application/json" \
             -d "$(jq -n \
               --arg file "$STACK_FILE" \
               --argjson env "$ENV_VARS" \
-              '{stackFileContent: $file, env: $env, pullImage: true}')"
+              '{stackFileContent: $file, env: $env, pullImage: true}')")
+          echo "Deploy response: $RESPONSE"
