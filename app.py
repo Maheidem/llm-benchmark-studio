@@ -2479,10 +2479,12 @@ async def analytics_leaderboard(
         for run in runs:
             summaries = json.loads(run["summary_json"]) if isinstance(run["summary_json"], str) else run["summary_json"]
             for s in summaries:
-                key = (s.get("model", ""), s.get("provider", ""))
+                # summary_json uses model_name/model_id, not model
+                model_name = s.get("model_name") or s.get("model", "")
+                key = (model_name, s.get("provider", ""))
                 if key not in model_agg:
                     model_agg[key] = {
-                        "model": s.get("model", ""),
+                        "model": model_name,
                         "provider": s.get("provider", ""),
                         "tool_scores": [],
                         "param_scores": [],
@@ -2490,12 +2492,16 @@ async def analytics_leaderboard(
                         "last_eval": run["timestamp"],
                     }
                 entry = model_agg[key]
-                if s.get("tool_score") is not None:
-                    entry["tool_scores"].append(float(s["tool_score"]))
-                if s.get("param_score") is not None:
-                    entry["param_scores"].append(float(s["param_score"]))
-                if s.get("overall_score") is not None:
-                    entry["overall_scores"].append(float(s["overall_score"]))
+                # summary_json uses *_accuracy_pct / overall_pct field names
+                tool_val = s.get("tool_accuracy_pct") if s.get("tool_accuracy_pct") is not None else s.get("tool_score")
+                param_val = s.get("param_accuracy_pct") if s.get("param_accuracy_pct") is not None else s.get("param_score")
+                overall_val = s.get("overall_pct") if s.get("overall_pct") is not None else s.get("overall_score")
+                if tool_val is not None:
+                    entry["tool_scores"].append(float(tool_val))
+                if param_val is not None:
+                    entry["param_scores"].append(float(param_val))
+                if overall_val is not None:
+                    entry["overall_scores"].append(float(overall_val))
                 # Track latest eval timestamp
                 if run["timestamp"] > entry["last_eval"]:
                     entry["last_eval"] = run["timestamp"]
