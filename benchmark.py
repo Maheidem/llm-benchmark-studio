@@ -54,6 +54,8 @@ class Target:
     max_output_tokens: Optional[int] = None
     api_key_env: Optional[str] = None      # env var name (e.g. "OPENAI_API_KEY")
     provider_key: Optional[str] = None     # config key (e.g. "openai")
+    input_cost_per_mtok: Optional[float] = None   # custom $/1M input tokens
+    output_cost_per_mtok: Optional[float] = None  # custom $/1M output tokens
 
 
 @dataclass
@@ -108,6 +110,8 @@ class ModelSchema(BaseModel):
     context_window: int = 128000
     max_output_tokens: Optional[int] = None
     skip_params: Optional[list[str]] = None
+    input_cost_per_mtok: Optional[float] = None
+    output_cost_per_mtok: Optional[float] = None
 
 
 class ProviderSchema(BaseModel):
@@ -224,6 +228,8 @@ def build_targets(
                     max_output_tokens=model.get("max_output_tokens"),
                     api_key_env=prov_cfg.get("api_key_env"),
                     provider_key=prov_key,
+                    input_cost_per_mtok=model.get("input_cost_per_mtok"),
+                    output_cost_per_mtok=model.get("output_cost_per_mtok"),
                 )
             )
 
@@ -453,6 +459,13 @@ def run_single(
             )
         except Exception:
             result.cost = 0.0
+
+        # Custom pricing fallback: when LiteLLM returns 0, use config pricing
+        if result.cost == 0.0 and target.input_cost_per_mtok is not None and target.output_cost_per_mtok is not None:
+            result.cost = (
+                result.input_tokens * target.input_cost_per_mtok
+                + result.output_tokens * target.output_cost_per_mtok
+            ) / 1_000_000
 
     except litellm.exceptions.RateLimitError as e:
         result.success = False

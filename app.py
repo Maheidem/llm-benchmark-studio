@@ -14,6 +14,7 @@ import json
 import os
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import litellm
@@ -68,7 +69,96 @@ async def lifespan(app_instance):
                 hashed = auth.hash_password(admin_pass)
                 await db.create_user(admin_email, hashed, role="admin")
                 print(f"  Admin account created: {admin_email}")
+    # Launch background scheduler for scheduled benchmarks
+    scheduler_task = asyncio.create_task(_run_scheduler())
     yield
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
+    except asyncio.CancelledError:
+        pass
+
+async def _run_scheduled_benchmark(schedule: dict):
+    """Execute a single scheduled benchmark run and save results."""
+    from dataclasses import replace as dc_replace
+
+    user_id = schedule["user_id"]
+    models = json.loads(schedule["models_json"])
+    prompt = schedule["prompt"]
+    max_tokens = schedule.get("max_tokens", 512)
+    temperature = schedule.get("temperature", 0.7)
+
+    config = await _get_user_config(user_id)
+    all_targets = build_targets(config)
+
+    # Filter to scheduled models
+    targets = [t for t in all_targets if t.model_id in models]
+    if not targets:
+        return
+
+    # Inject per-user API keys
+    user_keys_cache = {}
+    for t in targets:
+        if t.provider_key and t.provider_key not in user_keys_cache:
+            encrypted = await db.get_user_key_for_provider(user_id, t.provider_key)
+            if encrypted:
+                user_keys_cache[t.provider_key] = encrypted
+    targets = inject_user_keys(targets, user_keys_cache)
+
+    # Run benchmarks (single run per model, no warmup for scheduled)
+    all_results = []
+    for target in targets:
+        result = await async_run_single(target, prompt, max_tokens, temperature)
+        all_results.append({
+            "provider": target.provider,
+            "model": target.display_name,
+            "model_id": target.model_id,
+            "run": 1,
+            "runs": 1,
+            "context_tokens": 0,
+            "ttft_ms": round(result.ttft_ms, 2),
+            "total_time_s": round(result.total_time_s, 3),
+            "output_tokens": result.output_tokens,
+            "input_tokens": result.input_tokens,
+            "tokens_per_second": round(result.tokens_per_second, 2),
+            "input_tokens_per_second": round(result.input_tokens_per_second, 2),
+            "cost": round(result.cost, 8),
+            "success": result.success,
+            "error": result.error,
+        })
+
+    # Save to benchmark_runs (same as manual benchmarks)
+    if all_results:
+        await db.save_benchmark_run(
+            user_id=user_id,
+            prompt=prompt,
+            context_tiers=json.dumps([0]),
+            results_json=json.dumps(all_results),
+            metadata=json.dumps({"source": "schedule", "schedule_id": schedule["id"], "schedule_name": schedule["name"]}),
+        )
+
+
+async def _run_scheduler():
+    """Background task that checks for due schedules every 60 seconds."""
+    while True:
+        try:
+            await asyncio.sleep(60)
+            due = await db.get_due_schedules()
+            for schedule in due:
+                try:
+                    await _run_scheduled_benchmark(schedule)
+                except Exception as exc:
+                    print(f"  [scheduler] Error running schedule {schedule['id']}: {exc}")
+                # Update timestamps regardless of success
+                now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                interval = schedule["interval_hours"]
+                next_run = (datetime.now(timezone.utc) + timedelta(hours=interval)).strftime("%Y-%m-%d %H:%M:%S")
+                await db.update_schedule_after_run(schedule["id"], now, next_run)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            print(f"  [scheduler] Unexpected error: {exc}")
+
 
 app = FastAPI(title="LLM Benchmark Studio", lifespan=lifespan)
 
@@ -2439,6 +2529,13 @@ async def async_run_single(
         except Exception:
             result.cost = 0.0
 
+        # Custom pricing fallback: when LiteLLM returns 0, use config pricing
+        if result.cost == 0.0 and target.input_cost_per_mtok is not None and target.output_cost_per_mtok is not None:
+            result.cost = (
+                result.input_tokens * target.input_cost_per_mtok
+                + result.output_tokens * target.output_cost_per_mtok
+            ) / 1_000_000
+
     except litellm.exceptions.RateLimitError as e:
         result.success = False
         result.error = f"[rate_limited] {sanitize_error(str(e)[:180], target.api_key)}"
@@ -2757,6 +2854,124 @@ def _aggregate(raw_results: list[dict], config: dict) -> list[AggregatedResult]:
         agg_list.append(agg)
 
     return agg_list
+
+
+# ---------------------------------------------------------------------------
+# Scheduled Benchmarks
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/schedules")
+async def list_schedules(user: dict = Depends(auth.get_current_user)):
+    """List the current user's scheduled benchmarks."""
+    schedules = await db.get_user_schedules(user["id"])
+    for s in schedules:
+        if isinstance(s.get("models_json"), str):
+            s["models"] = json.loads(s["models_json"])
+            del s["models_json"]
+    return {"schedules": schedules}
+
+
+@app.post("/api/schedules")
+async def create_schedule(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Create a new scheduled benchmark."""
+    body = await request.json()
+    name = body.get("name", "").strip()
+    prompt = body.get("prompt", "").strip()
+    models = body.get("models", [])
+    interval_hours = body.get("interval_hours")
+    max_tokens = body.get("max_tokens", 512)
+    temperature = body.get("temperature", 0.7)
+
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    if not prompt:
+        return JSONResponse({"error": "prompt is required"}, status_code=400)
+    if not isinstance(models, list) or len(models) == 0:
+        return JSONResponse({"error": "models must be a non-empty list"}, status_code=400)
+    if not isinstance(interval_hours, (int, float)) or int(interval_hours) < 1:
+        return JSONResponse({"error": "interval_hours must be >= 1"}, status_code=400)
+
+    interval_hours = int(interval_hours)
+    max_tokens = int(max_tokens) if max_tokens else 512
+    temperature = float(temperature) if temperature is not None else 0.7
+
+    # next_run = now + interval
+    next_run = (datetime.now(timezone.utc) + timedelta(hours=interval_hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+    schedule_id = await db.create_schedule(
+        user_id=user["id"],
+        name=name,
+        prompt=prompt,
+        models_json=json.dumps(models),
+        max_tokens=max_tokens,
+        temperature=temperature,
+        interval_hours=interval_hours,
+        next_run=next_run,
+    )
+
+    return {"status": "ok", "id": schedule_id}
+
+
+@app.put("/api/schedules/{schedule_id}")
+async def update_schedule(schedule_id: str, request: Request, user: dict = Depends(auth.get_current_user)):
+    """Update an existing scheduled benchmark."""
+    body = await request.json()
+
+    kwargs = {}
+    if "name" in body:
+        kwargs["name"] = body["name"]
+    if "prompt" in body:
+        kwargs["prompt"] = body["prompt"]
+    if "models" in body:
+        kwargs["models_json"] = json.dumps(body["models"])
+    if "max_tokens" in body:
+        kwargs["max_tokens"] = int(body["max_tokens"])
+    if "temperature" in body:
+        kwargs["temperature"] = float(body["temperature"])
+    if "interval_hours" in body:
+        kwargs["interval_hours"] = int(body["interval_hours"])
+        # Recalculate next_run when interval changes
+        kwargs["next_run"] = (datetime.now(timezone.utc) + timedelta(hours=int(body["interval_hours"]))).strftime("%Y-%m-%d %H:%M:%S")
+    if "enabled" in body:
+        kwargs["enabled"] = 1 if body["enabled"] else 0
+
+    updated = await db.update_schedule(schedule_id, user["id"], **kwargs)
+    if not updated:
+        return JSONResponse({"error": "Schedule not found"}, status_code=404)
+
+    return {"status": "ok"}
+
+
+@app.delete("/api/schedules/{schedule_id}")
+async def delete_schedule(schedule_id: str, user: dict = Depends(auth.get_current_user)):
+    """Delete a scheduled benchmark."""
+    deleted = await db.delete_schedule(schedule_id, user["id"])
+    if not deleted:
+        return JSONResponse({"error": "Schedule not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+@app.post("/api/schedules/{schedule_id}/trigger")
+async def trigger_schedule(schedule_id: str, user: dict = Depends(auth.get_current_user)):
+    """Manually trigger a scheduled benchmark (run now)."""
+    schedule = await db.get_schedule(schedule_id, user["id"])
+    if not schedule:
+        return JSONResponse({"error": "Schedule not found"}, status_code=404)
+
+    # Run in background so the HTTP response returns immediately
+    async def _run():
+        try:
+            await _run_scheduled_benchmark(schedule)
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            interval = schedule["interval_hours"]
+            next_run = (datetime.now(timezone.utc) + timedelta(hours=interval)).strftime("%Y-%m-%d %H:%M:%S")
+            await db.update_schedule_after_run(schedule["id"], now, next_run)
+        except Exception as exc:
+            print(f"  [trigger] Error running schedule {schedule['id']}: {exc}")
+
+    asyncio.create_task(_run())
+    return {"status": "ok", "message": "Benchmark triggered"}
 
 
 # ---------------------------------------------------------------------------

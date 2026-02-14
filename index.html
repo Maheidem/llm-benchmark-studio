@@ -343,6 +343,7 @@
         <button onclick="showTab('settings')" id="tab-settings" class="tab">Settings</button>
         <button onclick="showTab('tool-eval')" id="tab-tool-eval" class="tab">Tool Eval</button>
         <button onclick="showTab('analytics')" id="tab-analytics" class="tab">Analytics</button>
+        <button onclick="showTab('schedules')" id="tab-schedules" class="tab">Schedules</button>
         <button onclick="showTab('admin')" id="tab-admin" class="tab" style="display:none;">Admin</button>
         <div id="userMenu" class="flex items-center gap-3 ml-4 pl-4" style="border-left:1px solid var(--border-subtle); display:none;">
           <span id="userEmail" class="text-[11px] text-zinc-500 font-mono"></span>
@@ -728,6 +729,40 @@
         </div>
       </div>
 
+    </div>
+
+    <!-- ─── SCHEDULES TAB ─── -->
+    <div id="view-schedules" class="hidden">
+      <div class="flex items-center justify-between mb-6">
+        <div>
+          <h2 class="font-display font-bold text-lg text-zinc-100 mb-1">Scheduled Benchmarks</h2>
+          <p class="text-sm text-zinc-600 font-body">Automate recurring benchmarks on a fixed interval.</p>
+        </div>
+        <button onclick="schedOpenNewModal()" class="run-btn px-4 py-2 rounded-sm text-xs flex items-center gap-2">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+          New Schedule
+        </button>
+      </div>
+
+      <!-- Schedule list -->
+      <div class="card rounded-md overflow-hidden">
+        <table class="w-full text-sm results-table">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--border-subtle)">
+              <th class="px-5 py-3 text-left section-label">Name</th>
+              <th class="px-5 py-3 text-center section-label">Models</th>
+              <th class="px-5 py-3 text-center section-label">Interval</th>
+              <th class="px-5 py-3 text-right section-label">Last Run</th>
+              <th class="px-5 py-3 text-right section-label">Next Run</th>
+              <th class="px-5 py-3 text-center section-label">Enabled</th>
+              <th class="px-5 py-3 text-right section-label"></th>
+            </tr>
+          </thead>
+          <tbody id="schedTableBody">
+            <tr><td colspan="7" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">Loading schedules...</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <!-- ─── TOOL EVAL TAB ─── -->
@@ -2263,17 +2298,20 @@
       document.getElementById('view-settings').classList.toggle('hidden', tab !== 'settings');
       document.getElementById('view-tool-eval').classList.toggle('hidden', tab !== 'tool-eval');
       document.getElementById('view-analytics').classList.toggle('hidden', tab !== 'analytics');
+      document.getElementById('view-schedules').classList.toggle('hidden', tab !== 'schedules');
       document.getElementById('view-admin').classList.toggle('hidden', tab !== 'admin');
       document.getElementById('tab-benchmark').classList.toggle('tab-active', tab === 'benchmark');
       document.getElementById('tab-history').classList.toggle('tab-active', tab === 'history');
       document.getElementById('tab-settings').classList.toggle('tab-active', tab === 'settings');
       document.getElementById('tab-tool-eval').classList.toggle('tab-active', tab === 'tool-eval');
       document.getElementById('tab-analytics').classList.toggle('tab-active', tab === 'analytics');
+      document.getElementById('tab-schedules').classList.toggle('tab-active', tab === 'schedules');
       document.getElementById('tab-admin').classList.toggle('tab-active', tab === 'admin');
       if (tab === 'history') loadHistory();
       if (tab === 'settings') renderSettings();
       if (tab === 'tool-eval') { showToolEvalView('suites'); teLoadSuites(); teLoadHistory(); }
       if (tab === 'analytics') { analyticsShowLeaderboard(); }
+      if (tab === 'schedules') loadSchedules();
       if (tab === 'admin') loadAdminDashboard();
     }
 
@@ -2503,7 +2541,7 @@
       ).join(' ');
 
       // Custom fields (anything not standard)
-      const stdKeys = new Set(['model_id','display_name','context_window','max_output_tokens','skip_params']);
+      const stdKeys = new Set(['model_id','display_name','context_window','max_output_tokens','skip_params','input_cost_per_mtok','output_cost_per_mtok']);
       const customs = Object.entries(m).filter(([k]) => !stdKeys.has(k));
       const customHtml = customs.map(([k,v]) =>
         `<div class="flex items-center gap-2">
@@ -2545,6 +2583,14 @@
             <div>
               <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Max Output Tokens</label>
               <input type="number" id="mot-${sid}" value="${m.max_output_tokens||''}" placeholder="Default" class="${INPUT_CLASS}" style="${INPUT_STYLE}" onfocus="this.style.borderColor='rgba(191,255,0,0.3)'" onblur="this.style.borderColor='var(--border-subtle)'">
+            </div>
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Input $/1M tokens</label>
+              <input type="number" step="0.001" id="icp-${sid}" value="${m.input_cost_per_mtok!=null?m.input_cost_per_mtok:''}" placeholder="e.g. 2.00" class="${INPUT_CLASS}" style="${INPUT_STYLE}" onfocus="this.style.borderColor='rgba(191,255,0,0.3)'" onblur="this.style.borderColor='var(--border-subtle)'">
+            </div>
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Output $/1M tokens</label>
+              <input type="number" step="0.001" id="ocp-${sid}" value="${m.output_cost_per_mtok!=null?m.output_cost_per_mtok:''}" placeholder="e.g. 8.00" class="${INPUT_CLASS}" style="${INPUT_STYLE}" onfocus="this.style.borderColor='rgba(191,255,0,0.3)'" onblur="this.style.borderColor='var(--border-subtle)'">
             </div>
           </div>
           <!-- Skip Params -->
@@ -2627,7 +2673,7 @@
       const currentSkipParams = modelData?.skip_params || [];
 
       // Collect custom fields
-      const stdKeys = new Set(['model_id','display_name','context_window','max_output_tokens','skip_params']);
+      const stdKeys = new Set(['model_id','display_name','context_window','max_output_tokens','skip_params','input_cost_per_mtok','output_cost_per_mtok']);
       const customs = {};
       if (modelData) {
         for (const [k] of Object.entries(modelData).filter(([k]) => !stdKeys.has(k))) {
@@ -2635,6 +2681,13 @@
           if (el) customs[k] = el.value;
         }
       }
+
+      // Collect pricing fields
+      const icpVal = document.getElementById(`icp-${sid}`)?.value;
+      const ocpVal = document.getElementById(`ocp-${sid}`)?.value;
+      const pricingFields = {};
+      if (icpVal !== '' && icpVal != null) pricingFields.input_cost_per_mtok = parseFloat(icpVal);
+      if (ocpVal !== '' && ocpVal != null) pricingFields.output_cost_per_mtok = parseFloat(ocpVal);
 
       const body = {
         provider_key: providerKey,
@@ -2644,8 +2697,12 @@
         context_window: parseInt(document.getElementById(`ctx-${sid}`)?.value) || null,
         max_output_tokens: parseInt(document.getElementById(`mot-${sid}`)?.value) || null,
         skip_params: currentSkipParams,
-        custom_fields: Object.keys(customs).length ? customs : undefined,
+        custom_fields: {
+          ...(Object.keys(customs).length ? customs : {}),
+          ...(Object.keys(pricingFields).length ? pricingFields : {}),
+        },
       };
+      if (!Object.keys(body.custom_fields).length) delete body.custom_fields;
 
       try {
         const res = await apiFetch('/api/config/model', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
@@ -3184,6 +3241,283 @@
         container.innerHTML = tableHtml;
       } catch (e) {
         container.innerHTML = `<div class="error-banner">${e.message || 'Failed to load comparison data'}</div>`;
+      }
+    }
+
+    // -------------------------------------------------------------------
+    // -------------------------------------------------------------------
+    // Scheduled Benchmarks
+    // -------------------------------------------------------------------
+    const SCHED_INTERVALS = [
+      { value: 1, label: 'Every hour' },
+      { value: 6, label: 'Every 6 hours' },
+      { value: 12, label: 'Every 12 hours' },
+      { value: 24, label: 'Every day' },
+      { value: 168, label: 'Every week' },
+    ];
+
+    function formatInterval(hours) {
+      const m = SCHED_INTERVALS.find(i => i.value === hours);
+      if (m) return m.label;
+      if (hours < 24) return `Every ${hours}h`;
+      if (hours % 168 === 0) return `Every ${hours/168}w`;
+      if (hours % 24 === 0) return `Every ${hours/24}d`;
+      return `Every ${hours}h`;
+    }
+
+    function formatSchedTime(iso) {
+      if (!iso) return '--';
+      const d = new Date(iso);
+      const now = new Date();
+      const diffMs = d - now;
+      const diffMin = Math.round(diffMs / 60000);
+      if (Math.abs(diffMin) < 60) {
+        if (diffMin <= 0) return `${Math.abs(diffMin)}m ago`;
+        return `in ${diffMin}m`;
+      }
+      const diffH = Math.round(diffMin / 60);
+      if (Math.abs(diffH) < 24) {
+        if (diffH <= 0) return `${Math.abs(diffH)}h ago`;
+        return `in ${diffH}h`;
+      }
+      return d.toLocaleDateString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+    }
+
+    async function loadSchedules() {
+      const tbody = document.getElementById('schedTableBody');
+      try {
+        const res = await apiFetch('/api/schedules');
+        const schedules = await res.json();
+        if (!schedules.length) {
+          tbody.innerHTML = '<tr><td colspan="7" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No schedules yet. Create one to automate recurring benchmarks.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = schedules.map(s => {
+          const models = JSON.parse(s.models_json || '[]');
+          return `<tr>
+            <td class="px-5 py-3 text-zinc-200 font-body text-sm">${s.name}</td>
+            <td class="px-5 py-3 text-center font-mono text-xs text-zinc-400">${models.length}</td>
+            <td class="px-5 py-3 text-center text-xs text-zinc-400 font-body">${formatInterval(s.interval_hours)}</td>
+            <td class="px-5 py-3 text-right text-xs font-mono text-zinc-500">${formatSchedTime(s.last_run)}</td>
+            <td class="px-5 py-3 text-right text-xs font-mono text-zinc-500">${formatSchedTime(s.next_run)}</td>
+            <td class="px-5 py-3 text-center">
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" ${s.enabled ? 'checked' : ''} onchange="schedToggleEnabled(${s.id}, this.checked)" class="sr-only peer">
+                <div class="w-8 h-4 rounded-full peer bg-zinc-700 peer-checked:bg-lime-accent/40 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-400 after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4 peer-checked:after:bg-[var(--lime)]"></div>
+              </label>
+            </td>
+            <td class="px-5 py-3 text-right">
+              <div class="flex items-center justify-end gap-2">
+                <button onclick="schedTrigger(${s.id})" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 transition-colors px-2 py-1 rounded-sm" style="border:1px solid var(--border-subtle)">Run Now</button>
+                <button onclick="schedDelete(${s.id},'${s.name.replace(/'/g,"\\'")}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-600 hover:text-red-400 transition-colors px-2 py-1 rounded-sm" style="border:1px solid var(--border-subtle)">Del</button>
+              </div>
+            </td>
+          </tr>`;
+        }).join('');
+      } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="7" class="px-5 py-8 text-center text-red-400 text-sm font-body">Failed to load schedules.</td></tr>';
+      }
+    }
+
+    async function schedToggleEnabled(id, enabled) {
+      try {
+        await apiFetch(`/api/schedules/${id}`, {
+          method: 'PUT',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ enabled: enabled ? 1 : 0 }),
+        });
+        showToast(enabled ? 'Schedule enabled' : 'Schedule paused', 'success');
+      } catch (e) {
+        showToast('Failed to update schedule', 'error');
+        loadSchedules();
+      }
+    }
+
+    async function schedTrigger(id) {
+      try {
+        await apiFetch(`/api/schedules/${id}/trigger`, { method: 'POST' });
+        showToast('Schedule triggered - benchmark starting', 'success');
+        loadSchedules();
+      } catch (e) {
+        showToast('Failed to trigger schedule', 'error');
+      }
+    }
+
+    function schedDelete(id, name) {
+      showModal('Delete Schedule', `Delete schedule <strong>${name}</strong>? This cannot be undone.`, async () => {
+        try {
+          await apiFetch(`/api/schedules/${id}`, { method: 'DELETE' });
+          showToast('Schedule deleted', 'success');
+          loadSchedules();
+        } catch (e) {
+          showToast('Failed to delete schedule', 'error');
+        }
+      }, { danger: true, confirmLabel: 'Delete' });
+    }
+
+    // ── New Schedule Modal ──
+    let schedSelectedModels = new Set();
+
+    function schedOpenNewModal() {
+      if (!config) {
+        showToast('Config not loaded yet', 'error');
+        return;
+      }
+      schedSelectedModels = new Set();
+
+      // Build model selection grid (reuse benchmark model card pattern)
+      let modelGridHtml = '';
+      for (const [provider, provData] of Object.entries(config.providers)) {
+        const color = getColor(provider);
+        const models = getProviderModels(provData);
+        if (!models.length) continue;
+        modelGridHtml += `<div class="provider-group" style="border-color:${color.border}">
+          <div class="provider-group-header" onclick="schedToggleProviderModels(this, '${provider}')">
+            <div class="provider-group-dot" style="background:${color.text}"></div>
+            <span class="provider-group-label" style="color:${color.text}">${provider}</span>
+            <span class="provider-group-count">${models.length}</span>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pl-3">
+            ${models.map(m => `<div class="model-card rounded-sm px-3 py-2 flex items-center gap-2" data-model-id="${m.model_id}" onclick="schedToggleModel('${m.model_id}', this)">
+              <div class="check-dot flex-shrink-0"></div>
+              <div class="text-[12px] font-medium text-zinc-200 truncate font-body">${m.display_name}</div>
+            </div>`).join('')}
+          </div>
+        </div>`;
+      }
+
+      // Build interval options
+      const intervalOpts = SCHED_INTERVALS.map(i =>
+        `<option value="${i.value}"${i.value === 24 ? ' selected' : ''}>${i.label}</option>`
+      ).join('');
+
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.id = 'schedModal';
+      overlay.innerHTML = `
+        <div class="modal-box" style="max-width:600px;max-height:85vh;overflow-y:auto;">
+          <div class="modal-title">New Schedule</div>
+          <div class="space-y-4">
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Schedule Name</label>
+              <input id="sched-name" class="modal-input" style="margin-bottom:0" placeholder="e.g. Daily throughput check">
+            </div>
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Prompt</label>
+              <textarea id="sched-prompt" rows="3" class="prompt-input w-full rounded-sm px-4 py-3" placeholder="Enter benchmark prompt...">Write a short story about a robot learning to paint.</textarea>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Interval</label>
+                <select id="sched-interval" class="w-full px-3 py-2 rounded-sm text-sm font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
+                  ${intervalOpts}
+                </select>
+              </div>
+              <div>
+                <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Max Tokens</label>
+                <input type="number" id="sched-max-tokens" value="512" class="w-full px-3 py-2 rounded-sm text-sm font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
+              </div>
+            </div>
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Temperature</label>
+              <input type="number" id="sched-temperature" value="0.7" step="0.1" min="0" max="2" class="w-full px-3 py-2 rounded-sm text-sm font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;max-width:120px;">
+            </div>
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Select Models</label>
+                <div class="flex gap-2">
+                  <button onclick="schedSelectAllModels()" class="text-[10px] font-display tracking-wider uppercase px-2 py-0.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">All</button>
+                  <button onclick="schedClearAllModels()" class="text-[10px] font-display tracking-wider uppercase px-2 py-0.5 rounded-sm text-zinc-600" style="border:1px solid var(--border-subtle)">Clear</button>
+                </div>
+              </div>
+              <div id="schedModelGrid" class="flex flex-col gap-1 max-h-48 overflow-y-auto pr-1" style="scrollbar-width:thin;">
+                ${modelGridHtml}
+              </div>
+              <div class="mt-1 text-[10px] font-mono text-zinc-600"><span id="schedModelCount">0</span> models selected</div>
+            </div>
+          </div>
+          <div class="modal-buttons mt-4">
+            <button class="modal-btn modal-btn-cancel" data-action="cancel">Cancel</button>
+            <button class="modal-btn modal-btn-confirm" data-action="confirm">Create Schedule</button>
+          </div>
+        </div>
+      `;
+      overlay.querySelector('[data-action="cancel"]').onclick = () => _closeModal(overlay);
+      overlay.querySelector('[data-action="confirm"]').onclick = () => schedCreate(overlay);
+      overlay.onclick = (e) => { if (e.target === overlay) _closeModal(overlay); };
+      document.body.appendChild(overlay);
+      setTimeout(() => document.getElementById('sched-name')?.focus(), 50);
+    }
+
+    function schedToggleModel(modelId, card) {
+      if (schedSelectedModels.has(modelId)) {
+        schedSelectedModels.delete(modelId);
+        card.classList.remove('selected');
+      } else {
+        schedSelectedModels.add(modelId);
+        card.classList.add('selected');
+      }
+      const cnt = document.getElementById('schedModelCount');
+      if (cnt) cnt.textContent = schedSelectedModels.size;
+    }
+
+    function schedToggleProviderModels(header, provider) {
+      const group = header.parentElement;
+      const cards = group.querySelectorAll('.model-card');
+      const allSelected = [...cards].every(c => c.classList.contains('selected'));
+      cards.forEach(c => {
+        const mid = c.dataset.modelId;
+        if (allSelected) { schedSelectedModels.delete(mid); c.classList.remove('selected'); }
+        else { schedSelectedModels.add(mid); c.classList.add('selected'); }
+      });
+      const cnt = document.getElementById('schedModelCount');
+      if (cnt) cnt.textContent = schedSelectedModels.size;
+    }
+
+    function schedSelectAllModels() {
+      document.querySelectorAll('#schedModelGrid .model-card').forEach(c => {
+        schedSelectedModels.add(c.dataset.modelId);
+        c.classList.add('selected');
+      });
+      const cnt = document.getElementById('schedModelCount');
+      if (cnt) cnt.textContent = schedSelectedModels.size;
+    }
+
+    function schedClearAllModels() {
+      schedSelectedModels.clear();
+      document.querySelectorAll('#schedModelGrid .model-card').forEach(c => c.classList.remove('selected'));
+      const cnt = document.getElementById('schedModelCount');
+      if (cnt) cnt.textContent = 0;
+    }
+
+    async function schedCreate(overlay) {
+      const name = document.getElementById('sched-name')?.value.trim();
+      const prompt = document.getElementById('sched-prompt')?.value.trim();
+      const interval_hours = parseInt(document.getElementById('sched-interval')?.value);
+      const max_tokens = parseInt(document.getElementById('sched-max-tokens')?.value) || 512;
+      const temperature = parseFloat(document.getElementById('sched-temperature')?.value) || 0.7;
+      const models = [...schedSelectedModels];
+
+      if (!name) { showToast('Please enter a schedule name', 'error'); return; }
+      if (!prompt) { showToast('Please enter a prompt', 'error'); return; }
+      if (!models.length) { showToast('Please select at least one model', 'error'); return; }
+
+      try {
+        const res = await apiFetch('/api/schedules', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, prompt, models, interval_hours, max_tokens, temperature }),
+        });
+        if (res.ok) {
+          _closeModal(overlay);
+          showToast('Schedule created', 'success');
+          loadSchedules();
+        } else {
+          const err = await res.json();
+          showToast(err.error || 'Failed to create schedule', 'error');
+        }
+      } catch (e) {
+        showToast('Network error creating schedule', 'error');
       }
     }
 

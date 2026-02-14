@@ -169,6 +169,30 @@ async def init_db():
 
         await db.commit()
 
+        # --- Scheduled Benchmarks ---
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS schedules (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                models_json TEXT NOT NULL,
+                max_tokens INTEGER DEFAULT 512,
+                temperature REAL DEFAULT 0.7,
+                interval_hours INTEGER NOT NULL,
+                enabled INTEGER DEFAULT 1,
+                last_run TEXT,
+                next_run TEXT NOT NULL,
+                created TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_schedules_user ON schedules(user_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_schedules_next ON schedules(enabled, next_run)")
+
+        await db.commit()
+
         # Phase 8: onboarding flag
         try:
             await db.execute("ALTER TABLE users ADD COLUMN onboarding_completed INTEGER DEFAULT 0")
@@ -724,3 +748,98 @@ async def cleanup_audit_log(retention_days: int = 90):
             await conn.commit()
     except Exception:
         pass
+
+
+# --- Schedules CRUD ---
+
+async def create_schedule(
+    user_id: str, name: str, prompt: str, models_json: str,
+    max_tokens: int, temperature: float, interval_hours: int, next_run: str,
+) -> str:
+    """Create a scheduled benchmark. Returns schedule ID."""
+    schedule_id = uuid.uuid4().hex
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        await conn.execute(
+            "INSERT INTO schedules (id, user_id, name, prompt, models_json, max_tokens, temperature, interval_hours, next_run) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (schedule_id, user_id, name, prompt, models_json, max_tokens, temperature, interval_hours, next_run),
+        )
+        await conn.commit()
+    return schedule_id
+
+
+async def get_user_schedules(user_id: str) -> list[dict]:
+    """List all schedules for a user."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM schedules WHERE user_id = ? ORDER BY created DESC",
+            (user_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_schedule(schedule_id: str, user_id: str) -> dict | None:
+    """Get a specific schedule (scoped to user)."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM schedules WHERE id = ? AND user_id = ?",
+            (schedule_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def update_schedule(schedule_id: str, user_id: str, **kwargs) -> bool:
+    """Update schedule fields. Returns True if found and updated."""
+    allowed = {"name", "prompt", "models_json", "max_tokens", "temperature", "interval_hours", "enabled", "next_run"}
+    fields = []
+    params = []
+    for key, value in kwargs.items():
+        if key in allowed and value is not None:
+            fields.append(f"{key} = ?")
+            params.append(value)
+    if not fields:
+        return False
+    params.extend([schedule_id, user_id])
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        cursor = await conn.execute(
+            f"UPDATE schedules SET {', '.join(fields)} WHERE id = ? AND user_id = ?",
+            params,
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
+
+async def delete_schedule(schedule_id: str, user_id: str) -> bool:
+    """Delete a schedule. Returns True if deleted."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        cursor = await conn.execute(
+            "DELETE FROM schedules WHERE id = ? AND user_id = ?",
+            (schedule_id, user_id),
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
+
+async def get_due_schedules() -> list[dict]:
+    """Get all enabled schedules where next_run <= now. Used by background scheduler."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM schedules WHERE enabled = 1 AND next_run <= datetime('now')"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def update_schedule_after_run(schedule_id: str, last_run: str, next_run: str):
+    """Update last_run and next_run after a scheduled benchmark completes."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        await conn.execute(
+            "UPDATE schedules SET last_run = ?, next_run = ? WHERE id = ?",
+            (last_run, next_run, schedule_id),
+        )
+        await conn.commit()
