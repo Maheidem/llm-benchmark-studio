@@ -22,7 +22,7 @@ import yaml
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Depends
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Response
 
 # Load .env before importing benchmark (needs API keys)
 _dir = Path(__file__).parent
@@ -366,6 +366,34 @@ async def dashboard():
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok", "version": APP_VERSION}
+
+
+@app.get("/robots.txt")
+async def robots_txt(request: Request):
+    base_url = str(request.base_url).rstrip("/")
+    content = (
+        "User-agent: *\n"
+        "Allow: /\n"
+        "Disallow: /api/\n"
+        f"Sitemap: {base_url}/sitemap.xml\n"
+    )
+    return Response(content=content, media_type="text/plain")
+
+
+@app.get("/sitemap.xml")
+async def sitemap_xml(request: Request):
+    base_url = str(request.base_url).rstrip("/")
+    content = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        "  <url>\n"
+        f"    <loc>{base_url}/</loc>\n"
+        "    <changefreq>weekly</changefreq>\n"
+        "    <priority>1.0</priority>\n"
+        "  </url>\n"
+        "</urlset>\n"
+    )
+    return Response(content=content, media_type="application/xml")
 
 
 # ---------------------------------------------------------------------------
@@ -1636,6 +1664,34 @@ async def create_tool_suite(request: Request, user: dict = Depends(auth.get_curr
         return JSONResponse({"error": err}, status_code=400)
     suite_id = await db.create_tool_suite(user["id"], name, description, json.dumps(tools))
     return {"status": "ok", "suite_id": suite_id}
+
+
+@app.post("/api/tool-eval/import")
+async def import_tool_suite(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Import a complete tool suite (tools + test cases) from JSON."""
+    body = await request.json()
+    name = body.get("name", "").strip()
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    description = body.get("description", "")
+    tools = body.get("tools", [])
+    if tools:
+        err = _validate_tools(tools)
+        if err:
+            return JSONResponse({"error": err}, status_code=400)
+    suite_id = await db.create_tool_suite(user["id"], name, description, json.dumps(tools))
+    test_cases = body.get("test_cases", [])
+    created = 0
+    for item in test_cases:
+        prompt = item.get("prompt", "").strip()
+        if not prompt:
+            continue
+        expected_tool = _serialize_expected_tool(item.get("expected_tool"))
+        expected_params = json.dumps(item["expected_params"]) if item.get("expected_params") is not None else None
+        param_scoring = item.get("param_scoring", "exact")
+        await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring)
+        created += 1
+    return {"status": "ok", "suite_id": suite_id, "test_cases_created": created}
 
 
 @app.get("/api/tool-suites/{suite_id}")
