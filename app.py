@@ -1882,7 +1882,7 @@ async def run_single_eval(
         "model": target.model_id,
         "messages": [{"role": "user", "content": test_case["prompt"]}],
         "tools": tools,
-        "tool_choice": "auto",
+        "tool_choice": "required",
         "max_tokens": 1024,
         "timeout": 60,
         "num_retries": 1,
@@ -1902,7 +1902,15 @@ async def run_single_eval(
 
     try:
         start = time.perf_counter()
-        response = await litellm.acompletion(**kwargs)
+        try:
+            response = await litellm.acompletion(**kwargs)
+        except Exception:
+            # Fallback: some providers don't support tool_choice="required"
+            if kwargs.get("tool_choice") == "required":
+                kwargs["tool_choice"] = "auto"
+                response = await litellm.acompletion(**kwargs)
+            else:
+                raise
         latency_ms = (time.perf_counter() - start) * 1000
 
         message = response.choices[0].message
@@ -2219,11 +2227,16 @@ def generate_test_case(tool: dict) -> dict:
     example_params = {}
     for name, schema in properties.items():
         if name in required:
-            example_params[name] = _example_value(schema)
+            example_params[name] = _example_value(name, schema)
 
-    # Build prompt from tool description
+    # Build a concrete prompt that includes example param values
     desc = fn.get("description", fn["name"])
-    prompt = f"I need to {desc.lower().rstrip('.')}"
+    if example_params:
+        param_parts = [f'{k}="{v}"' if isinstance(v, str) else f"{k}={v}"
+                       for k, v in example_params.items()]
+        prompt = f"Use the {fn['name']} tool: {desc.rstrip('.')}. Use these values: {', '.join(param_parts)}"
+    else:
+        prompt = f"Use the {fn['name']} tool to {desc.lower().rstrip('.')}"
 
     return {
         "prompt": prompt,
@@ -2232,13 +2245,31 @@ def generate_test_case(tool: dict) -> dict:
     }
 
 
-def _example_value(schema: dict):
-    """Generate a placeholder value based on JSON Schema type."""
+def _example_value(param_name: str, schema: dict):
+    """Generate a realistic placeholder value based on param name and JSON Schema."""
     t = schema.get("type", "string")
     if "enum" in schema:
         return schema["enum"][0]
     if t == "string":
-        return schema.get("description", "example")[:50]
+        # Use param name to generate realistic values instead of description text
+        name_lower = param_name.lower()
+        if "url" in name_lower or "uri" in name_lower or "link" in name_lower:
+            return "https://example.com"
+        if "path" in name_lower or "file" in name_lower:
+            return "/tmp/example.txt"
+        if "email" in name_lower:
+            return "user@example.com"
+        if "name" in name_lower:
+            return "example"
+        if "query" in name_lower or "search" in name_lower:
+            return "test query"
+        if "selector" in name_lower or "css" in name_lower:
+            return "#main-content"
+        if "city" in name_lower or "location" in name_lower:
+            return "San Francisco"
+        if "code" in name_lower or "script" in name_lower:
+            return "console.log('hello')"
+        return "example"
     if t == "number" or t == "integer":
         return 42
     if t == "boolean":
