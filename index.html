@@ -592,6 +592,7 @@
     <!-- Footer -->
     <div class="landing-footer">
       <p>Built for LLM engineers</p>
+      <p id="landing-version" style="margin-top:8px; font-size:11px; color:#27272a;"></p>
     </div>
   </div>
 
@@ -1382,6 +1383,11 @@
         </div>
       </div>
 
+    </div>
+
+    <!-- App version footer -->
+    <div id="app-version-footer" style="text-align:center; padding:12px 0 16px; margin-top:24px;">
+      <span id="app-version" style="font-family:'Space Mono',monospace; font-size:11px; color:#3f3f46;"></span>
     </div>
 
   </main>
@@ -5804,7 +5810,7 @@
       });
     }
 
-    function onbSelectProvider(provider, keyEnv, cardEl) {
+    function onbSelectProvider(provider, keyEnv, providerKey, cardEl) {
       onbSelectedProvider = provider;
       // Reset all cards
       document.querySelectorAll('.onb-provider-card').forEach(c => {
@@ -5826,28 +5832,29 @@
         document.getElementById('onb-key-input').value = '';
         document.getElementById('onb-key-input').placeholder = 'Paste your ' + provider + ' API key';
         document.getElementById('onb-key-input').dataset.keyEnv = keyEnv;
+        document.getElementById('onb-key-input').dataset.providerKey = providerKey;
         document.getElementById('onb-key-save-status').textContent = '';
       }
     }
 
     async function onbSaveKey() {
       const input = document.getElementById('onb-key-input');
-      const keyEnv = input.dataset.keyEnv;
+      const providerKey = input.dataset.providerKey;
       const keyVal = input.value.trim();
       const status = document.getElementById('onb-key-save-status');
       if (!keyVal) { status.textContent = 'Please enter a key'; status.style.color = 'var(--coral)'; return; }
       try {
-        const token = localStorage.getItem('auth_token');
-        const res = await fetch('/api/env', {
-          method: 'POST',
-          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ [keyEnv]: keyVal })
+        const res = await apiFetch('/api/keys', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider_key: providerKey, value: keyVal })
         });
         if (res.ok) {
           status.textContent = 'Saved!';
           status.style.color = 'var(--lime)';
         } else {
-          status.textContent = 'Failed to save';
+          const data = await res.json().catch(() => ({}));
+          status.textContent = data.detail || 'Failed to save';
           status.style.color = 'var(--coral)';
         }
       } catch {
@@ -5999,6 +6006,18 @@
         showLandingPage();
       }
     })();
+
+    // Fetch and display app version (unauthenticated)
+    fetch('/healthz').then(r => r.json()).then(d => {
+      const v = d.version || '';
+      if (v) {
+        const label = 'v' + v;
+        const el = document.getElementById('app-version');
+        if (el) el.textContent = 'LLM Benchmark Studio ' + label;
+        const lel = document.getElementById('landing-version');
+        if (lel) lel.textContent = label;
+      }
+    }).catch(() => {});
   </script>
 
   <!-- Onboarding Wizard Modal -->
@@ -6011,19 +6030,19 @@
         <p style="color:#71717A; font-size:13px; font-family:'Outfit',sans-serif;">Pick a provider to get started. You can add more later in Settings.</p>
 
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:16px 0;">
-          <div class="onb-provider-card" onclick="onbSelectProvider('OpenAI','OPENAI_API_KEY',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
+          <div class="onb-provider-card" onclick="onbSelectProvider('OpenAI','OPENAI_API_KEY','openai',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
             <div style="font-weight:600; color:#e0e0e0; font-size:14px; font-family:'Outfit',sans-serif;">OpenAI</div>
             <div style="color:#71717A; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">GPT models (gpt-5, gpt-5-nano)</div>
           </div>
-          <div class="onb-provider-card" onclick="onbSelectProvider('Anthropic','ANTHROPIC_API_KEY',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
+          <div class="onb-provider-card" onclick="onbSelectProvider('Anthropic','ANTHROPIC_API_KEY','anthropic',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
             <div style="font-weight:600; color:#e0e0e0; font-size:14px; font-family:'Outfit',sans-serif;">Anthropic</div>
             <div style="color:#71717A; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">Claude models (Sonnet, Haiku)</div>
           </div>
-          <div class="onb-provider-card" onclick="onbSelectProvider('Google Gemini','GEMINI_API_KEY',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
+          <div class="onb-provider-card" onclick="onbSelectProvider('Google Gemini','GEMINI_API_KEY','google_gemini',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
             <div style="font-weight:600; color:#e0e0e0; font-size:14px; font-family:'Outfit',sans-serif;">Google Gemini</div>
             <div style="color:#71717A; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">Gemini models</div>
           </div>
-          <div class="onb-provider-card" onclick="onbSelectProvider('custom','',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
+          <div class="onb-provider-card" onclick="onbSelectProvider('custom','','',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
             <div style="font-weight:600; color:#e0e0e0; font-size:14px; font-family:'Outfit',sans-serif;">Custom</div>
             <div style="color:#71717A; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">Other provider or self-hosted</div>
           </div>

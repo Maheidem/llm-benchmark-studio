@@ -28,6 +28,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 _dir = Path(__file__).parent
 load_dotenv(_dir / ".env", override=True)
 
+APP_VERSION = "0.9.0"
+
 from benchmark import (  # noqa: E402
     AggregatedResult,
     RunResult,
@@ -363,7 +365,7 @@ async def dashboard():
 
 @app.get("/healthz")
 async def healthz():
-    return {"status": "ok"}
+    return {"status": "ok", "version": APP_VERSION}
 
 
 # ---------------------------------------------------------------------------
