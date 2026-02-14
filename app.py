@@ -3217,6 +3217,88 @@ async def export_run_csv(run_id: str, user: dict = Depends(auth.get_current_user
     )
 
 
+@app.get("/api/export/settings")
+async def export_settings(user: dict = Depends(auth.get_current_user)):
+    """Export the user's complete configuration as a JSON file download."""
+    config = await _get_user_config(user["id"])
+
+    # Extract defaults
+    defaults = config.get("defaults", {})
+
+    # Extract providers
+    providers = config.get("providers", {})
+
+    # Build API key metadata list (provider_key + key_name only, no secrets)
+    user_keys = await db.get_user_keys(user["id"])
+    api_keys = [
+        {"provider_key": uk["provider_key"], "key_name": uk.get("key_name", "")}
+        for uk in user_keys
+    ]
+
+    export_data = {
+        "export_version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "defaults": defaults,
+        "providers": providers,
+        "api_keys": api_keys,
+    }
+
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    filename = f"benchmark-settings-{date_str}.json"
+
+    return JSONResponse(
+        content=export_data,
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@app.post("/api/import/settings")
+async def import_settings(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Import settings from a previously exported JSON file."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    # Validate required fields
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
+    if "export_version" not in body:
+        return JSONResponse({"error": "Missing 'export_version' field"}, status_code=400)
+    if "providers" not in body or not isinstance(body["providers"], dict):
+        return JSONResponse({"error": "Missing or invalid 'providers' field"}, status_code=400)
+
+    config = await _get_user_config(user["id"])
+    existing_providers = config.get("providers", {})
+
+    imported_providers = body["providers"]
+    providers_added = 0
+    providers_updated = 0
+
+    for prov_key, prov_cfg in imported_providers.items():
+        if prov_key in existing_providers:
+            existing_providers[prov_key] = prov_cfg
+            providers_updated += 1
+        else:
+            existing_providers[prov_key] = prov_cfg
+            providers_added += 1
+
+    config["providers"] = existing_providers
+
+    # Overwrite defaults if present in import
+    if "defaults" in body and isinstance(body["defaults"], dict):
+        config["defaults"] = body["defaults"]
+
+    await _save_user_config(user["id"], config)
+
+    return {
+        "status": "ok",
+        "providers_imported": providers_added + providers_updated,
+        "providers_updated": providers_updated,
+        "providers_added": providers_added,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Onboarding
 # ---------------------------------------------------------------------------

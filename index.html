@@ -550,6 +550,15 @@
         <h2 class="font-display font-bold text-lg text-zinc-100 mb-1">Configuration</h2>
         <p class="text-sm text-zinc-600 font-body">Manage API keys, providers, and model settings.</p>
       </div>
+      <!-- Backup & Restore Section -->
+      <div class="mb-6 pb-5" style="border-bottom:1px solid var(--border-subtle)">
+        <h2 class="font-display font-bold text-lg text-zinc-100 mb-1">Backup &amp; Restore</h2>
+        <p class="text-sm text-zinc-600 font-body mb-4">Export your providers, models, and configuration. API keys are not included for security.</p>
+        <div class="flex items-center gap-3">
+          <button onclick="exportSettings()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">Export Settings</button>
+          <button onclick="importSettings()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">Import Settings</button>
+        </div>
+      </div>
       <!-- API Keys Section -->
       <div id="apiKeysContainer" class="mb-6"></div>
       <!-- Providers + Models -->
@@ -5358,6 +5367,77 @@
           await teLoadHistory();
         } catch { showToast('Failed to delete', 'error'); }
       }, { danger: true, confirmLabel: 'Delete' });
+    }
+
+    // --- Settings Export / Import ---
+    async function exportSettings() {
+      try {
+        const res = await apiFetch('/api/export/settings');
+        if (!res.ok) { showToast('Export failed: ' + (await res.text()), 'error'); return; }
+        const disposition = res.headers.get('Content-Disposition');
+        let filename = 'benchmark-settings.json';
+        if (disposition) {
+          const match = disposition.match(/filename="?([^";\s]+)"?/);
+          if (match) filename = match[1];
+        }
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        showToast('Settings exported', 'success');
+      } catch (e) {
+        showToast('Export failed', 'error');
+      }
+    }
+
+    function importSettings() {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json';
+      input.style.display = 'none';
+      input.onchange = async () => {
+        const file = input.files[0];
+        if (!file) return;
+        try {
+          const text = await file.text();
+          const data = JSON.parse(text);
+          if (!data.export_version) {
+            showToast('Invalid settings file: missing export_version', 'error');
+            return;
+          }
+          const providerCount = data.providers ? Object.keys(data.providers).length : 0;
+          showModal('Import Settings',
+            `Import ${providerCount} provider${providerCount !== 1 ? 's' : ''}? This will merge with your existing settings.`,
+            async () => {
+              try {
+                const res = await apiFetch('/api/import/settings', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(data)
+                });
+                if (!res.ok) {
+                  const err = await res.json().catch(() => ({}));
+                  showToast(err.detail || 'Import failed', 'error');
+                  return;
+                }
+                showToast('Settings imported successfully', 'success');
+                await refreshConfig();
+                renderSettings();
+              } catch (e) {
+                showToast('Import failed: ' + e.message, 'error');
+              }
+            },
+            { confirmLabel: 'Import' }
+          );
+        } catch (e) {
+          showToast('Invalid JSON file', 'error');
+        }
+        input.remove();
+      };
+      document.body.appendChild(input);
+      input.click();
     }
 
     // --- Export CSV ---
