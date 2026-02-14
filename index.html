@@ -953,6 +953,14 @@
               <span class="text-zinc-500 font-body text-xs">Temperature</span>
               <input id="teTemperature" type="number" min="0" max="2" step="0.1" value="0.0" class="ml-2 w-16 px-2 py-1 rounded-sm text-sm font-mono text-zinc-200 text-center" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
             </div>
+            <div>
+              <label class="text-xs font-display tracking-wider text-zinc-500 uppercase">Tool Choice</label>
+              <select id="teToolChoice" class="text-xs font-mono px-3 py-1.5 rounded-sm ml-2" style="background:var(--surface);border:1px solid var(--border-subtle);color:var(--zinc-200);width:120px">
+                <option value="required">Required</option>
+                <option value="auto">Auto</option>
+                <option value="none">None</option>
+              </select>
+            </div>
             <div class="ml-auto flex gap-2">
               <button id="teCancelEvalBtn" onclick="teCancelEval()" class="hidden text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color:var(--coral);border:1px solid rgba(255,59,92,0.3);" onmouseover="this.style.borderColor='rgba(255,59,92,0.6)'" onmouseout="this.style.borderColor='rgba(255,59,92,0.3)'">Cancel</button>
               <button id="teStartBtn" onclick="teStartEval()" class="run-btn px-6 py-2 rounded-sm text-xs flex items-center gap-2">
@@ -985,9 +993,10 @@
         <!-- Summary Section -->
         <div id="teSummarySection" class="hidden mb-6 fade-in">
           <div class="card rounded-md overflow-hidden">
-            <div class="px-5 py-3" style="border-bottom:1px solid var(--border-subtle)">
+            <div class="px-5 py-3 flex items-center" style="border-bottom:1px solid var(--border-subtle)">
               <span class="section-label">Results Summary</span>
               <span id="teSummaryInfo" class="text-xs font-body text-zinc-600 ml-2"></span>
+              <button id="teExportBtn" onclick="teExportResults()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm hidden ml-auto" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);" onmouseover="this.style.borderColor='rgba(191,255,0,0.5)'" onmouseout="this.style.borderColor='rgba(191,255,0,0.2)'">Export JSON</button>
             </div>
             <table class="w-full text-sm results-table">
               <thead>
@@ -5047,6 +5056,8 @@
       document.getElementById('teStartBtn').disabled = false;
       document.getElementById('teStartBtn').innerHTML = '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> Start Eval';
       document.getElementById('teCancelEvalBtn').classList.add('hidden');
+      document.getElementById('teExportBtn').classList.add('hidden');
+      window.teLastEvalId = null;
     }
 
     async function teStartEval() {
@@ -5075,6 +5086,7 @@
         suite_id: teRunSuiteId,
         models: Array.from(teSelectedModels),
         temperature: parseFloat(document.getElementById('teTemperature').value) || 0.0,
+        tool_choice: document.getElementById('teToolChoice').value,
       };
 
       try {
@@ -5178,6 +5190,10 @@
         const total = teEvalResults.length;
         const models = teEvalSummaries.length;
         document.getElementById('teSummaryInfo').textContent = `${total} evaluations across ${models} model${models > 1 ? 's' : ''}`;
+        if (data.eval_id) {
+          window.teLastEvalId = data.eval_id;
+          document.getElementById('teExportBtn').classList.remove('hidden');
+        }
         showToast('Eval complete!', 'success');
         // Refresh history
         teLoadHistory();
@@ -5272,11 +5288,30 @@
           const match = r.tool_selection_score === 1.0;
           const icon = match ? '<span style="color:var(--lime)">OK</span>' : '<span style="color:var(--coral)">X</span>';
 
+          const hasRaw = r.raw_request || r.raw_response;
+          const rawSection = hasRaw ? `
+            <div class="mt-2">
+              <button onclick="this.nextElementSibling.classList.toggle('hidden')"
+                class="text-[10px] font-display tracking-wider uppercase px-2 py-0.5 rounded-sm"
+                style="color:var(--lime);border:1px solid rgba(191,255,0,0.15)">VIEW RAW</button>
+              <div class="hidden mt-2" style="max-height:400px;overflow-y:auto">
+                ${r.raw_request ? `<div class="mb-2">
+                  <div class="text-[10px] font-display tracking-wider text-zinc-500 uppercase mb-1">Request</div>
+                  <pre class="text-[10px] font-mono text-zinc-400 p-2 rounded-sm overflow-x-auto" style="background:rgba(0,0,0,0.3);border:1px solid var(--border-subtle);white-space:pre-wrap;word-break:break-all">${_teEsc(JSON.stringify(r.raw_request, null, 2))}</pre>
+                </div>` : ''}
+                ${r.raw_response ? `<div>
+                  <div class="text-[10px] font-display tracking-wider text-zinc-500 uppercase mb-1">Response</div>
+                  <pre class="text-[10px] font-mono text-zinc-400 p-2 rounded-sm overflow-x-auto" style="background:rgba(0,0,0,0.3);border:1px solid var(--border-subtle);white-space:pre-wrap;word-break:break-all">${_teEsc(JSON.stringify(r.raw_response, null, 2))}</pre>
+                </div>` : ''}
+              </div>
+            </div>` : '';
+
           return `<div class="px-3 py-2 rounded-sm text-xs" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);">
             <div class="text-zinc-300 font-body mb-1">#${i+1} "${_teEsc(_teTruncate(r.prompt || '', 80))}"</div>
             <div class="font-mono text-zinc-500">Expected: ${_teEsc(expStr)}${expParams ? '(' + _teEsc(expParams) + ')' : ''}</div>
             <div class="font-mono" style="color:${match ? 'var(--lime)' : 'var(--coral)'}">Actual: &nbsp; ${_teEsc(actTool)}${actParams ? '(' + _teEsc(actParams) + ')' : ''} ${icon}</div>
             ${r.error ? '<div style="color:var(--coral)">Error: ' + _teEsc(r.error) + '</div>' : ''}
+            ${rawSection}
           </div>`;
         }).join('');
       document.getElementById('teDetailSection').classList.remove('hidden');
@@ -5313,6 +5348,7 @@
           <td class="px-5 py-3 text-right text-sm font-mono font-bold" style="color:${overallColor}">${avgOverall}${avgOverall !== '-' ? '%' : ''}</td>
           <td class="px-5 py-3 text-right">
             <button onclick="teViewHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 mr-2">View</button>
+            <button onclick="teExportResults('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 mr-2" style="color:var(--lime);opacity:0.6" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">Export</button>
             <button onclick="teDeleteHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-700 hover:text-red-400">Delete</button>
           </td>
         </tr>`;
@@ -5346,6 +5382,10 @@
         const models = summaries.length;
         document.getElementById('teSummaryInfo').textContent = `${total} evaluations across ${models} model${models > 1 ? 's' : ''}`;
 
+        // Enable export for this history run
+        window.teLastEvalId = runId;
+        document.getElementById('teExportBtn').classList.remove('hidden');
+
         // Show live results
         document.getElementById('teLiveSection').classList.remove('hidden');
         const liveBody = document.getElementById('teLiveBody');
@@ -5367,6 +5407,24 @@
           await teLoadHistory();
         } catch { showToast('Failed to delete', 'error'); }
       }, { danger: true, confirmLabel: 'Delete' });
+    }
+
+    async function teExportResults(evalId) {
+      const id = evalId || window.teLastEvalId;
+      if (!id) return;
+      try {
+        const res = await apiFetch('/api/export/eval/' + id);
+        if (!res.ok) { showToast('Export failed', 'error'); return; }
+        const data = await res.json();
+        const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'eval-' + id.slice(0, 8) + '.json';
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('Eval results exported');
+      } catch (e) { showToast('Export failed', 'error'); }
     }
 
     // --- Settings Export / Import ---

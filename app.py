@@ -1848,6 +1848,7 @@ async def run_single_eval(
     tools: list[dict],
     test_case: dict,
     temperature: float,
+    tool_choice: str = "required",
 ) -> dict:
     """Run one test case against one model. Returns result dict.
 
@@ -1876,13 +1877,15 @@ async def run_single_eval(
         "success": True,
         "error": "",
         "latency_ms": 0,
+        "raw_request": None,
+        "raw_response": None,
     }
 
     kwargs = {
         "model": target.model_id,
         "messages": [{"role": "user", "content": test_case["prompt"]}],
         "tools": tools,
-        "tool_choice": "required",
+        "tool_choice": tool_choice,
         "max_tokens": 1024,
         "timeout": 60,
         "num_retries": 1,
@@ -1899,6 +1902,16 @@ async def run_single_eval(
         for p in target.skip_params:
             if p != "temperature":
                 kwargs.pop(p, None)
+
+    # Capture raw request (sanitize: remove api_key)
+    raw_req = dict(kwargs)
+    raw_req.pop("api_key", None)
+    # Convert tools to a summary (full tools are too large for storage)
+    if "tools" in raw_req:
+        raw_req["tools_summary"] = [t["function"]["name"] for t in raw_req["tools"]]
+        raw_req["tools_count"] = len(raw_req["tools"])
+        raw_req["tools"] = raw_req["tools"]  # Keep full tools for inspection
+    result["raw_request"] = raw_req
 
     try:
         start = time.perf_counter()
@@ -1926,9 +1939,48 @@ async def run_single_eval(
 
         result["latency_ms"] = round(latency_ms)
 
+        # Capture raw response
+        raw_resp = {
+            "id": getattr(response, "id", None),
+            "model": getattr(response, "model", None),
+            "choices": [],
+            "usage": None,
+        }
+        if hasattr(response, "usage") and response.usage:
+            raw_resp["usage"] = {
+                "prompt_tokens": getattr(response.usage, "prompt_tokens", None),
+                "completion_tokens": getattr(response.usage, "completion_tokens", None),
+                "total_tokens": getattr(response.usage, "total_tokens", None),
+            }
+        for choice in response.choices:
+            c = {
+                "index": choice.index,
+                "finish_reason": choice.finish_reason,
+                "message": {
+                    "role": getattr(choice.message, "role", None),
+                    "content": getattr(choice.message, "content", None),
+                    "tool_calls": None,
+                }
+            }
+            if choice.message.tool_calls:
+                c["message"]["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        }
+                    }
+                    for tc in choice.message.tool_calls
+                ]
+            raw_resp["choices"].append(c)
+        result["raw_response"] = raw_resp
+
     except Exception as e:
         result["success"] = False
         result["error"] = sanitize_error(str(e)[:200], target.api_key)
+        result["raw_request"] = raw_req
         return result
 
     # Score
@@ -1988,6 +2040,7 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
     suite_id = body.get("suite_id")
     model_ids = body.get("models", [])
     temperature = body.get("temperature", 0.0)
+    tool_choice = body.get("tool_choice", "required")
 
     # --- Validation ---
     if not suite_id:
@@ -1997,6 +2050,8 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
     if not isinstance(temperature, (int, float)) or float(temperature) < 0.0 or float(temperature) > 2.0:
         return JSONResponse({"error": "temperature must be between 0.0 and 2.0"}, status_code=400)
     temperature = float(temperature)
+    if tool_choice not in ("auto", "required", "none"):
+        return JSONResponse({"error": "tool_choice must be 'auto', 'required', or 'none'"}, status_code=400)
 
     # Load suite + test cases
     suite = await db.get_tool_suite(suite_id, user["id"])
@@ -2060,7 +2115,7 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
                     for case in cases:
                         if cancel_event.is_set():
                             return
-                        result = await run_single_eval(target, tools, case, temperature)
+                        result = await run_single_eval(target, tools, case, temperature, tool_choice)
                         await queue.put(result)
 
             # Launch provider groups in parallel
@@ -3211,6 +3266,29 @@ async def export_tool_eval_csv(user: dict = Depends(auth.get_current_user)):
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=tool_eval_history.csv"},
     )
+
+
+@app.get("/api/export/eval/{eval_id}")
+async def export_eval_json(eval_id: str, user: dict = Depends(auth.get_current_user)):
+    """Export a tool eval run as JSON with full raw request/response data."""
+    run = await db.get_tool_eval_run(eval_id, user["id"])
+    if not run:
+        return JSONResponse({"error": "Eval run not found"}, status_code=404)
+
+    export_data = {
+        "eval_id": run["id"],
+        "suite_name": run.get("suite_name", ""),
+        "models": json.loads(run.get("models_json", "[]")) if isinstance(run.get("models_json"), str) else run.get("models_json", []),
+        "temperature": run.get("temperature"),
+        "timestamp": run.get("created_at", "") or run.get("timestamp", ""),
+        "results": json.loads(run.get("results_json", "[]")) if isinstance(run.get("results_json"), str) else run.get("results_json", []),
+        "summary": json.loads(run.get("summary_json", "[]")) if isinstance(run.get("summary_json"), str) else run.get("summary_json", []),
+    }
+
+    headers = {
+        "Content-Disposition": f'attachment; filename=eval-{eval_id[:8]}.json',
+    }
+    return JSONResponse(content=export_data, headers=headers)
 
 
 @app.get("/api/export/run/{run_id}")
