@@ -8,6 +8,8 @@ Usage:
 
 import argparse
 import asyncio
+import csv
+import io
 import json
 import os
 import re
@@ -2755,6 +2757,269 @@ def _aggregate(raw_results: list[dict], config: dict) -> list[AggregatedResult]:
         agg_list.append(agg)
 
     return agg_list
+
+
+# ---------------------------------------------------------------------------
+# Export
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/export/history")
+async def export_history_csv(user: dict = Depends(auth.get_current_user)):
+    """Export all benchmark runs as CSV."""
+    runs = await db.get_user_benchmark_runs(user["id"], limit=10000, offset=0)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "timestamp", "prompt", "model", "provider",
+        "tokens_per_second", "ttft_ms", "cost",
+        "context_tokens", "output_tokens",
+    ])
+
+    for run in runs:
+        results = json.loads(run["results_json"]) if isinstance(run.get("results_json"), str) else run.get("results_json", [])
+        for r in results:
+            writer.writerow([
+                run.get("timestamp", ""),
+                run.get("prompt", ""),
+                r.get("model", ""),
+                r.get("provider", ""),
+                r.get("tokens_per_second", ""),
+                r.get("ttft_ms", ""),
+                r.get("cost", ""),
+                r.get("context_tokens", ""),
+                r.get("output_tokens", ""),
+            ])
+
+    return StreamingResponse(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=benchmark_history.csv"},
+    )
+
+
+@app.get("/api/export/leaderboard")
+async def export_leaderboard_csv(
+    type: str = "benchmark",
+    period: str = "all",
+    user: dict = Depends(auth.get_current_user),
+):
+    """Export leaderboard as CSV (reuses analytics aggregation logic)."""
+    if period not in _VALID_PERIODS:
+        return JSONResponse({"error": f"period must be one of {sorted(_VALID_PERIODS)}"}, status_code=400)
+    if type not in ("benchmark", "tool_eval"):
+        return JSONResponse({"error": "type must be 'benchmark' or 'tool_eval'"}, status_code=400)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    if type == "tool_eval":
+        runs = await db.get_analytics_tool_eval_runs(user["id"], period)
+        model_agg: dict[tuple[str, str], dict] = {}
+        for run in runs:
+            summaries = json.loads(run["summary_json"]) if isinstance(run["summary_json"], str) else run["summary_json"]
+            for s in summaries:
+                model_name = s.get("model_name") or s.get("model", "")
+                key = (model_name, s.get("provider", ""))
+                if key not in model_agg:
+                    model_agg[key] = {
+                        "model": model_name,
+                        "provider": s.get("provider", ""),
+                        "tool_scores": [],
+                        "param_scores": [],
+                        "overall_scores": [],
+                        "last_eval": run["timestamp"],
+                    }
+                entry = model_agg[key]
+                tool_val = s.get("tool_accuracy_pct") if s.get("tool_accuracy_pct") is not None else s.get("tool_score")
+                param_val = s.get("param_accuracy_pct") if s.get("param_accuracy_pct") is not None else s.get("param_score")
+                overall_val = s.get("overall_pct") if s.get("overall_pct") is not None else s.get("overall_score")
+                if tool_val is not None:
+                    entry["tool_scores"].append(float(tool_val))
+                if param_val is not None:
+                    entry["param_scores"].append(float(param_val))
+                if overall_val is not None:
+                    entry["overall_scores"].append(float(overall_val))
+                if run["timestamp"] > entry["last_eval"]:
+                    entry["last_eval"] = run["timestamp"]
+
+        models = []
+        for (model, provider), stats in model_agg.items():
+            n_tool = len(stats["tool_scores"])
+            n_param = len(stats["param_scores"])
+            n_overall = len(stats["overall_scores"])
+            models.append({
+                "model": model,
+                "provider": provider,
+                "avg_tool_pct": round(sum(stats["tool_scores"]) / n_tool, 1) if n_tool else 0,
+                "avg_param_pct": round(sum(stats["param_scores"]) / n_param, 1) if n_param else 0,
+                "avg_overall_pct": round(sum(stats["overall_scores"]) / n_overall, 1) if n_overall else 0,
+                "total_evals": max(n_tool, n_param, n_overall),
+                "last_eval": stats["last_eval"],
+            })
+        models.sort(key=lambda m: m["avg_overall_pct"], reverse=True)
+
+        writer.writerow([
+            "rank", "model", "provider", "avg_tool_pct", "avg_param_pct",
+            "avg_overall_pct", "total_evals", "last_eval",
+        ])
+        for rank, m in enumerate(models, 1):
+            writer.writerow([
+                rank, m["model"], m["provider"], m["avg_tool_pct"],
+                m["avg_param_pct"], m["avg_overall_pct"],
+                m["total_evals"], m["last_eval"],
+            ])
+
+        filename = f"leaderboard_tool_eval_{period}.csv"
+    else:
+        runs = await db.get_analytics_benchmark_runs(user["id"], period)
+        model_agg_bm: dict[tuple[str, str], dict] = {}
+        for run in runs:
+            results = json.loads(run["results_json"]) if isinstance(run["results_json"], str) else run["results_json"]
+            for r in results:
+                if not r.get("success", False):
+                    continue
+                key = (r.get("model", ""), r.get("provider", ""))
+                if key not in model_agg_bm:
+                    model_agg_bm[key] = {
+                        "model": r.get("model", ""),
+                        "provider": r.get("provider", ""),
+                        "tps_vals": [],
+                        "ttft_vals": [],
+                        "cost_vals": [],
+                        "last_run": run["timestamp"],
+                    }
+                entry = model_agg_bm[key]
+                entry["tps_vals"].append(float(r.get("tokens_per_second", 0)))
+                entry["ttft_vals"].append(float(r.get("ttft_ms", 0)))
+                entry["cost_vals"].append(float(r.get("cost", 0)))
+                if run["timestamp"] > entry["last_run"]:
+                    entry["last_run"] = run["timestamp"]
+
+        models = []
+        for (model, provider), stats in model_agg_bm.items():
+            n = len(stats["tps_vals"])
+            models.append({
+                "model": model,
+                "provider": provider,
+                "avg_tps": round(sum(stats["tps_vals"]) / n, 2) if n else 0,
+                "avg_ttft_ms": round(sum(stats["ttft_vals"]) / n, 1) if n else 0,
+                "avg_cost": round(sum(stats["cost_vals"]) / n, 6) if n else 0,
+                "total_runs": n,
+                "last_run": stats["last_run"],
+            })
+        models.sort(key=lambda m: m["avg_tps"], reverse=True)
+
+        writer.writerow([
+            "rank", "model", "provider", "avg_tps", "avg_ttft_ms",
+            "avg_cost", "total_runs", "last_run",
+        ])
+        for rank, m in enumerate(models, 1):
+            writer.writerow([
+                rank, m["model"], m["provider"], m["avg_tps"],
+                m["avg_ttft_ms"], m["avg_cost"],
+                m["total_runs"], m["last_run"],
+            ])
+
+        filename = f"leaderboard_benchmark_{period}.csv"
+
+    return StreamingResponse(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@app.get("/api/export/tool-eval")
+async def export_tool_eval_csv(user: dict = Depends(auth.get_current_user)):
+    """Export all tool eval runs as CSV."""
+    runs = await db.get_tool_eval_runs(user["id"], limit=10000)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "timestamp", "suite_name", "model", "provider",
+        "tool_accuracy_pct", "param_accuracy_pct", "overall_pct",
+        "cases_run", "cases_passed",
+    ])
+
+    for run in runs:
+        summaries = json.loads(run["summary_json"]) if isinstance(run.get("summary_json"), str) else run.get("summary_json", [])
+        for s in summaries:
+            model_name = s.get("model_name") or s.get("model", "")
+            writer.writerow([
+                run.get("timestamp", ""),
+                run.get("suite_name", ""),
+                model_name,
+                s.get("provider", ""),
+                s.get("tool_accuracy_pct", ""),
+                s.get("param_accuracy_pct", ""),
+                s.get("overall_pct", ""),
+                s.get("cases_run", ""),
+                s.get("cases_passed", ""),
+            ])
+
+    return StreamingResponse(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=tool_eval_history.csv"},
+    )
+
+
+@app.get("/api/export/run/{run_id}")
+async def export_run_csv(run_id: str, user: dict = Depends(auth.get_current_user)):
+    """Export a single benchmark run as CSV."""
+    run = await db.get_benchmark_run(run_id, user["id"])
+    if not run:
+        return JSONResponse({"error": "Run not found"}, status_code=404)
+
+    results = json.loads(run["results_json"]) if isinstance(run.get("results_json"), str) else run.get("results_json", [])
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "model", "provider", "tokens_per_second", "ttft_ms",
+        "cost", "context_tokens", "output_tokens", "input_tokens",
+    ])
+
+    for r in results:
+        writer.writerow([
+            r.get("model", ""),
+            r.get("provider", ""),
+            r.get("tokens_per_second", ""),
+            r.get("ttft_ms", ""),
+            r.get("cost", ""),
+            r.get("context_tokens", ""),
+            r.get("output_tokens", ""),
+            r.get("input_tokens", ""),
+        ])
+
+    return StreamingResponse(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=benchmark_run_{run_id}.csv"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Onboarding
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/onboarding/status")
+async def onboarding_status(user: dict = Depends(auth.get_current_user)):
+    """Check if user has completed onboarding."""
+    full_user = await db.get_user_by_id(user["id"])
+    completed = bool(full_user.get("onboarding_completed", 0)) if full_user else False
+    return {"completed": completed}
+
+
+@app.post("/api/onboarding/complete")
+async def onboarding_complete(user: dict = Depends(auth.get_current_user)):
+    """Mark onboarding as completed for the current user."""
+    await db.set_onboarding_completed(user["id"])
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------

@@ -529,6 +529,10 @@
 
     <!-- ─── HISTORY TAB ─── -->
     <div id="view-history" class="hidden">
+      <div class="flex items-center justify-between mb-4">
+        <div></div>
+        <button onclick="downloadCSV('/api/export/history?format=csv', 'benchmark-history.csv')" style="border: 1px solid #555; background: transparent; color: var(--lime); padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-family: 'Outfit', sans-serif;">Export CSV</button>
+      </div>
       <div id="historyCompareBar" class="hidden mb-4 flex items-center justify-between card rounded-md px-5 py-3" style="border-color:rgba(56,189,248,0.3)">
         <span class="text-xs font-body text-zinc-400"><span id="compareCount">0</span> runs selected</span>
         <button onclick="compareSelectedRuns()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:#38BDF8;border:1px solid rgba(56,189,248,0.3);">Compare Selected</button>
@@ -642,6 +646,7 @@
             <option value="90d">90 Days</option>
             <option value="all" selected>All Time</option>
           </select>
+          <button onclick="downloadCSV('/api/export/leaderboard?type=' + anLeaderboardType + '&period=' + document.getElementById('anLeaderboardPeriod').value + '&format=csv', 'leaderboard.csv')" style="border: 1px solid #555; background: transparent; color: var(--lime); padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-family: 'Outfit', sans-serif;">Export CSV</button>
         </div>
         <div class="card rounded-md overflow-hidden">
           <table class="w-full text-sm results-table">
@@ -769,6 +774,7 @@
         <div class="mb-6">
           <div class="flex items-center justify-between mb-4">
             <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase">Eval History</h3>
+            <button onclick="downloadCSV('/api/export/tool-eval?format=csv', 'tool-eval-history.csv')" style="border: 1px solid #555; background: transparent; color: var(--lime); padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-family: 'Outfit', sans-serif;">Export CSV</button>
           </div>
           <div class="card rounded-md overflow-hidden">
             <table class="w-full text-sm results-table">
@@ -5020,6 +5026,118 @@
       }, { danger: true, confirmLabel: 'Delete' });
     }
 
+    // --- Export CSV ---
+    async function downloadCSV(url, filename) {
+      const token = localStorage.getItem('auth_token');
+      try {
+        const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+        if (!resp.ok) { showToast('Export failed', 'error'); return; }
+        const blob = await resp.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        showToast('CSV exported', 'success');
+      } catch (e) {
+        showToast('Export failed', 'error');
+      }
+    }
+
+    // --- Onboarding Wizard ---
+    let onbSelectedProvider = null;
+
+    function showOnboardingWizard() {
+      const overlay = document.getElementById('onboarding-overlay');
+      overlay.style.display = 'flex';
+      onbSelectedProvider = null;
+      document.getElementById('onb-key-input-area').style.display = 'none';
+      document.getElementById('onb-custom-area').style.display = 'none';
+      document.querySelectorAll('.onb-provider-card').forEach(c => {
+        c.style.borderColor = 'var(--border-subtle)';
+        c.style.background = 'var(--surface)';
+      });
+    }
+
+    function onbSelectProvider(provider, keyEnv, cardEl) {
+      onbSelectedProvider = provider;
+      // Reset all cards
+      document.querySelectorAll('.onb-provider-card').forEach(c => {
+        c.style.borderColor = 'var(--border-subtle)';
+        c.style.background = 'var(--surface)';
+      });
+      // Highlight selected
+      cardEl.style.borderColor = 'var(--lime)';
+      cardEl.style.background = 'var(--lime-dim)';
+
+      if (provider === 'custom') {
+        document.getElementById('onb-key-input-area').style.display = 'none';
+        document.getElementById('onb-custom-area').style.display = 'block';
+      } else {
+        document.getElementById('onb-custom-area').style.display = 'none';
+        const area = document.getElementById('onb-key-input-area');
+        area.style.display = 'block';
+        document.getElementById('onb-key-label').textContent = keyEnv;
+        document.getElementById('onb-key-input').value = '';
+        document.getElementById('onb-key-input').placeholder = 'Paste your ' + provider + ' API key';
+        document.getElementById('onb-key-input').dataset.keyEnv = keyEnv;
+        document.getElementById('onb-key-save-status').textContent = '';
+      }
+    }
+
+    async function onbSaveKey() {
+      const input = document.getElementById('onb-key-input');
+      const keyEnv = input.dataset.keyEnv;
+      const keyVal = input.value.trim();
+      const status = document.getElementById('onb-key-save-status');
+      if (!keyVal) { status.textContent = 'Please enter a key'; status.style.color = 'var(--coral)'; return; }
+      try {
+        const token = localStorage.getItem('auth_token');
+        const res = await fetch('/api/env', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ [keyEnv]: keyVal })
+        });
+        if (res.ok) {
+          status.textContent = 'Saved!';
+          status.style.color = 'var(--lime)';
+        } else {
+          status.textContent = 'Failed to save';
+          status.style.color = 'var(--coral)';
+        }
+      } catch {
+        status.textContent = 'Connection error';
+        status.style.color = 'var(--coral)';
+      }
+    }
+
+    function onbNext(step) {
+      document.getElementById('onb-step-1').style.display = 'none';
+      document.getElementById('onb-step-2').style.display = 'none';
+      document.getElementById('onb-step-3').style.display = 'none';
+      document.getElementById('onb-step-' + step).style.display = 'block';
+    }
+
+    function onbSkip() { onbComplete(); }
+
+    async function onbComplete() {
+      const token = localStorage.getItem('auth_token');
+      try {
+        await fetch('/api/onboarding/complete', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } });
+      } catch {}
+      document.getElementById('onboarding-overlay').style.display = 'none';
+    }
+
+    async function checkOnboarding() {
+      try {
+        const token = localStorage.getItem('auth_token');
+        const res = await fetch('/api/onboarding/status', { headers: { 'Authorization': 'Bearer ' + token } });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.completed) showOnboardingWizard();
+      } catch {}
+    }
+
     // --- Auth functions ---
     let authMode = 'login';
 
@@ -5066,6 +5184,7 @@
         updateAuthUI();
         hideAuthModal();
         init();
+        checkOnboarding();
       } catch (err) {
         document.getElementById('authError').textContent = 'Connection error';
         document.getElementById('authError').style.display = 'block';
@@ -5120,5 +5239,77 @@
       }
     })();
   </script>
+
+  <!-- Onboarding Wizard Modal -->
+  <div id="onboarding-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:10000; align-items:center; justify-content:center;">
+    <div style="background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:40px; max-width:600px; width:90%; color:#e0e0e0;">
+      <div id="onb-step-1">
+        <h2 style="color:var(--lime); margin-top:0; font-family:'Chakra Petch',sans-serif; font-size:22px; font-weight:700;">Welcome to Benchmark Studio!</h2>
+        <p style="font-family:'Outfit',sans-serif; color:#A1A1AA; margin-bottom:20px;">Let's get you set up in 3 quick steps.</p>
+        <h3 style="font-family:'Chakra Petch',sans-serif; font-size:14px; font-weight:600; color:#e0e0e0; text-transform:uppercase; letter-spacing:0.05em;">Step 1 of 3: Choose Your Provider</h3>
+        <p style="color:#71717A; font-size:13px; font-family:'Outfit',sans-serif;">Pick a provider to get started. You can add more later in Settings.</p>
+
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:16px 0;">
+          <div class="onb-provider-card" onclick="onbSelectProvider('OpenAI','OPENAI_API_KEY',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
+            <div style="font-weight:600; color:#e0e0e0; font-size:14px; font-family:'Outfit',sans-serif;">OpenAI</div>
+            <div style="color:#71717A; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">GPT models (gpt-5, gpt-5-nano)</div>
+          </div>
+          <div class="onb-provider-card" onclick="onbSelectProvider('Anthropic','ANTHROPIC_API_KEY',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
+            <div style="font-weight:600; color:#e0e0e0; font-size:14px; font-family:'Outfit',sans-serif;">Anthropic</div>
+            <div style="color:#71717A; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">Claude models (Sonnet, Haiku)</div>
+          </div>
+          <div class="onb-provider-card" onclick="onbSelectProvider('Google Gemini','GEMINI_API_KEY',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
+            <div style="font-weight:600; color:#e0e0e0; font-size:14px; font-family:'Outfit',sans-serif;">Google Gemini</div>
+            <div style="color:#71717A; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">Gemini models</div>
+          </div>
+          <div class="onb-provider-card" onclick="onbSelectProvider('custom','',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
+            <div style="font-weight:600; color:#e0e0e0; font-size:14px; font-family:'Outfit',sans-serif;">Custom</div>
+            <div style="color:#71717A; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">Other provider or self-hosted</div>
+          </div>
+        </div>
+
+        <!-- API key input (shown when OpenAI/Anthropic/Gemini selected) -->
+        <div id="onb-key-input-area" style="display:none; margin:12px 0;">
+          <label id="onb-key-label" style="font-size:12px; color:#71717A; font-family:'Outfit',sans-serif; display:block; margin-bottom:6px;"></label>
+          <div style="display:flex; gap:8px;">
+            <input id="onb-key-input" type="password" placeholder="" style="flex:1; padding:8px 12px; border-radius:6px; border:1px solid var(--border-subtle); background:rgba(255,255,255,0.03); color:#e0e0e0; font-family:'Space Mono',monospace; font-size:13px; outline:none;" />
+            <button onclick="onbSaveKey()" style="background:var(--lime); color:#000; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:bold; font-family:'Outfit',sans-serif; font-size:13px; white-space:nowrap;">Save Key</button>
+          </div>
+          <span id="onb-key-save-status" style="font-size:12px; font-family:'Outfit',sans-serif; margin-top:6px; display:inline-block;"></span>
+        </div>
+
+        <!-- Custom provider message -->
+        <div id="onb-custom-area" style="display:none; margin:12px 0; padding:12px; border-radius:6px; border:1px solid var(--border-subtle); background:rgba(255,255,255,0.02);">
+          <p style="color:#A1A1AA; font-size:13px; font-family:'Outfit',sans-serif; margin:0;">Custom providers can be configured in <strong style="color:#e0e0e0;">Settings</strong> after onboarding. You'll be able to set a provider name, API base URL, API key, and model ID prefix.</p>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; margin-top:24px;">
+          <button onclick="onbSkip()" style="background:transparent; border:1px solid var(--border); color:#71717A; padding:8px 20px; border-radius:6px; cursor:pointer; font-family:'Outfit',sans-serif;">Skip All</button>
+          <button onclick="onbNext(2)" style="background:var(--lime); color:#000; border:none; padding:8px 20px; border-radius:6px; cursor:pointer; font-weight:bold; font-family:'Outfit',sans-serif;">Next Step</button>
+        </div>
+      </div>
+      <div id="onb-step-2" style="display:none;">
+        <h2 style="color:var(--lime); margin-top:0; font-family:'Chakra Petch',sans-serif; font-size:22px; font-weight:700;">Step 2 of 3: Quick Test</h2>
+        <p style="font-family:'Outfit',sans-serif; color:#A1A1AA;">Want to run a quick benchmark with one model to verify your setup?</p>
+        <p style="color:#71717A; font-size:13px; font-family:'Outfit',sans-serif;">This will run a single benchmark with the first available model. Takes about 10 seconds.</p>
+        <div style="display:flex; justify-content:space-between; margin-top:24px;">
+          <button onclick="onbNext(3)" style="background:transparent; border:1px solid var(--border); color:#71717A; padding:8px 20px; border-radius:6px; cursor:pointer; font-family:'Outfit',sans-serif;">Skip</button>
+          <button onclick="onbNext(3)" style="background:var(--lime); color:#000; border:none; padding:8px 20px; border-radius:6px; cursor:pointer; font-weight:bold; font-family:'Outfit',sans-serif;">Next Step</button>
+        </div>
+      </div>
+      <div id="onb-step-3" style="display:none;">
+        <h2 style="color:var(--lime); margin-top:0; font-family:'Chakra Petch',sans-serif; font-size:22px; font-weight:700;">You're All Set!</h2>
+        <p style="font-family:'Outfit',sans-serif; color:#A1A1AA;">Start exploring:</p>
+        <ul style="list-style:none; padding:0; font-family:'Outfit',sans-serif;">
+          <li style="margin:8px 0; color:#e0e0e0;"><span style="color:var(--lime);">&#8594;</span> <strong>Benchmark</strong> &mdash; Run speed tests across models</li>
+          <li style="margin:8px 0; color:#e0e0e0;"><span style="color:var(--lime);">&#8594;</span> <strong>Analytics</strong> &mdash; Compare models on leaderboard</li>
+          <li style="margin:8px 0; color:#e0e0e0;"><span style="color:var(--lime);">&#8594;</span> <strong>Tool Eval</strong> &mdash; Test tool calling accuracy</li>
+        </ul>
+        <div style="text-align:center; margin-top:24px;">
+          <button onclick="onbComplete()" style="background:var(--lime); color:#000; border:none; padding:10px 32px; border-radius:6px; cursor:pointer; font-weight:bold; font-size:16px; font-family:'Outfit',sans-serif;">Let's Go!</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

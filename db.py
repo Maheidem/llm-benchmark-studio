@@ -169,6 +169,13 @@ async def init_db():
 
         await db.commit()
 
+        # Phase 8: onboarding flag
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN onboarding_completed INTEGER DEFAULT 0")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
 
 # --- User CRUD ---
 
@@ -201,11 +208,18 @@ async def get_user_by_id(user_id: str) -> dict | None:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, email, role, created_at, updated_at FROM users WHERE id = ?",
+            "SELECT id, email, role, created_at, updated_at, onboarding_completed FROM users WHERE id = ?",
             (user_id,),
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
+
+
+async def set_onboarding_completed(user_id: str):
+    """Mark onboarding as completed for a user."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        await conn.execute("UPDATE users SET onboarding_completed = 1 WHERE id = ?", (user_id,))
+        await conn.commit()
 
 
 async def count_users() -> int:
