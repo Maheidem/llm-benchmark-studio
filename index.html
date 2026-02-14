@@ -3937,8 +3937,9 @@
             <td class="px-3 py-2 text-right font-mono text-zinc-400">${u.key_count || 0}</td>
             <td class="px-3 py-2 text-zinc-500">${lastLogin}</td>
             <td class="px-3 py-2 text-zinc-500">${created}</td>
-            <td class="px-3 py-2 text-right">
+            <td class="px-3 py-2 text-right" style="white-space:nowrap;">
               <button onclick="showRateLimitModal('${u.id}', '${escapeHtml(u.email)}')" class="text-[10px] font-display tracking-wider uppercase px-2 py-1 rounded-sm" style="border:1px solid var(--border-subtle);color:#71717A;">Limits</button>
+              ${isCurrentUser ? '' : `<button onclick="deleteUser('${u.id}', '${escapeHtml(u.email)}')" class="text-[10px] font-display tracking-wider uppercase px-2 py-1 rounded-sm ml-1" style="border:1px solid var(--coral);color:var(--coral);">Delete</button>`}
             </td>
           </tr>`;
         }
@@ -3964,6 +3965,23 @@
       } catch {
         showToast('Failed to update role', 'error');
         loadAdminUsers();
+      }
+    }
+
+    async function deleteUser(userId, email) {
+      if (!confirm(`Delete user "${email}"?\n\nThis will permanently remove the user and ALL their data (keys, benchmarks, evals, schedules). This cannot be undone.`)) return;
+      try {
+        const res = await apiFetch(`/api/admin/users/${userId}`, { method: 'DELETE' });
+        if (res.ok) {
+          showToast('User deleted', 'success');
+          loadAdminUsers();
+          loadAdminStats();
+        } else {
+          const data = await res.json();
+          showToast(data.error || 'Failed to delete user', 'error');
+        }
+      } catch {
+        showToast('Failed to delete user', 'error');
       }
     }
 

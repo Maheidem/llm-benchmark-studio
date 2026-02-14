@@ -450,6 +450,37 @@ async def admin_update_role(user_id: str, request: Request, current_user: dict =
     return {"status": "ok"}
 
 
+@app.delete("/api/admin/users/{user_id}")
+async def admin_delete_user(user_id: str, request: Request, current_user: dict = Depends(auth.require_admin)):
+    """Delete a user and all their data (cascade). Cannot delete self."""
+    if user_id == current_user["id"]:
+        return JSONResponse({"error": "Cannot delete your own account"}, status_code=400)
+
+    conn = await db.get_db()
+    try:
+        cursor = await conn.execute("SELECT email FROM users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return JSONResponse({"error": "User not found"}, status_code=404)
+        deleted_email = row["email"]
+
+        # Unlink audit_log entries (no CASCADE, but keep records)
+        await conn.execute("UPDATE audit_log SET user_id = NULL WHERE user_id = ?", (user_id,))
+        await conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        await conn.commit()
+    finally:
+        await conn.close()
+
+    await db.log_audit(
+        current_user["id"], current_user.get("email", ""), "admin_user_delete",
+        resource_type="user", resource_id=str(user_id),
+        detail={"deleted_email": deleted_email},
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+    return {"status": "ok"}
+
+
 @app.get("/api/admin/stats")
 async def admin_stats(current_user: dict = Depends(auth.require_admin)):
     """Usage statistics: benchmark counts, top users, keys by provider."""
