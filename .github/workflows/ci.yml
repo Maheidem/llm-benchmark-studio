@@ -32,6 +32,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Determine app version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "value=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -52,6 +61,7 @@ jobs:
           load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: APP_VERSION=${{ steps.version.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

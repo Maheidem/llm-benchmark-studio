@@ -28,7 +28,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Res
 _dir = Path(__file__).parent
 load_dotenv(_dir / ".env", override=True)
 
-APP_VERSION = "1.2.0"
+APP_VERSION = os.getenv("APP_VERSION", "dev")
 
 from benchmark import (  # noqa: E402
     AggregatedResult,

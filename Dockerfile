@@ -3,6 +3,9 @@ FROM python:3.13-slim
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
+
 WORKDIR /app
 
 # Copy dependency files first (cache layer)
