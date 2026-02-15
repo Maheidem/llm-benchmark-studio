@@ -5802,8 +5802,8 @@
         const run = await res.json();
 
         // Parse stored JSON fields
-        const results = typeof run.results_json === 'string' ? JSON.parse(run.results_json) : (run.results_json || []);
-        const summaries = typeof run.summary_json === 'string' ? JSON.parse(run.summary_json) : (run.summary_json || []);
+        const results = run.results || (typeof run.results_json === 'string' ? JSON.parse(run.results_json) : []);
+        const summaries = run.summary || (typeof run.summary_json === 'string' ? JSON.parse(run.summary_json) : []);
 
         // Populate run view with historical data
         teRunSuiteId = run.suite_id;
