@@ -200,6 +200,13 @@ async def init_db():
         except Exception:
             pass  # Column already exists
 
+        # Multi-turn tool eval support
+        try:
+            await db.execute("ALTER TABLE tool_test_cases ADD COLUMN multi_turn_config TEXT")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
 
 # --- User CRUD ---
 
@@ -577,20 +584,20 @@ async def get_test_cases(suite_id: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-async def create_test_case(suite_id: str, prompt: str, expected_tool: str | None, expected_params: str | None, param_scoring: str = "exact") -> str:
+async def create_test_case(suite_id: str, prompt: str, expected_tool: str | None, expected_params: str | None, param_scoring: str = "exact", multi_turn_config: str | None = None) -> str:
     """Create a single test case. Returns case_id."""
     case_id = uuid.uuid4().hex
     async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute(
-            "INSERT INTO tool_test_cases (id, suite_id, prompt, expected_tool, expected_params, param_scoring) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (case_id, suite_id, prompt, expected_tool, expected_params, param_scoring),
+            "INSERT INTO tool_test_cases (id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (case_id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config),
         )
         await db.commit()
     return case_id
 
 
-async def update_test_case(case_id: str, suite_id: str, prompt: str = None, expected_tool: str = None, expected_params: str = None, param_scoring: str = None) -> bool:
+async def update_test_case(case_id: str, suite_id: str, prompt: str = None, expected_tool: str = None, expected_params: str = None, param_scoring: str = None, multi_turn_config: str | None = None) -> bool:
     """Update a test case. Returns True if found."""
     fields = []
     params = []
@@ -606,6 +613,9 @@ async def update_test_case(case_id: str, suite_id: str, prompt: str = None, expe
     if param_scoring is not None:
         fields.append("param_scoring = ?")
         params.append(param_scoring)
+    if multi_turn_config is not None:
+        fields.append("multi_turn_config = ?")
+        params.append(multi_turn_config)
     if not fields:
         return False
     params.extend([case_id, suite_id])

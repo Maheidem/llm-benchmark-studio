@@ -1236,6 +1236,33 @@
                 <label class="section-label mt-3 mb-2 block">Expected Params <span class="text-zinc-600 normal-case">(JSON, optional)</span></label>
                 <textarea id="teCaseExpParams" rows="3" class="prompt-input w-full rounded-sm px-3 py-2 font-mono text-xs" placeholder='{"param_name": "value"}'></textarea>
               </div>
+              <!-- Multi-Turn Settings -->
+              <div class="lg:col-span-2 mt-2">
+                <label class="flex items-center gap-2 cursor-pointer mb-2">
+                  <input type="checkbox" id="teCaseMultiTurn" onchange="teToggleMultiTurn()" class="accent-[var(--lime)]">
+                  <span class="text-xs font-display tracking-wider uppercase text-zinc-400">Multi-Turn</span>
+                </label>
+                <div id="teCaseMultiTurnSettings" class="hidden pl-4 space-y-3" style="border-left:2px solid var(--border-subtle);">
+                  <div class="grid grid-cols-2 gap-3">
+                    <div>
+                      <label class="text-[10px] font-display tracking-wider uppercase text-zinc-500 block mb-1">Max Rounds</label>
+                      <input id="teCaseMaxRounds" type="number" min="2" max="10" value="5" class="w-full px-2 py-1 rounded-sm text-sm font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
+                    </div>
+                    <div>
+                      <label class="text-[10px] font-display tracking-wider uppercase text-zinc-500 block mb-1">Optimal Hops</label>
+                      <input id="teCaseOptimalHops" type="number" min="1" max="10" value="2" class="w-full px-2 py-1 rounded-sm text-sm font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
+                    </div>
+                  </div>
+                  <div>
+                    <label class="text-[10px] font-display tracking-wider uppercase text-zinc-500 block mb-1">Valid Prerequisites <span class="normal-case text-zinc-600">(comma-separated tool names)</span></label>
+                    <input id="teCasePrereqs" class="w-full px-2 py-1 rounded-sm text-sm font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" placeholder="get_time, get_location">
+                  </div>
+                  <div>
+                    <label class="text-[10px] font-display tracking-wider uppercase text-zinc-500 block mb-1">Mock Responses <span class="normal-case text-zinc-600">(JSON)</span></label>
+                    <textarea id="teCaseMockResponses" rows="3" class="prompt-input w-full rounded-sm px-2 py-1 font-mono text-xs" placeholder='{"get_time": {"time": "2024-01-15T10:00:00Z"}}'></textarea>
+                  </div>
+                </div>
+              </div>
             </div>
             <div id="teCaseError" class="hidden text-xs mb-2" style="color:var(--coral)"></div>
             <div class="flex justify-end gap-2">
@@ -1356,6 +1383,7 @@
                     <th class="px-5 py-2 text-left section-label">Test Case</th>
                     <th class="px-5 py-2 text-left section-label">Expected</th>
                     <th class="px-5 py-2 text-left section-label">Actual</th>
+                    <th class="px-5 py-2 text-right section-label">Hops</th>
                     <th class="px-5 py-2 text-right section-label">Score</th>
                   </tr>
                 </thead>
@@ -5203,9 +5231,10 @@
           expStr = expTool;
         }
         const paramsStr = c.expected_params ? '(' + Object.entries(c.expected_params).map(([k,v]) => `${k}=${JSON.stringify(v)}`).join(', ') + ')' : '';
+        const mtBadge = c.multi_turn ? '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm ml-2" style="color:var(--lime);background:rgba(191,255,0,0.08);border:1px solid rgba(191,255,0,0.15)">MULTI-TURN</span>' : '';
         return `<div class="flex items-start justify-between px-3 py-2 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);">
           <div class="flex-1 min-w-0">
-            <div class="text-sm text-zinc-300 font-body mb-0.5">#${i+1} "${_teEsc(_teTruncate(c.prompt, 80))}"</div>
+            <div class="text-sm text-zinc-300 font-body mb-0.5">#${i+1} "${_teEsc(_teTruncate(c.prompt, 80))}"${mtBadge}</div>
             <div class="text-xs font-mono text-zinc-500">Expected: ${expStr}${paramsStr ? ' ' + _teEsc(paramsStr) : ''}</div>
           </div>
           <div class="flex gap-2 ml-3 flex-shrink-0 mt-1">
@@ -5228,6 +5257,12 @@
       document.getElementById('teCaseExpParams').value = '';
       document.getElementById('teCaseNoTool').checked = false;
       document.getElementById('teCaseExpTool').disabled = false;
+      document.getElementById('teCaseMultiTurn').checked = false;
+      document.getElementById('teCaseMultiTurnSettings').classList.add('hidden');
+      document.getElementById('teCaseMaxRounds').value = '5';
+      document.getElementById('teCaseOptimalHops').value = '2';
+      document.getElementById('teCasePrereqs').value = '';
+      document.getElementById('teCaseMockResponses').value = '';
       document.getElementById('teCaseError').classList.add('hidden');
       document.getElementById('teCaseEditor').classList.remove('hidden');
     }
@@ -5248,6 +5283,13 @@
         document.getElementById('teCaseExpTool').value = c.expected_tool || '';
       }
       document.getElementById('teCaseExpParams').value = c.expected_params ? JSON.stringify(c.expected_params, null, 2) : '';
+      const isMultiTurn = !!c.multi_turn;
+      document.getElementById('teCaseMultiTurn').checked = isMultiTurn;
+      document.getElementById('teCaseMultiTurnSettings').classList.toggle('hidden', !isMultiTurn);
+      document.getElementById('teCaseMaxRounds').value = c.max_rounds || 5;
+      document.getElementById('teCaseOptimalHops').value = c.optimal_hops || 2;
+      document.getElementById('teCasePrereqs').value = (c.valid_prerequisites || []).join(', ');
+      document.getElementById('teCaseMockResponses').value = c.mock_responses ? JSON.stringify(c.mock_responses, null, 2) : '';
       document.getElementById('teCaseError').classList.add('hidden');
       document.getElementById('teCaseEditor').classList.remove('hidden');
     }
@@ -5261,6 +5303,11 @@
       const checked = document.getElementById('teCaseNoTool').checked;
       document.getElementById('teCaseExpTool').disabled = checked;
       if (checked) document.getElementById('teCaseExpTool').value = '';
+    }
+
+    function teToggleMultiTurn() {
+      const checked = document.getElementById('teCaseMultiTurn').checked;
+      document.getElementById('teCaseMultiTurnSettings').classList.toggle('hidden', !checked);
     }
 
     async function teSaveCaseEdit() {
@@ -5300,6 +5347,27 @@
       errEl.classList.add('hidden');
 
       const caseData = { prompt, expected_tool, expected_params };
+
+      // Multi-turn fields
+      if (document.getElementById('teCaseMultiTurn').checked) {
+        caseData.multi_turn = true;
+        caseData.max_rounds = parseInt(document.getElementById('teCaseMaxRounds').value) || 5;
+        caseData.optimal_hops = parseInt(document.getElementById('teCaseOptimalHops').value) || 2;
+        const prereqs = document.getElementById('teCasePrereqs').value.trim();
+        caseData.valid_prerequisites = prereqs ? prereqs.split(',').map(s => s.trim()).filter(Boolean) : [];
+        const mockStr = document.getElementById('teCaseMockResponses').value.trim();
+        if (mockStr) {
+          try {
+            caseData.mock_responses = JSON.parse(mockStr);
+          } catch (e) {
+            errEl.textContent = 'Invalid JSON in mock responses: ' + e.message;
+            errEl.classList.remove('hidden');
+            return;
+          }
+        }
+      } else {
+        caseData.multi_turn = false;
+      }
 
       try {
         if (teEditingCaseId) {
@@ -5664,11 +5732,14 @@
       const actualTool = r.actual_tool || '(none)';
       const expectedTool = r.expected_tool || '(none)';
       const prompt = _teTruncate(r.prompt || r.test_case_id || '', 40);
+      const hops = r.multi_turn ? (r.tool_chain?.length || 1) : '';
+      const hopsTitle = r.tool_chain ? r.tool_chain.map(c => c.tool_name).join(' \u2192 ') : '';
       body.insertAdjacentHTML('beforeend', `<tr>
         <td class="px-5 py-2 text-xs font-mono text-zinc-300">${_teEsc(r.model_name || r.model_id || '')}</td>
         <td class="px-5 py-2 text-xs font-body text-zinc-400">${_teEsc(prompt)}</td>
         <td class="px-5 py-2 text-xs font-mono text-zinc-500">${_teEsc(typeof expectedTool === 'object' ? JSON.stringify(expectedTool) : expectedTool)}</td>
         <td class="px-5 py-2 text-xs font-mono" style="color:${r.success !== false ? 'var(--lime)' : 'var(--coral)'}">${_teEsc(actualTool)}</td>
+        <td class="px-5 py-2 text-right text-xs font-mono text-zinc-500" title="${_teEsc(hopsTitle)}">${hops}</td>
         <td class="px-5 py-2 text-right text-xs font-mono font-bold" style="color:${color}">${overallPct}%</td>
       </tr>`);
       // Auto-scroll
@@ -5728,21 +5799,43 @@
           const match = r.tool_selection_score === 1.0;
           const icon = match ? '<span style="color:var(--lime)">OK</span>' : '<span style="color:var(--coral)">X</span>';
 
+          // Multi-turn chain visualization
+          const chainSection = r.multi_turn && r.tool_chain?.length ? `
+            <div class="mt-1 font-mono text-[10px]">
+              <span class="text-zinc-600">Chain:</span>
+              <span style="color:var(--lime)">${r.tool_chain.map(c => c.tool_name).join(' \u2192 ')}</span>
+              <span class="text-zinc-600 ml-1">(${r.rounds_used || r.tool_chain.length} round${(r.rounds_used || r.tool_chain.length) > 1 ? 's' : ''})</span>
+            </div>
+            <div class="mt-1 grid grid-cols-4 gap-2 text-[10px] font-mono">
+              <span class="text-zinc-500">Completion: <span style="color:var(--lime)">${((r.completion_score || 0) * 100).toFixed(0)}%</span></span>
+              <span class="text-zinc-500">Efficiency: <span style="color:var(--lime)">${((r.efficiency_score || 0) * 100).toFixed(0)}%</span></span>
+              <span class="text-zinc-500">Redundancy: <span style="color:var(--coral)">-${((r.redundancy_penalty || 0) * 100).toFixed(0)}%</span></span>
+              <span class="text-zinc-500">Detour: <span style="color:var(--coral)">-${((r.detour_penalty || 0) * 100).toFixed(0)}%</span></span>
+            </div>` : '';
+
+          // For multi-turn, show all exchanges instead of single request/response
           const hasRaw = r.raw_request || r.raw_response;
-          const rawSection = hasRaw ? `
+          const rawData = r.multi_turn && r.raw_exchanges?.length
+            ? r.raw_exchanges
+            : (hasRaw ? [{request: r.raw_request, response: r.raw_response}] : []);
+
+          const rawSection = rawData.length ? `
             <div class="mt-2">
               <button onclick="this.nextElementSibling.classList.toggle('hidden')"
                 class="text-[10px] font-display tracking-wider uppercase px-2 py-0.5 rounded-sm"
-                style="color:var(--lime);border:1px solid rgba(191,255,0,0.15)">VIEW RAW</button>
-              <div class="hidden mt-2" style="max-height:400px;overflow-y:auto">
-                ${r.raw_request ? `<div class="mb-2">
-                  <div class="text-[10px] font-display tracking-wider text-zinc-500 uppercase mb-1">Request</div>
-                  <pre class="text-[10px] font-mono text-zinc-400 p-2 rounded-sm overflow-x-auto" style="background:rgba(0,0,0,0.3);border:1px solid var(--border-subtle);white-space:pre-wrap;word-break:break-all">${_teEsc(JSON.stringify(r.raw_request, null, 2))}</pre>
-                </div>` : ''}
-                ${r.raw_response ? `<div>
-                  <div class="text-[10px] font-display tracking-wider text-zinc-500 uppercase mb-1">Response</div>
-                  <pre class="text-[10px] font-mono text-zinc-400 p-2 rounded-sm overflow-x-auto" style="background:rgba(0,0,0,0.3);border:1px solid var(--border-subtle);white-space:pre-wrap;word-break:break-all">${_teEsc(JSON.stringify(r.raw_response, null, 2))}</pre>
-                </div>` : ''}
+                style="color:var(--lime);border:1px solid rgba(191,255,0,0.15)">VIEW RAW${r.multi_turn ? ' (' + rawData.length + ' round' + (rawData.length > 1 ? 's' : '') + ')' : ''}</button>
+              <div class="hidden mt-2 space-y-2" style="max-height:400px;overflow-y:auto">
+                ${rawData.map((ex, idx) => `
+                  ${r.multi_turn ? '<div class="text-[10px] font-display tracking-wider text-zinc-400 uppercase">Round ' + (idx + 1) + '</div>' : ''}
+                  ${ex.request ? `<div class="mb-1">
+                    <div class="text-[10px] font-display tracking-wider text-zinc-500 uppercase mb-1">Request</div>
+                    <pre class="text-[10px] font-mono text-zinc-400 p-2 rounded-sm overflow-x-auto" style="background:rgba(0,0,0,0.3);border:1px solid var(--border-subtle);white-space:pre-wrap;word-break:break-all">${_teEsc(JSON.stringify(ex.request, null, 2))}</pre>
+                  </div>` : ''}
+                  ${ex.response ? `<div>
+                    <div class="text-[10px] font-display tracking-wider text-zinc-500 uppercase mb-1">Response</div>
+                    <pre class="text-[10px] font-mono text-zinc-400 p-2 rounded-sm overflow-x-auto" style="background:rgba(0,0,0,0.3);border:1px solid var(--border-subtle);white-space:pre-wrap;word-break:break-all">${_teEsc(JSON.stringify(ex.response, null, 2))}</pre>
+                  </div>` : ''}
+                `).join('')}
               </div>
             </div>` : '';
 
@@ -5750,6 +5843,7 @@
             <div class="text-zinc-300 font-body mb-1">#${i+1} "${_teEsc(_teTruncate(r.prompt || '', 80))}"</div>
             <div class="font-mono text-zinc-500">Expected: ${_teEsc(expStr)}${expParams ? '(' + _teEsc(expParams) + ')' : ''}</div>
             <div class="font-mono" style="color:${match ? 'var(--lime)' : 'var(--coral)'}">Actual: &nbsp; ${_teEsc(actTool)}${actParams ? '(' + _teEsc(actParams) + ')' : ''} ${icon}</div>
+            ${chainSection}
             ${r.error ? '<div style="color:var(--coral)">Error: ' + _teEsc(r.error) + '</div>' : ''}
             ${rawSection}
           </div>`;

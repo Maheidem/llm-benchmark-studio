@@ -1690,7 +1690,24 @@ async def import_tool_suite(request: Request, user: dict = Depends(auth.get_curr
         expected_tool = _serialize_expected_tool(item.get("expected_tool"))
         expected_params = json.dumps(item["expected_params"]) if item.get("expected_params") is not None else None
         param_scoring = item.get("param_scoring", "exact")
-        await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring)
+        # Multi-turn config
+        mt_config = None
+        if item.get("multi_turn") or item.get("multi_turn_config"):
+            mt_obj = item.get("multi_turn_config") or {}
+            if not mt_obj and item.get("multi_turn"):
+                mt_obj = {"multi_turn": True}
+            if item.get("max_rounds"):
+                mt_obj["max_rounds"] = item["max_rounds"]
+            if item.get("mock_responses"):
+                mt_obj["mock_responses"] = item["mock_responses"]
+            if item.get("valid_prerequisites"):
+                mt_obj["valid_prerequisites"] = item["valid_prerequisites"]
+            if item.get("optimal_hops"):
+                mt_obj["optimal_hops"] = item["optimal_hops"]
+            if not mt_obj.get("multi_turn"):
+                mt_obj["multi_turn"] = True
+            mt_config = json.dumps(mt_obj)
+        await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config)
         created += 1
     return {"status": "ok", "suite_id": suite_id, "test_cases_created": created}
 
@@ -1709,6 +1726,16 @@ async def get_tool_suite(suite_id: str, user: dict = Depends(auth.get_current_us
         if c["expected_params"]:
             try:
                 c["expected_params"] = json.loads(c["expected_params"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if c.get("multi_turn_config"):
+            try:
+                mt = json.loads(c["multi_turn_config"]) if isinstance(c["multi_turn_config"], str) else c["multi_turn_config"]
+                c["multi_turn"] = mt.get("multi_turn", False)
+                c["max_rounds"] = mt.get("max_rounds", 5)
+                c["mock_responses"] = mt.get("mock_responses", {})
+                c["valid_prerequisites"] = mt.get("valid_prerequisites", [])
+                c["optimal_hops"] = mt.get("optimal_hops", 2)
             except (json.JSONDecodeError, TypeError):
                 pass
     suite["test_cases"] = cases
@@ -1760,6 +1787,16 @@ async def list_test_cases(suite_id: str, user: dict = Depends(auth.get_current_u
                 c["expected_params"] = json.loads(c["expected_params"])
             except (json.JSONDecodeError, TypeError):
                 pass
+        if c.get("multi_turn_config"):
+            try:
+                mt = json.loads(c["multi_turn_config"]) if isinstance(c["multi_turn_config"], str) else c["multi_turn_config"]
+                c["multi_turn"] = mt.get("multi_turn", False)
+                c["max_rounds"] = mt.get("max_rounds", 5)
+                c["mock_responses"] = mt.get("mock_responses", {})
+                c["valid_prerequisites"] = mt.get("valid_prerequisites", [])
+                c["optimal_hops"] = mt.get("optimal_hops", 2)
+            except (json.JSONDecodeError, TypeError):
+                pass
     return {"cases": cases}
 
 
@@ -1771,6 +1808,25 @@ async def create_test_cases(suite_id: str, request: Request, user: dict = Depend
         return JSONResponse({"error": "Suite not found"}, status_code=404)
     body = await request.json()
 
+    def _extract_mt_config(item: dict) -> str | None:
+        """Extract multi_turn_config JSON string from a request item."""
+        if not item.get("multi_turn") and not item.get("multi_turn_config"):
+            return None
+        mt_obj = item.get("multi_turn_config") or {}
+        if not mt_obj and item.get("multi_turn"):
+            mt_obj = {"multi_turn": True}
+        if item.get("max_rounds"):
+            mt_obj["max_rounds"] = item["max_rounds"]
+        if item.get("mock_responses"):
+            mt_obj["mock_responses"] = item["mock_responses"]
+        if item.get("valid_prerequisites"):
+            mt_obj["valid_prerequisites"] = item["valid_prerequisites"]
+        if item.get("optimal_hops"):
+            mt_obj["optimal_hops"] = item["optimal_hops"]
+        if not mt_obj.get("multi_turn"):
+            mt_obj["multi_turn"] = True
+        return json.dumps(mt_obj)
+
     # Bulk mode
     if "cases" in body and isinstance(body["cases"], list):
         created = 0
@@ -1781,7 +1837,8 @@ async def create_test_cases(suite_id: str, request: Request, user: dict = Depend
             expected_tool = _serialize_expected_tool(item.get("expected_tool"))
             expected_params = json.dumps(item["expected_params"]) if item.get("expected_params") is not None else None
             param_scoring = item.get("param_scoring", "exact")
-            await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring)
+            mt_config = _extract_mt_config(item)
+            await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config)
             created += 1
         return {"status": "ok", "created": created}
 
@@ -1792,7 +1849,8 @@ async def create_test_cases(suite_id: str, request: Request, user: dict = Depend
     expected_tool = _serialize_expected_tool(body.get("expected_tool"))
     expected_params = json.dumps(body["expected_params"]) if body.get("expected_params") is not None else None
     param_scoring = body.get("param_scoring", "exact")
-    case_id = await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring)
+    mt_config = _extract_mt_config(body)
+    case_id = await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config)
     return {"status": "ok", "case_id": case_id}
 
 
@@ -1807,7 +1865,28 @@ async def update_test_case(suite_id: str, case_id: str, request: Request, user: 
     expected_tool = _serialize_expected_tool(body.get("expected_tool")) if "expected_tool" in body else None
     expected_params = json.dumps(body["expected_params"]) if "expected_params" in body and body["expected_params"] is not None else None
     param_scoring = body.get("param_scoring")
-    updated = await db.update_test_case(case_id, suite_id, prompt=prompt, expected_tool=expected_tool, expected_params=expected_params, param_scoring=param_scoring)
+    # Multi-turn config
+    mt_config = None
+    if "multi_turn" in body or "multi_turn_config" in body:
+        if body.get("multi_turn"):
+            mt_obj = body.get("multi_turn_config") or {}
+            if not mt_obj:
+                mt_obj = {"multi_turn": True}
+            if body.get("max_rounds"):
+                mt_obj["max_rounds"] = body["max_rounds"]
+            if body.get("mock_responses"):
+                mt_obj["mock_responses"] = body["mock_responses"]
+            if body.get("valid_prerequisites"):
+                mt_obj["valid_prerequisites"] = body["valid_prerequisites"]
+            if body.get("optimal_hops"):
+                mt_obj["optimal_hops"] = body["optimal_hops"]
+            if not mt_obj.get("multi_turn"):
+                mt_obj["multi_turn"] = True
+            mt_config = json.dumps(mt_obj)
+        else:
+            # multi_turn explicitly set to false -- clear the config
+            mt_config = ""  # empty string to clear in DB
+    updated = await db.update_test_case(case_id, suite_id, prompt=prompt, expected_tool=expected_tool, expected_params=expected_params, param_scoring=param_scoring, multi_turn_config=mt_config)
     if not updated:
         return JSONResponse({"error": "Test case not found"}, status_code=404)
     return {"status": "ok"}
@@ -1932,6 +2011,114 @@ def compute_overall_score(tool_score: float, param_score: float | None) -> float
     return 0.6 * tool_score + 0.4 * param_score
 
 
+def score_multi_turn(
+    tool_chain: list[dict],
+    expected_tool: str | list[str],
+    expected_params: dict | None,
+    valid_prerequisites: list[str],
+    optimal_hops: int,
+) -> dict:
+    """Score a multi-turn tool calling chain.
+
+    Returns dict with: completion, efficiency, redundancy_penalty, detour_penalty, overall_score
+    """
+    if not tool_chain:
+        return {"completion": 0.0, "efficiency": 0.0, "redundancy_penalty": 0.0, "detour_penalty": 0.0, "overall_score": 0.0}
+
+    # --- Completion: did the final tool call match expected? ---
+    final_call = tool_chain[-1]
+    tool_score = score_tool_selection(expected_tool, final_call.get("tool_name"))
+    param_score = score_params(expected_params, final_call.get("params"))
+    completion = compute_overall_score(tool_score, param_score)
+
+    # --- Efficiency: optimal_hops / actual_hops ---
+    actual_hops = len(tool_chain)
+    efficiency = min(1.0, optimal_hops / actual_hops) if actual_hops > 0 else 0.0
+
+    # --- Redundancy: -10% per consecutive identical tool call ---
+    redundancy_penalty = 0.0
+    for i in range(1, len(tool_chain)):
+        if tool_chain[i].get("tool_name") == tool_chain[i-1].get("tool_name"):
+            redundancy_penalty += 0.10
+
+    # --- Detour: -10% per call not in valid_prerequisites and not the final tool ---
+    detour_penalty = 0.0
+    valid_set = set(p.lower() for p in valid_prerequisites) if valid_prerequisites else set()
+    # Also add the expected final tool(s) to valid set
+    if isinstance(expected_tool, list):
+        valid_set.update(t.lower() for t in expected_tool)
+    elif expected_tool:
+        valid_set.add(expected_tool.lower())
+
+    for call in tool_chain[:-1]:  # exclude final call
+        name = (call.get("tool_name") or "").lower()
+        if name and name not in valid_set:
+            detour_penalty += 0.10
+
+    # --- Composite ---
+    overall = max(0.0, completion * efficiency - redundancy_penalty - detour_penalty)
+    overall = min(1.0, overall)
+
+    return {
+        "completion": round(completion, 4),
+        "efficiency": round(efficiency, 4),
+        "redundancy_penalty": round(redundancy_penalty, 4),
+        "detour_penalty": round(detour_penalty, 4),
+        "overall_score": round(overall, 4),
+    }
+
+
+# --- Eval Engine: Helpers ---
+
+def _capture_raw_response(response) -> dict:
+    """Extract raw response data from a litellm response object."""
+    raw_resp = {
+        "id": getattr(response, "id", None),
+        "model": getattr(response, "model", None),
+        "choices": [],
+        "usage": None,
+    }
+    if hasattr(response, "usage") and response.usage:
+        raw_resp["usage"] = {
+            "prompt_tokens": getattr(response.usage, "prompt_tokens", None),
+            "completion_tokens": getattr(response.usage, "completion_tokens", None),
+            "total_tokens": getattr(response.usage, "total_tokens", None),
+        }
+    for choice in response.choices:
+        c = {
+            "index": choice.index,
+            "finish_reason": choice.finish_reason,
+            "message": {
+                "role": getattr(choice.message, "role", None),
+                "content": getattr(choice.message, "content", None),
+                "tool_calls": None,
+            }
+        }
+        if choice.message.tool_calls:
+            c["message"]["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    }
+                }
+                for tc in choice.message.tool_calls
+            ]
+        raw_resp["choices"].append(c)
+    return raw_resp
+
+
+def _tool_matches(actual_tool: str | None, expected_tool) -> bool:
+    """Check if actual tool matches expected (str or list)."""
+    if actual_tool is None or expected_tool is None:
+        return False
+    if isinstance(expected_tool, list):
+        return actual_tool.lower() in [e.lower() for e in expected_tool]
+    return actual_tool.lower() == expected_tool.lower()
+
+
 # --- Eval Engine: Single Eval Execution ---
 
 async def run_single_eval(
@@ -2030,43 +2217,7 @@ async def run_single_eval(
 
         result["latency_ms"] = round(latency_ms)
 
-        # Capture raw response
-        raw_resp = {
-            "id": getattr(response, "id", None),
-            "model": getattr(response, "model", None),
-            "choices": [],
-            "usage": None,
-        }
-        if hasattr(response, "usage") and response.usage:
-            raw_resp["usage"] = {
-                "prompt_tokens": getattr(response.usage, "prompt_tokens", None),
-                "completion_tokens": getattr(response.usage, "completion_tokens", None),
-                "total_tokens": getattr(response.usage, "total_tokens", None),
-            }
-        for choice in response.choices:
-            c = {
-                "index": choice.index,
-                "finish_reason": choice.finish_reason,
-                "message": {
-                    "role": getattr(choice.message, "role", None),
-                    "content": getattr(choice.message, "content", None),
-                    "tool_calls": None,
-                }
-            }
-            if choice.message.tool_calls:
-                c["message"]["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": tc.type,
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        }
-                    }
-                    for tc in choice.message.tool_calls
-                ]
-            raw_resp["choices"].append(c)
-        result["raw_response"] = raw_resp
+        result["raw_response"] = _capture_raw_response(response)
 
     except Exception as e:
         result["success"] = False
@@ -2078,6 +2229,205 @@ async def run_single_eval(
     result["tool_selection_score"] = score_tool_selection(expected_tool, result["actual_tool"])
     result["param_accuracy"] = score_params(expected_params, result["actual_params"])
     result["overall_score"] = compute_overall_score(result["tool_selection_score"], result["param_accuracy"])
+
+    return result
+
+
+# --- Eval Engine: Multi-Turn Eval Execution ---
+
+async def run_multi_turn_eval(
+    target: Target,
+    tools: list[dict],
+    test_case: dict,
+    temperature: float,
+    tool_choice: str = "required",
+) -> dict:
+    """Run a multi-turn test case against one model. Returns result dict.
+
+    Loops up to max_rounds, feeding mock tool responses back to the model
+    until it calls the expected final tool or exhausts rounds.
+    """
+    mt_config = test_case.get("_mt_config", {})
+    max_rounds = mt_config.get("max_rounds", 5)
+    mock_responses = mt_config.get("mock_responses", {})
+    valid_prerequisites = mt_config.get("valid_prerequisites", [])
+    optimal_hops = mt_config.get("optimal_hops", 2)
+
+    expected_tool = _parse_expected_tool(test_case.get("expected_tool"))
+    expected_params = test_case.get("expected_params")
+    if isinstance(expected_params, str):
+        try:
+            expected_params = json.loads(expected_params)
+        except (json.JSONDecodeError, TypeError):
+            expected_params = None
+
+    result = {
+        "model_id": target.model_id,
+        "test_case_id": test_case["id"],
+        "prompt": test_case["prompt"],
+        "expected_tool": expected_tool,
+        "expected_params": expected_params,
+        "actual_tool": None,
+        "actual_params": None,
+        "tool_selection_score": 0.0,
+        "param_accuracy": None,
+        "overall_score": 0.0,
+        "success": True,
+        "error": "",
+        "latency_ms": 0,
+        "raw_request": None,
+        "raw_response": None,
+        # Multi-turn specific fields
+        "multi_turn": True,
+        "tool_chain": [],
+        "rounds_used": 0,
+        "completion_score": 0.0,
+        "efficiency_score": 0.0,
+        "redundancy_penalty": 0.0,
+        "detour_penalty": 0.0,
+        "raw_exchanges": [],
+    }
+
+    messages = [{"role": "user", "content": test_case["prompt"]}]
+
+    base_kwargs = {
+        "model": target.model_id,
+        "tools": tools,
+        "tool_choice": tool_choice,
+        "max_tokens": 1024,
+        "timeout": 60,
+        "num_retries": 1,
+    }
+    if target.api_base:
+        base_kwargs["api_base"] = target.api_base
+    if target.api_key:
+        base_kwargs["api_key"] = target.api_key
+    if "temperature" not in (target.skip_params or []):
+        base_kwargs["temperature"] = temperature
+    if target.skip_params:
+        for p in target.skip_params:
+            if p != "temperature":
+                base_kwargs.pop(p, None)
+
+    total_latency = 0.0
+
+    try:
+        for round_num in range(max_rounds):
+            kwargs = {**base_kwargs, "messages": messages}
+
+            # Capture raw request (sanitize)
+            raw_req = dict(kwargs)
+            raw_req.pop("api_key", None)
+            if "tools" in raw_req:
+                raw_req["tools_summary"] = [t["function"]["name"] for t in raw_req["tools"]]
+                raw_req["tools_count"] = len(raw_req["tools"])
+
+            start = time.perf_counter()
+            try:
+                response = await litellm.acompletion(**kwargs)
+            except Exception:
+                if kwargs.get("tool_choice") == "required":
+                    kwargs["tool_choice"] = "auto"
+                    response = await litellm.acompletion(**kwargs)
+                else:
+                    raise
+            latency_ms = (time.perf_counter() - start) * 1000
+            total_latency += latency_ms
+
+            raw_resp = _capture_raw_response(response)
+            result["raw_exchanges"].append({"request": raw_req, "response": raw_resp})
+
+            message = response.choices[0].message
+
+            # Check if model made a tool call
+            if not message.tool_calls or len(message.tool_calls) == 0:
+                # Model stopped calling tools -- end loop
+                result["rounds_used"] = round_num + 1
+                break
+
+            tool_call = message.tool_calls[0]
+            called_tool = tool_call.function.name
+            try:
+                called_params = json.loads(tool_call.function.arguments)
+            except (json.JSONDecodeError, TypeError):
+                called_params = None
+
+            result["tool_chain"].append({
+                "tool_name": called_tool,
+                "params": called_params,
+                "round": round_num + 1,
+            })
+
+            # Check if this is the expected final tool
+            if _tool_matches(called_tool, expected_tool):
+                result["actual_tool"] = called_tool
+                result["actual_params"] = called_params
+                result["rounds_used"] = round_num + 1
+                break
+
+            # Not the final tool -- look up mock response and continue
+            mock_result = mock_responses.get(called_tool, {"status": "ok"})
+
+            # Append assistant message + tool result to conversation
+            messages.append({
+                "role": "assistant",
+                "content": getattr(message, "content", None) or "",
+                "tool_calls": [
+                    {
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": called_tool,
+                            "arguments": tool_call.function.arguments,
+                        }
+                    }
+                ],
+            })
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(mock_result) if isinstance(mock_result, dict) else str(mock_result),
+            })
+
+            result["rounds_used"] = round_num + 1
+        else:
+            # Hit max rounds without finding the expected tool
+            result["rounds_used"] = max_rounds
+
+        result["latency_ms"] = round(total_latency)
+
+        # Set raw_request/raw_response to first/last exchange for compatibility
+        if result["raw_exchanges"]:
+            result["raw_request"] = result["raw_exchanges"][0]["request"]
+            result["raw_response"] = result["raw_exchanges"][-1]["response"]
+
+        # If model never called the expected tool, actual_tool stays None
+        if result["actual_tool"] is None and result["tool_chain"]:
+            result["actual_tool"] = result["tool_chain"][-1]["tool_name"]
+            result["actual_params"] = result["tool_chain"][-1]["params"]
+
+        # Score using multi-turn scoring
+        scores = score_multi_turn(
+            tool_chain=result["tool_chain"],
+            expected_tool=expected_tool,
+            expected_params=expected_params,
+            valid_prerequisites=valid_prerequisites,
+            optimal_hops=optimal_hops,
+        )
+        result["completion_score"] = scores["completion"]
+        result["efficiency_score"] = scores["efficiency"]
+        result["redundancy_penalty"] = scores["redundancy_penalty"]
+        result["detour_penalty"] = scores["detour_penalty"]
+        result["overall_score"] = scores["overall_score"]
+
+        # Also set individual scores for summary compatibility
+        result["tool_selection_score"] = score_tool_selection(expected_tool, result["actual_tool"])
+        result["param_accuracy"] = score_params(expected_params, result["actual_params"])
+
+    except Exception as e:
+        result["success"] = False
+        result["error"] = sanitize_error(str(e)[:200], target.api_key)
+        return result
 
     return result
 
@@ -2206,7 +2556,20 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
                     for case in cases:
                         if cancel_event.is_set():
                             return
-                        result = await run_single_eval(target, tools, case, temperature, tool_choice)
+                        # Check if this is a multi-turn test case
+                        mt_config = None
+                        if case.get("multi_turn_config"):
+                            try:
+                                mt_config = json.loads(case["multi_turn_config"]) if isinstance(case["multi_turn_config"], str) else case["multi_turn_config"]
+                            except (json.JSONDecodeError, TypeError):
+                                mt_config = None
+
+                        if mt_config and mt_config.get("multi_turn"):
+                            # Inject parsed config into case for the engine
+                            case_with_mt = {**case, "_mt_config": mt_config}
+                            result = await run_multi_turn_eval(target, tools, case_with_mt, temperature, tool_choice)
+                        else:
+                            result = await run_single_eval(target, tools, case, temperature, tool_choice)
                         await queue.put(result)
 
             # Launch provider groups in parallel
@@ -2241,6 +2604,7 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
                 target_map = {t.model_id: t for t in targets}
                 t = target_map.get(item["model_id"])
                 model_display = t.display_name if t else item["model_id"]
+                item["model_name"] = model_display
 
                 yield _sse({
                     "type": "progress",
