@@ -1724,9 +1724,10 @@ async def update_tool_suite(suite_id: str, request: Request, user: dict = Depend
     tools = body.get("tools")
     tools_json = None
     if tools is not None:
-        err = _validate_tools(tools)
-        if err:
-            return JSONResponse({"error": err}, status_code=400)
+        if tools:
+            err = _validate_tools(tools)
+            if err:
+                return JSONResponse({"error": err}, status_code=400)
         tools_json = json.dumps(tools)
     updated = await db.update_tool_suite(suite_id, user["id"], name=name, description=description, tools_json=tools_json)
     if not updated:
