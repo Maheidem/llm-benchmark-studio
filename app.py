@@ -1659,9 +1659,10 @@ async def create_tool_suite(request: Request, user: dict = Depends(auth.get_curr
         return JSONResponse({"error": "name is required"}, status_code=400)
     description = body.get("description", "")
     tools = body.get("tools", [])
-    err = _validate_tools(tools)
-    if err:
-        return JSONResponse({"error": err}, status_code=400)
+    if tools:
+        err = _validate_tools(tools)
+        if err:
+            return JSONResponse({"error": err}, status_code=400)
     suite_id = await db.create_tool_suite(user["id"], name, description, json.dumps(tools))
     return {"status": "ok", "suite_id": suite_id}
 
