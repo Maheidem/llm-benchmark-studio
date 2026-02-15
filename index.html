@@ -54,7 +54,7 @@
             mono: ['Space Mono', 'monospace'],
           },
           colors: {
-            zinc: { 925: '#111113', 850: '#1c1c20' },
+            zinc: { 500: '#85858F', 600: '#8B8B95', 700: '#63636B', 925: '#111113', 850: '#1c1c20' },
             lime: { accent: '#BFFF00' },
             coral: { accent: '#FF3B5C' },
           }
@@ -73,6 +73,10 @@
       --border: #27272A;
       --border-subtle: #1f1f23;
     }
+    /* WCAG AA contrast overrides for Tailwind zinc text utilities */
+    .text-zinc-600 { color: #8B8B95 !important; }
+    .text-zinc-500 { color: #85858F !important; }
+    .text-zinc-700 { color: #63636B !important; }
     * { box-sizing: border-box; }
     body {
       background: #09090B;
@@ -124,7 +128,7 @@
     }
     .model-card:hover { border-color: var(--border); background: var(--surface-raised); }
     .model-card.selected { border-color: var(--lime); background: var(--lime-dim); }
-    .model-card .check-dot { width: 8px; height: 8px; border-radius: 50%; background: #3f3f46; transition: all 0.15s; }
+    .model-card .check-dot { width: 8px; height: 8px; border-radius: 50%; background: #63636B; transition: all 0.15s; }
     .model-card.selected .check-dot { background: var(--lime); box-shadow: 0 0 8px rgba(191,255,0,0.4); }
 
     /* Provider groups */
@@ -136,7 +140,7 @@
     .provider-group-header:hover .provider-group-label { opacity: 1; }
     .provider-group-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
     .provider-group-label { font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.7; transition: opacity 0.15s; }
-    .provider-group-count { font-size: 9px; font-family: 'Space Mono', monospace; color: #52525B; margin-left: auto; }
+    .provider-group-count { font-size: 9px; font-family: 'Space Mono', monospace; color: #8B8B95; margin-left: auto; }
 
     /* Run button */
     .run-btn {
@@ -198,7 +202,7 @@
     .provider-progress-row .ppr-status {
       font-family: 'Outfit', sans-serif;
       font-size: 11px;
-      color: #71717A;
+      color: #85858F;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -227,7 +231,7 @@
     .provider-progress-row .ppr-count {
       font-family: 'Space Mono', monospace;
       font-size: 10px;
-      color: #52525B;
+      color: #8B8B95;
       text-align: right;
       white-space: nowrap;
     }
@@ -251,7 +255,7 @@
     .fade-in { animation: stagger-in 0.3s ease forwards; }
 
     /* Tabs */
-    .tab { padding: 8px 0; font-family: 'Chakra Petch', sans-serif; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; font-size: 12px; border-bottom: 2px solid transparent; transition: all 0.2s; color: #52525B; }
+    .tab { padding: 8px 0; font-family: 'Chakra Petch', sans-serif; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; font-size: 12px; border-bottom: 2px solid transparent; transition: all 0.2s; color: #8B8B95; }
     .tab:hover { color: #A1A1AA; }
     .tab-active { color: var(--lime) !important; border-bottom-color: var(--lime) !important; }
 
@@ -294,7 +298,7 @@
     .big-num { font-family: 'Chakra Petch', sans-serif; font-weight: 700; line-height: 1; }
 
     /* Section label */
-    .section-label { font-family: 'Chakra Petch', sans-serif; font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #52525B; }
+    .section-label { font-family: 'Chakra Petch', sans-serif; font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #8B8B95; }
 
     /* Toast notifications */
     .toast-container { position: fixed; top: 16px; right: 16px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
@@ -316,7 +320,7 @@
     .modal-input:focus { border-color: rgba(191,255,0,0.3); }
     .modal-buttons { display: flex; justify-content: flex-end; gap: 8px; }
     .modal-btn { padding: 6px 16px; border-radius: 4px; font-family: 'Chakra Petch', sans-serif; font-size: 12px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer; transition: all 0.15s; }
-    .modal-btn-cancel { background: transparent; border: 1px solid var(--border-subtle); color: #71717A; }
+    .modal-btn-cancel { background: transparent; border: 1px solid var(--border-subtle); color: #85858F; }
     .modal-btn-cancel:hover { border-color: var(--border); color: #A1A1AA; }
     .modal-btn-confirm { background: var(--lime); border: 1px solid var(--lime); color: #09090B; }
     .modal-btn-confirm:hover { box-shadow: 0 0 12px rgba(191,255,0,0.3); }
@@ -332,7 +336,7 @@
     .error-banner button { flex-shrink: 0; padding: 4px 12px; border-radius: 4px; font-family: 'Chakra Petch', sans-serif; font-size: 11px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; background: rgba(255,59,92,0.15); border: 1px solid rgba(255,59,92,0.3); color: #FF3B5C; cursor: pointer; }
 
     /* Skipped line in progress */
-    .skipped-line { font-family: 'Outfit', sans-serif; font-size: 12px; color: #52525B; padding: 2px 0; }
+    .skipped-line { font-family: 'Outfit', sans-serif; font-size: 12px; color: #8B8B95; padding: 2px 0; }
 
     /* ═══════════════════ Landing Page ═══════════════════ */
     #landingPage { display: none; }
@@ -368,13 +372,13 @@
       font-weight: 500;
       letter-spacing: 0.12em;
       text-transform: uppercase;
-      color: #52525B;
+      color: #8B8B95;
       margin-bottom: 28px;
     }
     .landing-hero .landing-description {
       font-family: 'Outfit', sans-serif;
       font-size: clamp(15px, 2vw, 18px);
-      color: #71717A;
+      color: #85858F;
       line-height: 1.7;
       max-width: 560px;
       margin: 0 auto 40px;
@@ -397,7 +401,7 @@
       border: 1px solid var(--border);
       transition: all 0.2s;
     }
-    .landing-btn-secondary:hover { border-color: #52525B; color: #E4E4E7; }
+    .landing-btn-secondary:hover { border-color: #8B8B95; color: #E4E4E7; }
 
     .landing-features {
       max-width: 960px; margin: 0 auto;
@@ -429,7 +433,7 @@
     }
     .landing-feature-card p {
       font-family: 'Outfit', sans-serif;
-      font-size: 13px; color: #71717A; line-height: 1.6; margin: 0;
+      font-size: 13px; color: #85858F; line-height: 1.6; margin: 0;
     }
 
     .landing-how {
@@ -465,7 +469,7 @@
     }
     .landing-step p {
       font-family: 'Outfit', sans-serif;
-      font-size: 13px; color: #52525B; line-height: 1.5; margin: 0;
+      font-size: 13px; color: #8B8B95; line-height: 1.5; margin: 0;
     }
 
     .landing-footer {
@@ -476,7 +480,7 @@
     }
     .landing-footer p {
       font-family: 'Outfit', sans-serif;
-      font-size: 13px; color: #3f3f46; margin: 0;
+      font-size: 13px; color: #63636B; margin: 0;
     }
 
     /* Landing page animations */
@@ -930,8 +934,8 @@
         <div class="flex items-center justify-between mt-3">
           <span id="auditPageInfo" class="text-[10px] font-mono text-zinc-600"></span>
           <div class="flex gap-2">
-            <button onclick="auditPrevPage()" id="auditPrevBtn" class="text-[10px] font-display tracking-wider uppercase px-3 py-1 rounded-sm" style="border:1px solid var(--border-subtle);color:#71717A;" disabled>Prev</button>
-            <button onclick="auditNextPage()" id="auditNextBtn" class="text-[10px] font-display tracking-wider uppercase px-3 py-1 rounded-sm" style="border:1px solid var(--border-subtle);color:#71717A;">Next</button>
+            <button onclick="auditPrevPage()" id="auditPrevBtn" class="text-[10px] font-display tracking-wider uppercase px-3 py-1 rounded-sm" style="border:1px solid var(--border-subtle);color:#85858F;" disabled>Prev</button>
+            <button onclick="auditNextPage()" id="auditNextBtn" class="text-[10px] font-display tracking-wider uppercase px-3 py-1 rounded-sm" style="border:1px solid var(--border-subtle);color:#85858F;">Next</button>
           </div>
         </div>
       </div>
@@ -948,8 +952,8 @@
         </div>
         <div class="flex items-center gap-2">
           <button onclick="analyticsShowLeaderboard()" id="an-btn-leaderboard" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm transition-colors" style="color:var(--lime);border:1px solid rgba(191,255,0,0.3);background:var(--lime-dim);">Leaderboard</button>
-          <button onclick="analyticsShowCompare()" id="an-btn-compare" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm transition-colors" style="color:#71717A;border:1px solid var(--border-subtle);">Compare</button>
-          <button onclick="analyticsShowTrends()" id="an-btn-trends" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm transition-colors" style="color:#71717A;border:1px solid var(--border-subtle);">Trends</button>
+          <button onclick="analyticsShowCompare()" id="an-btn-compare" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm transition-colors" style="color:#85858F;border:1px solid var(--border-subtle);">Compare</button>
+          <button onclick="analyticsShowTrends()" id="an-btn-trends" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm transition-colors" style="color:#85858F;border:1px solid var(--border-subtle);">Trends</button>
         </div>
       </div>
 
@@ -958,7 +962,7 @@
         <div class="flex items-center gap-3 mb-4">
           <div class="flex items-center gap-1">
             <button onclick="anSetLeaderboardType('benchmark')" id="an-lb-type-benchmark" class="text-[10px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color:var(--lime);border:1px solid rgba(191,255,0,0.3);background:var(--lime-dim);">Benchmark</button>
-            <button onclick="anSetLeaderboardType('tool_eval')" id="an-lb-type-tool_eval" class="text-[10px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color:#71717A;border:1px solid var(--border-subtle);">Tool Eval</button>
+            <button onclick="anSetLeaderboardType('tool_eval')" id="an-lb-type-tool_eval" class="text-[10px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color:#85858F;border:1px solid var(--border-subtle);">Tool Eval</button>
           </div>
           <select id="anLeaderboardPeriod" onchange="analyticsLoadLeaderboard()" class="text-xs font-mono px-2 py-1 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;">
             <option value="7d">7 Days</option>
@@ -994,7 +998,7 @@
         <div class="card rounded-md p-5 mb-6">
           <div class="flex items-center justify-between mb-4">
             <span class="section-label">Select Runs to Compare (2-4)</span>
-            <button onclick="analyticsLoadCompare()" id="anCompareBtn" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm transition-colors" style="color:#71717A;border:1px solid var(--border-subtle);cursor:not-allowed;opacity:0.5;" disabled>Compare</button>
+            <button onclick="analyticsLoadCompare()" id="anCompareBtn" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm transition-colors" style="color:#85858F;border:1px solid var(--border-subtle);cursor:not-allowed;opacity:0.5;" disabled>Compare</button>
           </div>
           <div id="anCompareRunsList" class="space-y-2 max-h-64 overflow-y-auto">
             <p class="text-zinc-600 text-xs font-body">Loading recent runs...</p>
@@ -1431,7 +1435,7 @@
 
     <!-- App version footer -->
     <div id="app-version-footer" style="text-align:center; padding:12px 0 16px; margin-top:24px;">
-      <span id="app-version" style="font-family:'Space Mono',monospace; font-size:11px; color:#3f3f46;"></span>
+      <span id="app-version" style="font-family:'Space Mono',monospace; font-size:11px; color:#63636B;"></span>
     </div>
 
   </main>
@@ -1560,7 +1564,7 @@
     function showDoubleInputModal(title, fields, onConfirm) {
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
-      let fieldsHtml = fields.map((f, i) => `<div style="margin-bottom:${i < fields.length-1 ? '12px' : '16px'}"><div style="font-size:11px;color:#71717A;margin-bottom:4px;font-family:'Chakra Petch',sans-serif;text-transform:uppercase;letter-spacing:0.04em">${f.label}</div><input class="modal-input" style="margin-bottom:0" placeholder="${f.placeholder || ''}" ${f.type ? `type="${f.type}"` : ''}></div>`).join('');
+      let fieldsHtml = fields.map((f, i) => `<div style="margin-bottom:${i < fields.length-1 ? '12px' : '16px'}"><div style="font-size:11px;color:#85858F;margin-bottom:4px;font-family:'Chakra Petch',sans-serif;text-transform:uppercase;letter-spacing:0.04em">${f.label}</div><input class="modal-input" style="margin-bottom:0" placeholder="${f.placeholder || ''}" ${f.type ? `type="${f.type}"` : ''}></div>`).join('');
       overlay.innerHTML = `<div class="modal-box">
         <div class="modal-title">${title}</div>
         ${fieldsHtml}
@@ -1765,7 +1769,7 @@
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2">
                 <div class="text-[13px] font-medium text-zinc-200 truncate font-body">${m.display_name}</div>
-                ${m.context_window ? `<span class="text-[9px] font-mono px-1.5 py-0.5 rounded-sm" style="background:rgba(255,255,255,0.04);color:#71717A;">${formatCtxSize(m.context_window)}</span>` : ''}
+                ${m.context_window ? `<span class="text-[9px] font-mono px-1.5 py-0.5 rounded-sm" style="background:rgba(255,255,255,0.04);color:#85858F;">${formatCtxSize(m.context_window)}</span>` : ''}
               </div>
             </div>
           `;
@@ -2206,7 +2210,7 @@
             <div class="big-num text-2xl text-zinc-100">${fastestTTFT.ttft_ms.toFixed(0)}<span class="text-xs font-normal text-zinc-500">ms</span></div>
             <div class="text-[11px] text-zinc-600 mt-1 font-body">${fastestTTFT.model}</div>
           </div>
-          <div class="stat-card card rounded-sm p-4" style="border-left: 3px solid #52525B">
+          <div class="stat-card card rounded-sm p-4" style="border-left: 3px solid #8B8B95">
             <div class="section-label mb-2">Models</div>
             <div class="big-num text-2xl text-zinc-100">${totalModels}</div>
             <div class="text-[11px] text-zinc-600 mt-1 font-body">${agg.reduce((s,a) => s + a.runs, 0)} total runs</div>
@@ -2243,7 +2247,7 @@
               <div class="text-[11px] text-zinc-600 mt-1 font-body">${bestMax.model}</div>
             ` : `<div class="text-zinc-600 text-sm font-body">N/A</div>`}
           </div>
-          <div class="stat-card card rounded-sm p-4" style="border-left: 3px solid #52525B">
+          <div class="stat-card card rounded-sm p-4" style="border-left: 3px solid #8B8B95">
             <div class="section-label mb-2">Tiers Tested</div>
             <div class="big-num text-2xl text-zinc-100">${new Set(agg.map(a => a.context_tokens)).size}</div>
             <div class="text-[11px] text-zinc-600 mt-1 font-body">${totalRuns} total runs</div>
@@ -2310,8 +2314,8 @@
             scales: {
               x: {
                 grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
-                ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } },
-                title: { display: true, text: 'TOKENS / SECOND', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } }
+                ticks: { color: '#8B8B95', font: { family: 'Space Mono', size: 11 } },
+                title: { display: true, text: 'TOKENS / SECOND', color: '#63636B', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } }
               },
               y: {
                 grid: { display: false, drawBorder: false },
@@ -2389,13 +2393,13 @@
             scales: {
               x: {
                 grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
-                ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } },
-                title: { display: true, text: 'CONTEXT SIZE (TOKENS)', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } }
+                ticks: { color: '#8B8B95', font: { family: 'Space Mono', size: 11 } },
+                title: { display: true, text: 'CONTEXT SIZE (TOKENS)', color: '#63636B', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } }
               },
               y: {
                 grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
-                ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } },
-                title: { display: true, text: 'TOKENS / SECOND', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { right: 12 } }
+                ticks: { color: '#8B8B95', font: { family: 'Space Mono', size: 11 } },
+                title: { display: true, text: 'TOKENS / SECOND', color: '#63636B', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { right: 12 } }
               }
             }
           }
@@ -2507,7 +2511,7 @@
               }
             },
             scales: {
-              x: { grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false }, ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } }, title: { display: true, text: 'TIME TO FIRST TOKEN (MS)', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } } },
+              x: { grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false }, ticks: { color: '#8B8B95', font: { family: 'Space Mono', size: 11 } }, title: { display: true, text: 'TIME TO FIRST TOKEN (MS)', color: '#63636B', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } } },
               y: { grid: { display: false, drawBorder: false }, ticks: { color: '#A1A1AA', font: { family: 'Outfit', size: 12, weight: '500' } } }
             }
           }
@@ -2539,8 +2543,8 @@
               tooltip: { backgroundColor: '#1c1c20', borderColor: '#27272A', borderWidth: 1, titleFont: { family: 'Outfit', size: 13, weight: '500' }, bodyFont: { family: 'Space Mono', size: 12 }, padding: 12, cornerRadius: 2, callbacks: { title: c => `Context: ${c[0].label} tokens`, label: c => c.parsed.y !== null ? ` ${c.dataset.label}: ${c.parsed.y.toFixed(0)}ms` : ` ${c.dataset.label}: N/A` } }
             },
             scales: {
-              x: { grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false }, ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } }, title: { display: true, text: 'CONTEXT SIZE (TOKENS)', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } } },
-              y: { grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false }, ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } }, title: { display: true, text: 'TIME TO FIRST TOKEN (MS)', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { right: 12 } } }
+              x: { grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false }, ticks: { color: '#8B8B95', font: { family: 'Space Mono', size: 11 } }, title: { display: true, text: 'CONTEXT SIZE (TOKENS)', color: '#63636B', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } } },
+              y: { grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false }, ticks: { color: '#8B8B95', font: { family: 'Space Mono', size: 11 } }, title: { display: true, text: 'TIME TO FIRST TOKEN (MS)', color: '#63636B', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { right: 12 } } }
             }
           }
         });
@@ -2596,8 +2600,8 @@
             }
           },
           scales: {
-            x: { grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false }, ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } }, title: { display: true, text: 'TOKENS / SECOND', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } } },
-            y: { grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false }, ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } }, title: { display: true, text: 'TTFT (MS)', color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { right: 12 } } }
+            x: { grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false }, ticks: { color: '#8B8B95', font: { family: 'Space Mono', size: 11 } }, title: { display: true, text: 'TOKENS / SECOND', color: '#63636B', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { top: 12 } } },
+            y: { grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false }, ticks: { color: '#8B8B95', font: { family: 'Space Mono', size: 11 } }, title: { display: true, text: 'TTFT (MS)', color: '#63636B', font: { family: 'Chakra Petch', size: 10, weight: '600' }, padding: { right: 12 } } }
           }
         }
       });
@@ -3449,7 +3453,7 @@
             indicator.className = 'health-indicator';
             indicator.style.cssText = 'display:inline-flex;align-items:center;gap:4px;margin-left:4px;';
             if (health.status === 'ok') {
-              indicator.innerHTML = `<span style="width:6px;height:6px;border-radius:50%;background:#22C55E;display:inline-block;box-shadow:0 0 6px rgba(34,197,94,0.4)"></span><span style="font-size:9px;font-family:'Space Mono',monospace;color:#52525B">${health.latency_ms}ms</span>`;
+              indicator.innerHTML = `<span style="width:6px;height:6px;border-radius:50%;background:#22C55E;display:inline-block;box-shadow:0 0 6px rgba(34,197,94,0.4)"></span><span style="font-size:9px;font-family:'Space Mono',monospace;color:#8B8B95">${health.latency_ms}ms</span>`;
             } else {
               indicator.innerHTML = `<span style="width:6px;height:6px;border-radius:50%;background:#FF3B5C;display:inline-block;box-shadow:0 0 6px rgba(255,59,92,0.4)"></span><span style="font-size:9px;font-family:'Space Mono',monospace;color:#FF3B5C" title="${health.error || ''}">err</span>`;
             }
@@ -3982,7 +3986,7 @@
             <td class="px-3 py-2 text-zinc-500">${lastLogin}</td>
             <td class="px-3 py-2 text-zinc-500">${created}</td>
             <td class="px-3 py-2 text-right" style="white-space:nowrap;">
-              <button onclick="showRateLimitModal('${u.id}', '${escapeHtml(u.email)}')" class="text-[10px] font-display tracking-wider uppercase px-2 py-1 rounded-sm" style="border:1px solid var(--border-subtle);color:#71717A;">Limits</button>
+              <button onclick="showRateLimitModal('${u.id}', '${escapeHtml(u.email)}')" class="text-[10px] font-display tracking-wider uppercase px-2 py-1 rounded-sm" style="border:1px solid var(--border-subtle);color:#85858F;">Limits</button>
               ${isCurrentUser ? '' : `<button onclick="deleteUser('${u.id}', '${escapeHtml(u.email)}')" class="text-[10px] font-display tracking-wider uppercase px-2 py-1 rounded-sm ml-1" style="border:1px solid var(--coral);color:var(--coral);">Delete</button>`}
             </td>
           </tr>`;
@@ -4209,7 +4213,7 @@
           btn.style.border = '1px solid rgba(191,255,0,0.3)';
           btn.style.background = 'var(--lime-dim)';
         } else {
-          btn.style.color = '#71717A';
+          btn.style.color = '#85858F';
           btn.style.border = '1px solid var(--border-subtle)';
           btn.style.background = 'transparent';
         }
@@ -4247,11 +4251,11 @@
       const btnT = document.getElementById('an-lb-type-tool_eval');
       if (type === 'benchmark') {
         btnB.style.color = 'var(--lime)'; btnB.style.border = '1px solid rgba(191,255,0,0.3)'; btnB.style.background = 'var(--lime-dim)';
-        btnT.style.color = '#71717A'; btnT.style.border = '1px solid var(--border-subtle)'; btnT.style.background = 'transparent';
+        btnT.style.color = '#85858F'; btnT.style.border = '1px solid var(--border-subtle)'; btnT.style.background = 'transparent';
         anLeaderboardSortKey = 'avg_tps';
       } else {
         btnT.style.color = 'var(--lime)'; btnT.style.border = '1px solid rgba(191,255,0,0.3)'; btnT.style.background = 'var(--lime-dim)';
-        btnB.style.color = '#71717A'; btnB.style.border = '1px solid var(--border-subtle)'; btnB.style.background = 'transparent';
+        btnB.style.color = '#85858F'; btnB.style.border = '1px solid var(--border-subtle)'; btnB.style.background = 'transparent';
         anLeaderboardSortKey = 'avg_overall_pct';
       }
       anLeaderboardSortAsc = false;
@@ -4411,7 +4415,7 @@
         btn.style.opacity = '1';
       } else {
         btn.disabled = true;
-        btn.style.color = '#71717A';
+        btn.style.color = '#85858F';
         btn.style.border = '1px solid var(--border-subtle)';
         btn.style.cursor = 'not-allowed';
         btn.style.opacity = '0.5';
@@ -4502,7 +4506,7 @@
         plugins: {
           legend: {
             display: true,
-            labels: { color: '#71717A', font: { family: 'Outfit', size: 11 }, boxWidth: 12, padding: 16 }
+            labels: { color: '#85858F', font: { family: 'Outfit', size: 11 }, boxWidth: 12, padding: 16 }
           },
           tooltip: {
             backgroundColor: '#1c1c20', borderColor: '#27272A', borderWidth: 1,
@@ -4515,12 +4519,12 @@
         scales: {
           x: {
             grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
-            ticks: { color: '#71717A', font: { family: 'Outfit', size: 11 }, maxRotation: 45 }
+            ticks: { color: '#85858F', font: { family: 'Outfit', size: 11 }, maxRotation: 45 }
           },
           y: {
             grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
-            ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } },
-            title: { display: true, text: title, color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' } }
+            ticks: { color: '#8B8B95', font: { family: 'Space Mono', size: 11 } },
+            title: { display: true, text: title, color: '#63636B', font: { family: 'Chakra Petch', size: 10, weight: '600' } }
           }
         }
       });
@@ -4646,7 +4650,7 @@
         plugins: {
           legend: {
             display: true,
-            labels: { color: '#71717A', font: { family: 'Outfit', size: 11 }, boxWidth: 12, padding: 16 }
+            labels: { color: '#85858F', font: { family: 'Outfit', size: 11 }, boxWidth: 12, padding: 16 }
           },
           tooltip: {
             backgroundColor: '#1c1c20', borderColor: '#27272A', borderWidth: 1,
@@ -4660,12 +4664,12 @@
             type: 'time',
             time: { unit: 'day', tooltipFormat: 'MMM d, yyyy HH:mm' },
             grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
-            ticks: { color: '#52525B', font: { family: 'Space Mono', size: 10 } }
+            ticks: { color: '#8B8B95', font: { family: 'Space Mono', size: 10 } }
           },
           y: {
             grid: { color: 'rgba(255,255,255,0.03)', drawBorder: false },
-            ticks: { color: '#52525B', font: { family: 'Space Mono', size: 11 } },
-            title: { display: true, text: yTitle, color: '#3f3f46', font: { family: 'Chakra Petch', size: 10, weight: '600' } }
+            ticks: { color: '#8B8B95', font: { family: 'Space Mono', size: 11 } },
+            title: { display: true, text: yTitle, color: '#63636B', font: { family: 'Chakra Petch', size: 10, weight: '600' } }
           }
         }
       });
@@ -5778,7 +5782,7 @@
         const models = r.models_json ? (typeof r.models_json === 'string' ? JSON.parse(r.models_json) : r.models_json) : [];
         const summaries = r.summary_json ? (typeof r.summary_json === 'string' ? JSON.parse(r.summary_json) : r.summary_json) : [];
         const avgOverall = summaries.length > 0 ? (summaries.reduce((s, x) => s + (x.overall_pct || 0), 0) / summaries.length).toFixed(1) : '-';
-        const overallColor = avgOverall !== '-' ? _teScoreColor(parseFloat(avgOverall)) : '#71717A';
+        const overallColor = avgOverall !== '-' ? _teScoreColor(parseFloat(avgOverall)) : '#85858F';
         const ts = _teTimeAgo(r.timestamp);
         const modelStr = models.length <= 2 ? models.join(', ') : models.length + ' models';
         return `<tr>
@@ -6188,30 +6192,30 @@
         <h2 style="color:var(--lime); margin-top:0; font-family:'Chakra Petch',sans-serif; font-size:22px; font-weight:700;">Welcome to Benchmark Studio!</h2>
         <p style="font-family:'Outfit',sans-serif; color:#A1A1AA; margin-bottom:20px;">Let's get you set up in 3 quick steps.</p>
         <h3 style="font-family:'Chakra Petch',sans-serif; font-size:14px; font-weight:600; color:#e0e0e0; text-transform:uppercase; letter-spacing:0.05em;">Step 1 of 3: Choose Your Provider</h3>
-        <p style="color:#71717A; font-size:13px; font-family:'Outfit',sans-serif;">Pick a provider to get started. You can add more later in Settings.</p>
+        <p style="color:#85858F; font-size:13px; font-family:'Outfit',sans-serif;">Pick a provider to get started. You can add more later in Settings.</p>
 
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:16px 0;">
           <div class="onb-provider-card" onclick="onbSelectProvider('OpenAI','OPENAI_API_KEY','openai',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
             <div style="font-weight:600; color:#e0e0e0; font-size:14px; font-family:'Outfit',sans-serif;">OpenAI</div>
-            <div style="color:#71717A; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">GPT models (gpt-5, gpt-5-nano)</div>
+            <div style="color:#85858F; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">GPT models (gpt-5, gpt-5-nano)</div>
           </div>
           <div class="onb-provider-card" onclick="onbSelectProvider('Anthropic','ANTHROPIC_API_KEY','anthropic',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
             <div style="font-weight:600; color:#e0e0e0; font-size:14px; font-family:'Outfit',sans-serif;">Anthropic</div>
-            <div style="color:#71717A; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">Claude models (Sonnet, Haiku)</div>
+            <div style="color:#85858F; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">Claude models (Sonnet, Haiku)</div>
           </div>
           <div class="onb-provider-card" onclick="onbSelectProvider('Google Gemini','GEMINI_API_KEY','google_gemini',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
             <div style="font-weight:600; color:#e0e0e0; font-size:14px; font-family:'Outfit',sans-serif;">Google Gemini</div>
-            <div style="color:#71717A; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">Gemini models</div>
+            <div style="color:#85858F; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">Gemini models</div>
           </div>
           <div class="onb-provider-card" onclick="onbSelectProvider('custom','','',this)" style="border:1px solid var(--border-subtle); background:var(--surface); border-radius:8px; padding:14px; cursor:pointer; transition:all 0.15s;">
             <div style="font-weight:600; color:#e0e0e0; font-size:14px; font-family:'Outfit',sans-serif;">Custom</div>
-            <div style="color:#71717A; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">Other provider or self-hosted</div>
+            <div style="color:#85858F; font-size:12px; font-family:'Outfit',sans-serif; margin-top:4px;">Other provider or self-hosted</div>
           </div>
         </div>
 
         <!-- API key input (shown when OpenAI/Anthropic/Gemini selected) -->
         <div id="onb-key-input-area" style="display:none; margin:12px 0;">
-          <label id="onb-key-label" style="font-size:12px; color:#71717A; font-family:'Outfit',sans-serif; display:block; margin-bottom:6px;"></label>
+          <label id="onb-key-label" style="font-size:12px; color:#85858F; font-family:'Outfit',sans-serif; display:block; margin-bottom:6px;"></label>
           <div style="display:flex; gap:8px;">
             <input id="onb-key-input" type="password" placeholder="" style="flex:1; padding:8px 12px; border-radius:6px; border:1px solid var(--border-subtle); background:rgba(255,255,255,0.03); color:#e0e0e0; font-family:'Space Mono',monospace; font-size:13px; outline:none;" />
             <button onclick="onbSaveKey()" style="background:var(--lime); color:#000; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:bold; font-family:'Outfit',sans-serif; font-size:13px; white-space:nowrap;">Save Key</button>
@@ -6225,16 +6229,16 @@
         </div>
 
         <div style="display:flex; justify-content:space-between; margin-top:24px;">
-          <button onclick="onbSkip()" style="background:transparent; border:1px solid var(--border); color:#71717A; padding:8px 20px; border-radius:6px; cursor:pointer; font-family:'Outfit',sans-serif;">Skip All</button>
+          <button onclick="onbSkip()" style="background:transparent; border:1px solid var(--border); color:#85858F; padding:8px 20px; border-radius:6px; cursor:pointer; font-family:'Outfit',sans-serif;">Skip All</button>
           <button onclick="onbNext(2)" style="background:var(--lime); color:#000; border:none; padding:8px 20px; border-radius:6px; cursor:pointer; font-weight:bold; font-family:'Outfit',sans-serif;">Next Step</button>
         </div>
       </div>
       <div id="onb-step-2" style="display:none;">
         <h2 style="color:var(--lime); margin-top:0; font-family:'Chakra Petch',sans-serif; font-size:22px; font-weight:700;">Step 2 of 3: Quick Test</h2>
         <p style="font-family:'Outfit',sans-serif; color:#A1A1AA;">Want to run a quick benchmark with one model to verify your setup?</p>
-        <p style="color:#71717A; font-size:13px; font-family:'Outfit',sans-serif;">This will run a single benchmark with the first available model. Takes about 10 seconds.</p>
+        <p style="color:#85858F; font-size:13px; font-family:'Outfit',sans-serif;">This will run a single benchmark with the first available model. Takes about 10 seconds.</p>
         <div style="display:flex; justify-content:space-between; margin-top:24px;">
-          <button onclick="onbNext(3)" style="background:transparent; border:1px solid var(--border); color:#71717A; padding:8px 20px; border-radius:6px; cursor:pointer; font-family:'Outfit',sans-serif;">Skip</button>
+          <button onclick="onbNext(3)" style="background:transparent; border:1px solid var(--border); color:#85858F; padding:8px 20px; border-radius:6px; cursor:pointer; font-family:'Outfit',sans-serif;">Skip</button>
           <button onclick="onbNext(3)" style="background:var(--lime); color:#000; border:none; padding:8px 20px; border-radius:6px; cursor:pointer; font-weight:bold; font-family:'Outfit',sans-serif;">Next Step</button>
         </div>
       </div>
