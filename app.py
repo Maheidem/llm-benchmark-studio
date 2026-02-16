@@ -4703,6 +4703,64 @@ async def validate_provider_params(request: Request, user: dict = Depends(auth.g
 
 
 # ---------------------------------------------------------------------------
+# Phase 10 Settings API
+# ---------------------------------------------------------------------------
+
+PHASE10_DEFAULTS = {
+    "judge": {
+        "enabled": False,
+        "model_id": "",
+        "mode": "post_eval",
+        "temperature": 0.0,
+        "max_tokens": 4096,
+    },
+    "param_tuner": {
+        "max_combinations": 50,
+        "temp_min": 0.0,
+        "temp_max": 1.0,
+        "temp_step": 0.5,
+        "top_p_min": 0.5,
+        "top_p_max": 1.0,
+        "top_p_step": 0.25,
+    },
+    "prompt_tuner": {
+        "mode": "quick",
+        "generations": 3,
+        "population_size": 5,
+        "max_api_calls": 100,
+    },
+}
+
+
+@app.get("/api/settings/phase10")
+async def get_phase10_settings(user: dict = Depends(auth.get_current_user)):
+    """Return Phase 10 feature settings (judge, param tuner, prompt tuner)."""
+    config = await _get_user_config(user["id"])
+    return {
+        "judge": {**PHASE10_DEFAULTS["judge"], **config.get("judge_defaults", {})},
+        "param_tuner": {**PHASE10_DEFAULTS["param_tuner"], **config.get("param_tuner_defaults", {})},
+        "prompt_tuner": {**PHASE10_DEFAULTS["prompt_tuner"], **config.get("prompt_tuner_defaults", {})},
+    }
+
+
+@app.put("/api/settings/phase10")
+async def save_phase10_settings(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Save Phase 10 feature settings."""
+    body = await request.json()
+    config = await _get_user_config(user["id"])
+
+    # Validate and merge each section
+    allowed_sections = {"judge", "param_tuner", "prompt_tuner"}
+    for section in allowed_sections:
+        if section in body and isinstance(body[section], dict):
+            config_key = f"{section}_defaults"
+            config[config_key] = {**PHASE10_DEFAULTS[section], **body[section]}
+
+    await _save_user_config(user["id"], config)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # Async benchmark execution (used by SSE endpoint)
 # ---------------------------------------------------------------------------
 
