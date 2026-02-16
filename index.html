@@ -748,9 +748,6 @@
         </div>
       </div>
 
-      <!-- PROVIDER PARAMETERS -->
-      <div id="ppBenchmarkPanel" class="hidden mb-6 stagger"></div>
-
       <!-- RUN BUTTON -->
       <div class="flex justify-center mb-10 stagger">
         <button id="runBtn" onclick="startBenchmark()" class="run-btn px-12 py-3 rounded-sm text-sm flex items-center gap-3">
@@ -1308,9 +1305,17 @@
             </div>
           </div>
           <div id="teModelGrid" class="flex flex-col gap-1"></div>
-          <!-- Provider Parameters (Tool Eval) -->
-          <div id="ppToolEvalPanel" class="hidden mt-4"></div>
-          <div class="flex items-center gap-4 mt-4 pt-4" style="border-top:1px solid var(--border-subtle)">
+        </div>
+
+        <!-- Provider Parameters (Tool Eval) — renders its own card when models selected -->
+        <div id="ppToolEvalPanel" class="hidden mb-6"></div>
+
+        <!-- Eval Settings -->
+        <div class="card rounded-md p-5 mb-6">
+          <div class="flex items-center justify-between mb-4">
+            <label class="section-label">Eval Settings</label>
+          </div>
+          <div class="flex items-center gap-4">
             <div>
               <span class="text-zinc-500 font-body text-xs">Temperature</span>
               <input id="teTemperature" type="number" min="0" max="2" step="0.1" value="0.0" class="ml-2 w-16 px-2 py-1 rounded-sm text-sm font-mono text-zinc-200 text-center" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
@@ -2335,7 +2340,6 @@
         }
         renderTierChips();
         ppLoadRegistry(); // async, non-blocking -- upgrades client-side fallback
-        ppRenderPanel('benchmark');
       } catch (e) {
         console.error('Failed to load config:', e);
         document.getElementById('initErrorBanner').classList.remove('hidden');
@@ -2379,7 +2383,6 @@
             if (allSelected) { selectedModels.delete(c.dataset.modelId); c.classList.remove('selected'); }
             else { selectedModels.add(c.dataset.modelId); c.classList.add('selected'); }
           });
-          ppOnModelSelectionChange('benchmark');
         };
         group.appendChild(header);
 
@@ -2416,7 +2419,6 @@
         selectedModels.add(modelId);
         card.classList.add('selected');
       }
-      ppOnModelSelectionChange('benchmark');
     }
 
     function selectAll() {
@@ -2424,13 +2426,11 @@
         selectedModels.add(card.dataset.modelId);
         card.classList.add('selected');
       });
-      ppOnModelSelectionChange('benchmark');
     }
 
     function selectNone() {
       selectedModels.clear();
       document.querySelectorAll('#modelGrid .model-card').forEach(c => c.classList.remove('selected'));
-      ppOnModelSelectionChange('benchmark');
     }
 
     // -------------------------------------------------------------------
@@ -2478,7 +2478,6 @@
       document.getElementById('sseBanner').classList.add('hidden');
       document.getElementById('resultsSection').classList.add('hidden');
 
-      const ppParams = ppCollectParams('benchmark');
       const body = overrideBody || {
         models: Array.from(selectedModels),
         runs: parseInt(document.getElementById('runs').value),
@@ -2487,7 +2486,6 @@
         prompt: document.getElementById('prompt').value,
         context_tiers: Array.from(selectedTiers).sort((a, b) => a - b),
         warmup: document.getElementById('warmupToggle').checked,
-        ...(ppParams ? { provider_params: ppParams } : {}),
       };
       _lastBenchmarkBody = body;
 
