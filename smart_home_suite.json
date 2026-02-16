@@ -1,0 +1,356 @@
+{
+  "name": "Smart Home Assistant",
+  "description": "10 tools of incremental complexity for testing tool calling accuracy",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_time",
+        "description": "Returns the current date and time",
+        "parameters": { "type": "object", "properties": {}, "required": [] }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get current weather for a city",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": { "type": "string", "description": "City name, e.g. 'Paris'" }
+          },
+          "required": ["city"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "set_timer",
+        "description": "Set a countdown timer",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "minutes": { "type": "integer", "description": "Duration in minutes" },
+            "label": { "type": "string", "description": "Optional label for the timer" }
+          },
+          "required": ["minutes"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "control_lights",
+        "description": "Turn lights on or off in a specific room",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "room": { "type": "string", "description": "Room name" },
+            "action": { "type": "string", "enum": ["on", "off"], "description": "Whether to turn lights on or off" }
+          },
+          "required": ["room", "action"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "set_thermostat",
+        "description": "Set the thermostat to a target temperature in a specific room",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "room": { "type": "string", "description": "Room name" },
+            "temperature": { "type": "number", "description": "Target temperature in Celsius (15-30)" },
+            "mode": { "type": "string", "enum": ["heat", "cool", "auto"], "description": "HVAC mode" }
+          },
+          "required": ["room", "temperature"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "play_playlist",
+        "description": "Play music from a playlist on specified speakers",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "playlist": { "type": "string", "description": "Playlist name" },
+            "speakers": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "List of speaker names to play on, e.g. ['kitchen', 'bedroom']"
+            },
+            "shuffle": { "type": "boolean", "description": "Whether to shuffle the playlist" }
+          },
+          "required": ["playlist", "speakers"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "send_notification",
+        "description": "Send a notification to a household member",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "recipient": { "type": "string", "description": "Name of the person" },
+            "message": { "type": "string", "description": "Notification text" },
+            "delivery": {
+              "type": "object",
+              "description": "Delivery preferences",
+              "properties": {
+                "method": { "type": "string", "enum": ["push", "sms", "email"], "description": "How to deliver" },
+                "urgent": { "type": "boolean", "description": "Mark as urgent" }
+              },
+              "required": ["method"]
+            }
+          },
+          "required": ["recipient", "message", "delivery"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "create_shopping_list",
+        "description": "Create a shopping list with items and quantities",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "list_name": { "type": "string", "description": "Name for the shopping list" },
+            "items": {
+              "type": "array",
+              "description": "Items to add",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string", "description": "Item name" },
+                  "quantity": { "type": "integer", "description": "How many" },
+                  "category": { "type": "string", "enum": ["produce", "dairy", "meat", "pantry", "household", "other"], "description": "Aisle category" }
+                },
+                "required": ["name", "quantity"]
+              }
+            },
+            "store": { "type": "string", "description": "Preferred store name" }
+          },
+          "required": ["list_name", "items"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "create_routine",
+        "description": "Create an automation routine that triggers actions based on conditions",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string", "description": "Routine name" },
+            "trigger": {
+              "type": "object",
+              "description": "When to activate",
+              "properties": {
+                "type": { "type": "string", "enum": ["time", "event", "sensor"], "description": "Trigger type" },
+                "value": { "type": "string", "description": "Trigger value, e.g. '07:00', 'door_open', 'temp>25'" }
+              },
+              "required": ["type", "value"]
+            },
+            "actions": {
+              "type": "array",
+              "description": "Actions to execute in order",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "device": { "type": "string", "description": "Device name" },
+                  "command": { "type": "string", "description": "Command to execute" },
+                  "delay_seconds": { "type": "integer", "description": "Wait before this action" }
+                },
+                "required": ["device", "command"]
+              }
+            },
+            "active_days": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] },
+              "description": "Days when routine is active"
+            },
+            "enabled": { "type": "boolean", "description": "Whether the routine is active" }
+          },
+          "required": ["name", "trigger", "actions"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "schedule_event",
+        "description": "Schedule a calendar event with attendees, location, and recurrence rules",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": { "type": "string", "description": "Event title" },
+            "start_time": { "type": "string", "description": "ISO 8601 datetime, e.g. '2026-03-01T09:00:00'" },
+            "duration_minutes": { "type": "integer", "description": "Event duration in minutes" },
+            "location": {
+              "type": "object",
+              "description": "Event location",
+              "properties": {
+                "type": { "type": "string", "enum": ["physical", "virtual", "hybrid"], "description": "Location type" },
+                "address": { "type": "string", "description": "Physical address if applicable" },
+                "meeting_url": { "type": "string", "description": "Video call URL if applicable" },
+                "room": { "type": "string", "description": "Room name if at home" }
+              },
+              "required": ["type"]
+            },
+            "attendees": {
+              "type": "array",
+              "description": "People to invite",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string", "description": "Person's name" },
+                  "email": { "type": "string", "description": "Email address" },
+                  "role": { "type": "string", "enum": ["required", "optional", "organizer"], "description": "Attendance requirement" }
+                },
+                "required": ["name", "role"]
+              }
+            },
+            "recurrence": {
+              "type": "object",
+              "description": "Recurrence rules for repeating events",
+              "properties": {
+                "frequency": { "type": "string", "enum": ["daily", "weekly", "monthly", "yearly"], "description": "How often" },
+                "interval": { "type": "integer", "description": "Every N frequency units (e.g. 2 = every 2 weeks)" },
+                "end_date": { "type": "string", "description": "ISO 8601 date when recurrence stops" },
+                "exceptions": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "ISO 8601 dates to skip"
+                }
+              },
+              "required": ["frequency"]
+            },
+            "reminders": {
+              "type": "array",
+              "description": "When to send reminders",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "minutes_before": { "type": "integer", "description": "Minutes before event" },
+                  "method": { "type": "string", "enum": ["push", "sms", "email"], "description": "Reminder delivery method" }
+                },
+                "required": ["minutes_before", "method"]
+              }
+            },
+            "notes": { "type": "string", "description": "Additional notes or agenda" }
+          },
+          "required": ["title", "start_time", "duration_minutes"]
+        }
+      }
+    }
+  ],
+  "test_cases": [
+
+    {"prompt": "What time is it?", "expected_tool": "get_time"},
+    {"prompt": "Tell me today's date", "expected_tool": "get_time"},
+    {"prompt": "I need to check if it's past noon already", "expected_tool": "get_time"},
+    {"prompt": "Is it still Sunday or did we cross into Monday?", "expected_tool": "get_time"},
+    {"prompt": "I'm expecting a delivery between 2 and 4 PM, has that window started yet?", "expected_tool": "get_time"},
+
+    {"prompt": "What's the weather in London?", "expected_tool": "get_weather", "expected_params": {"city": "London"}},
+    {"prompt": "Is it raining in Tokyo right now?", "expected_tool": "get_weather", "expected_params": {"city": "Tokyo"}},
+    {"prompt": "I'm flying to Barcelona tomorrow, should I pack an umbrella?", "expected_tool": "get_weather", "expected_params": {"city": "Barcelona"}},
+    {"prompt": "My parents are visiting from São Paulo, what's the weather like there so I know how they'll be dressed?", "expected_tool": "get_weather", "expected_params": {"city": "São Paulo"}},
+    {"prompt": "I'm deciding between a hike and an indoor activity today in Denver, what does the sky look like?", "expected_tool": "get_weather", "expected_params": {"city": "Denver"}},
+
+    {"prompt": "Set a 5 minute timer", "expected_tool": "set_timer", "expected_params": {"minutes": 5}},
+    {"prompt": "Remind me in 10 minutes", "expected_tool": "set_timer", "expected_params": {"minutes": 10}},
+    {"prompt": "I put pasta on the stove, set a 12 minute timer for it", "expected_tool": "set_timer", "expected_params": {"minutes": 12, "label": "pasta"}},
+    {"prompt": "I need a one and a half hour timer for the laundry cycle", "expected_tool": "set_timer", "expected_params": {"minutes": 90, "label": "laundry"}},
+    {"prompt": "I'm power napping, wake me in 20 — label it so I know what it was for", "expected_tool": "set_timer", "expected_params": {"minutes": 20, "label": "power nap"}},
+
+    {"prompt": "Turn on the kitchen lights", "expected_tool": "control_lights", "expected_params": {"room": "kitchen", "action": "on"}},
+    {"prompt": "Switch off the bedroom lights", "expected_tool": "control_lights", "expected_params": {"room": "bedroom", "action": "off"}},
+    {"prompt": "It's getting dark in the living room, fix that", "expected_tool": "control_lights", "expected_params": {"room": "living room", "action": "on"}},
+    {"prompt": "I just left the garage, no need for lights in there anymore", "expected_tool": "control_lights", "expected_params": {"room": "garage", "action": "off"}},
+    {"prompt": "The bathroom light has been on since this morning and nobody's in there, take care of it please", "expected_tool": "control_lights", "expected_params": {"room": "bathroom", "action": "off"}},
+
+    {"prompt": "Set the bedroom to 22 degrees", "expected_tool": "set_thermostat", "expected_params": {"room": "bedroom", "temperature": 22}},
+    {"prompt": "Cool the living room down to 19 degrees", "expected_tool": "set_thermostat", "expected_params": {"room": "living room", "temperature": 19, "mode": "cool"}},
+    {"prompt": "It's freezing in the office, warm it up to 24", "expected_tool": "set_thermostat", "expected_params": {"room": "office", "temperature": 24, "mode": "heat"}},
+    {"prompt": "Keep the nursery at exactly 21 degrees and let the system figure out heating or cooling", "expected_tool": "set_thermostat", "expected_params": {"room": "nursery", "temperature": 21, "mode": "auto"}},
+    {"prompt": "I'm about to go to sleep, set the bedroom to a good sleeping temperature in auto mode", "expected_tool": "set_thermostat", "expected_params": {"room": "bedroom", "mode": "auto"}},
+
+    {"prompt": "Play my jazz playlist in the kitchen", "expected_tool": "play_playlist", "expected_params": {"playlist": "jazz", "speakers": ["kitchen"]}},
+    {"prompt": "Shuffle the workout mix on the gym speaker", "expected_tool": "play_playlist", "expected_params": {"playlist": "workout mix", "speakers": ["gym"], "shuffle": true}},
+    {"prompt": "Put some chill music on in the bedroom and living room", "expected_tool": "play_playlist", "expected_params": {"speakers": ["bedroom", "living room"]}},
+    {"prompt": "Play the dinner party playlist on the kitchen and dining room speakers, no shuffle — I like the track order", "expected_tool": "play_playlist", "expected_params": {"playlist": "dinner party", "speakers": ["kitchen", "dining room"], "shuffle": false}},
+    {"prompt": "The kids want music in their rooms and the playroom, put on something fun and mix it up", "expected_tool": "play_playlist", "expected_params": {"speakers": ["kids room", "playroom"], "shuffle": true}},
+
+    {"prompt": "Send a push notification to Sarah saying dinner is ready", "expected_tool": "send_notification", "expected_params": {"recipient": "Sarah", "message": "Dinner is ready", "delivery": {"method": "push"}}},
+    {"prompt": "Text Mom that I'll be home by 6", "expected_tool": "send_notification", "expected_params": {"recipient": "Mom", "delivery": {"method": "sms"}}},
+    {"prompt": "Email Dad the grocery list, no rush", "expected_tool": "send_notification", "expected_params": {"recipient": "Dad", "delivery": {"method": "email", "urgent": false}}},
+    {"prompt": "Send an urgent push notification to Jake — the dog got out!", "expected_tool": "send_notification", "expected_params": {"recipient": "Jake", "delivery": {"method": "push", "urgent": true}}},
+    {"prompt": "Let everyone know via text that the power might go out tonight, mark it as urgent so they see it right away", "expected_tool": "send_notification", "expected_params": {"delivery": {"method": "sms", "urgent": true}}},
+
+    {"prompt": "Create a grocery list with 2 apples and 1 bread", "expected_tool": "create_shopping_list", "expected_params": {"list_name": "grocery", "items": [{"name": "apples", "quantity": 2}, {"name": "bread", "quantity": 1}]}},
+    {"prompt": "Make a Costco shopping list: 3 milk (dairy), 2 chicken breast (meat), and 1 paper towels (household)", "expected_tool": "create_shopping_list", "expected_params": {"store": "Costco", "items": [{"name": "milk", "quantity": 3, "category": "dairy"}, {"name": "chicken breast", "quantity": 2, "category": "meat"}, {"name": "paper towels", "quantity": 1, "category": "household"}]}},
+    {"prompt": "I need a party supplies list for Trader Joe's: 4 bags of chips from pantry, 2 salsa, 1 guacamole from produce, and a 6-pack of sparkling water", "expected_tool": "create_shopping_list", "expected_params": {"store": "Trader Joe's"}},
+    {"prompt": "Start a weekly essentials list with eggs, butter, and whole milk — all dairy, quantities of a dozen eggs and 1 each for the rest", "expected_tool": "create_shopping_list", "expected_params": {"items": [{"name": "eggs", "quantity": 12, "category": "dairy"}, {"name": "butter", "quantity": 1, "category": "dairy"}, {"name": "whole milk", "quantity": 1, "category": "dairy"}]}},
+    {"prompt": "Make a BBQ prep list for this weekend at Walmart: 5 lbs ground beef (meat), 8 burger buns (pantry), 3 tomatoes and 2 lettuce heads (produce), 1 pack of paper plates and 1 charcoal bag (household)", "expected_tool": "create_shopping_list", "expected_params": {"store": "Walmart"}},
+
+    {"prompt": "Create a routine called 'Good Morning' that turns on the kitchen lights at 7 AM", "expected_tool": "create_routine", "expected_params": {"name": "Good Morning", "trigger": {"type": "time", "value": "07:00"}, "actions": [{"device": "kitchen lights", "command": "on"}]}},
+    {"prompt": "Make a weekday-only routine: at 6:30 AM, turn on the bedroom lights and start the coffee maker", "expected_tool": "create_routine", "expected_params": {"name": "Weekday Morning", "trigger": {"type": "time", "value": "06:30"}, "active_days": ["mon", "tue", "wed", "thu", "fri"]}},
+    {"prompt": "Set up a routine that activates when the front door opens: turn on the hallway lights, then after 5 seconds turn on the living room lights", "expected_tool": "create_routine", "expected_params": {"trigger": {"type": "event", "value": "front_door_open"}, "actions": [{"device": "hallway lights", "command": "on"}, {"device": "living room lights", "command": "on", "delay_seconds": 5}]}},
+    {"prompt": "Create a 'Movie Night' routine for weekends: dim the living room lights, set the thermostat to 21, and play the ambient playlist — trigger it with an event called movie_mode", "expected_tool": "create_routine", "expected_params": {"name": "Movie Night", "trigger": {"type": "event", "value": "movie_mode"}, "active_days": ["sat", "sun"]}},
+    {"prompt": "I want an energy saver routine that kicks in when the temperature sensor reads above 28: switch the AC to cool mode, close the blinds after 10 seconds, and send me a notification after 20 seconds — only active on weekdays and disabled by default", "expected_tool": "create_routine", "expected_params": {"trigger": {"type": "sensor", "value": "temp>28"}, "enabled": false, "active_days": ["mon", "tue", "wed", "thu", "fri"]}},
+
+    {"prompt": "Schedule a dentist appointment for March 1st at 9 AM, 60 minutes", "expected_tool": "schedule_event", "expected_params": {"title": "Dentist appointment", "start_time": "2026-03-01T09:00:00", "duration_minutes": 60}},
+    {"prompt": "Book a virtual team standup on March 3rd at 10 AM for 30 minutes with a Zoom link", "expected_tool": "schedule_event", "expected_params": {"title": "Team standup", "duration_minutes": 30, "location": {"type": "virtual"}}},
+    {"prompt": "Create a weekly Monday meeting at 2 PM for 45 minutes in the conference room, invite Alice as required and Bob as optional", "expected_tool": "schedule_event", "expected_params": {"duration_minutes": 45, "location": {"type": "physical", "room": "conference room"}, "recurrence": {"frequency": "weekly"}, "attendees": [{"name": "Alice", "role": "required"}, {"name": "Bob", "role": "optional"}]}},
+    {"prompt": "Schedule a hybrid board review every month on the 15th at 11 AM for 2 hours, with a push reminder 30 minutes before and email reminder 1 day before, in the boardroom and on Zoom", "expected_tool": "schedule_event", "expected_params": {"duration_minutes": 120, "location": {"type": "hybrid", "room": "boardroom"}, "recurrence": {"frequency": "monthly"}, "reminders": [{"minutes_before": 30, "method": "push"}, {"minutes_before": 1440, "method": "email"}]}},
+    {"prompt": "Set up a biweekly Friday yoga class at 7 AM for 75 minutes at the community center on 123 Main St, recurring until end of June, skip April 18th and May 2nd, remind me by SMS 60 minutes before and push 15 minutes before, add a note saying to bring a mat and water", "expected_tool": "schedule_event", "expected_params": {"title": "Yoga class", "duration_minutes": 75, "location": {"type": "physical", "address": "123 Main St"}, "recurrence": {"frequency": "weekly", "interval": 2, "end_date": "2026-06-30", "exceptions": ["2026-04-18", "2026-05-02"]}, "reminders": [{"minutes_before": 60, "method": "sms"}, {"minutes_before": 15, "method": "push"}]}},
+
+    {"prompt": "Schedule a team lunch for today at noon, 60 minutes long",
+     "expected_tool": "schedule_event",
+     "expected_params": {"title": "Team lunch", "start_time": "2026-02-15T12:00:00", "duration_minutes": 60},
+     "multi_turn": true, "max_rounds": 4, "optimal_hops": 2,
+     "valid_prerequisites": ["get_time"],
+     "mock_responses": {"get_time": {"date": "2026-02-15", "time": "09:30:00", "timezone": "America/New_York"}}},
+
+    {"prompt": "Check the weather in Denver — if it's cold, heat the living room to 23 degrees",
+     "expected_tool": "set_thermostat",
+     "expected_params": {"room": "living room", "temperature": 23, "mode": "heat"},
+     "multi_turn": true, "max_rounds": 4, "optimal_hops": 2,
+     "valid_prerequisites": ["get_weather"],
+     "mock_responses": {"get_weather": {"city": "Denver", "temperature_celsius": 2, "condition": "snowy", "wind_mph": 15}}},
+
+    {"prompt": "What time is it? If it's evening, turn off the office lights",
+     "expected_tool": "control_lights",
+     "expected_params": {"room": "office", "action": "off"},
+     "multi_turn": true, "max_rounds": 4, "optimal_hops": 2,
+     "valid_prerequisites": ["get_time"],
+     "mock_responses": {"get_time": {"date": "2026-02-15", "time": "19:45:00", "timezone": "America/New_York"}}},
+
+    {"prompt": "Look up the weather in Tokyo and text Mom about what it's like there",
+     "expected_tool": "send_notification",
+     "expected_params": {"recipient": "Mom", "delivery": {"method": "sms"}},
+     "multi_turn": true, "max_rounds": 4, "optimal_hops": 2,
+     "valid_prerequisites": ["get_weather"],
+     "mock_responses": {"get_weather": {"city": "Tokyo", "temperature_celsius": 12, "condition": "rainy", "humidity_pct": 85}}},
+
+    {"prompt": "Check the current time and weather in New York, then schedule an outdoor jog at 4 PM today for 45 minutes if conditions are good",
+     "expected_tool": "schedule_event",
+     "expected_params": {"duration_minutes": 45},
+     "multi_turn": true, "max_rounds": 5, "optimal_hops": 3,
+     "valid_prerequisites": ["get_time", "get_weather"],
+     "mock_responses": {
+       "get_time": {"date": "2026-02-15", "time": "10:00:00", "timezone": "America/New_York"},
+       "get_weather": {"city": "New York", "temperature_celsius": 18, "condition": "sunny", "wind_mph": 5}
+     }}
+  ]
+}

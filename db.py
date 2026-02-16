@@ -207,6 +207,80 @@ async def init_db():
         except Exception:
             pass  # Column already exists
 
+        # --- Parameter Tuner ---
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS param_tune_runs (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                suite_id TEXT NOT NULL,
+                suite_name TEXT NOT NULL,
+                models_json TEXT NOT NULL,
+                search_space_json TEXT NOT NULL,
+                results_json TEXT NOT NULL DEFAULT '[]',
+                best_config_json TEXT,
+                best_score REAL DEFAULT 0.0,
+                total_combos INTEGER NOT NULL,
+                completed_combos INTEGER DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','cancelled','error')),
+                duration_s REAL,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_param_tune_runs_user ON param_tune_runs(user_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_param_tune_runs_ts ON param_tune_runs(user_id, timestamp DESC)")
+        await db.commit()
+
+        # --- Prompt Tuner ---
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS prompt_tune_runs (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                suite_id TEXT NOT NULL,
+                suite_name TEXT NOT NULL,
+                mode TEXT NOT NULL CHECK(mode IN ('quick','evolutionary')),
+                target_models_json TEXT NOT NULL,
+                meta_model TEXT NOT NULL,
+                base_prompt TEXT,
+                config_json TEXT NOT NULL,
+                generations_json TEXT NOT NULL DEFAULT '[]',
+                best_prompt TEXT,
+                best_score REAL DEFAULT 0.0,
+                status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','cancelled','error')),
+                total_prompts INTEGER DEFAULT 0,
+                completed_prompts INTEGER DEFAULT 0,
+                duration_s REAL,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_prompt_tune_runs_user ON prompt_tune_runs(user_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_prompt_tune_runs_ts ON prompt_tune_runs(user_id, timestamp DESC)")
+        await db.commit()
+
+        # --- LLM Judge ---
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS judge_reports (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                eval_run_id TEXT,
+                eval_run_id_b TEXT,
+                judge_model TEXT NOT NULL,
+                mode TEXT NOT NULL CHECK(mode IN ('post_eval','live_inline','comparative')),
+                verdicts_json TEXT NOT NULL DEFAULT '[]',
+                report_json TEXT,
+                overall_grade TEXT,
+                overall_score REAL,
+                status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','error')),
+                timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_user ON judge_reports(user_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_eval ON judge_reports(eval_run_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_ts ON judge_reports(user_id, timestamp DESC)")
+        await db.commit()
+
 
 # --- User CRUD ---
 
@@ -687,6 +761,279 @@ async def delete_tool_eval_run(run_id: str, user_id: str) -> bool:
             (run_id, user_id),
         )
         await db.commit()
+        return cursor.rowcount > 0
+
+
+# --- Parameter Tuner CRUD ---
+
+async def save_param_tune_run(
+    user_id: str, suite_id: str, suite_name: str, models_json: str,
+    search_space_json: str, total_combos: int,
+) -> str:
+    """Create a new param tune run (status=running). Returns run_id."""
+    run_id = uuid.uuid4().hex
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            "INSERT INTO param_tune_runs (id, user_id, suite_id, suite_name, models_json, search_space_json, total_combos) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (run_id, user_id, suite_id, suite_name, models_json, search_space_json, total_combos),
+        )
+        await db.commit()
+    return run_id
+
+
+async def update_param_tune_run(
+    run_id: str, user_id: str, *,
+    results_json: str | None = None,
+    best_config_json: str | None = None,
+    best_score: float | None = None,
+    completed_combos: int | None = None,
+    status: str | None = None,
+    duration_s: float | None = None,
+) -> bool:
+    """Update a param tune run. Only non-None fields are updated."""
+    updates = []
+    values = []
+    if results_json is not None:
+        updates.append("results_json = ?")
+        values.append(results_json)
+    if best_config_json is not None:
+        updates.append("best_config_json = ?")
+        values.append(best_config_json)
+    if best_score is not None:
+        updates.append("best_score = ?")
+        values.append(best_score)
+    if completed_combos is not None:
+        updates.append("completed_combos = ?")
+        values.append(completed_combos)
+    if status is not None:
+        updates.append("status = ?")
+        values.append(status)
+    if duration_s is not None:
+        updates.append("duration_s = ?")
+        values.append(duration_s)
+    if not updates:
+        return False
+    values.extend([run_id, user_id])
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            f"UPDATE param_tune_runs SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
+            values,
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def get_param_tune_runs(user_id: str, limit: int = 50) -> list[dict]:
+    """List user's param tune runs (exclude full results_json for list view)."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, suite_id, suite_name, models_json, total_combos, completed_combos, "
+            "best_score, status, duration_s, timestamp "
+            "FROM param_tune_runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+            (user_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_param_tune_run(run_id: str, user_id: str) -> dict | None:
+    """Get full param tune run including results_json."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM param_tune_runs WHERE id = ? AND user_id = ?",
+            (run_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def delete_param_tune_run(run_id: str, user_id: str) -> bool:
+    """Delete param tune run. Returns True if deleted."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "DELETE FROM param_tune_runs WHERE id = ? AND user_id = ?",
+            (run_id, user_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+# --- Prompt Tuner CRUD ---
+
+async def save_prompt_tune_run(
+    user_id: str, suite_id: str, suite_name: str, mode: str,
+    target_models_json: str, meta_model: str, base_prompt: str | None,
+    config_json: str, total_prompts: int,
+) -> str:
+    """Create a new prompt tune run (status=running). Returns run_id."""
+    run_id = uuid.uuid4().hex
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            "INSERT INTO prompt_tune_runs (id, user_id, suite_id, suite_name, mode, "
+            "target_models_json, meta_model, base_prompt, config_json, total_prompts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (run_id, user_id, suite_id, suite_name, mode,
+             target_models_json, meta_model, base_prompt, config_json, total_prompts),
+        )
+        await db.commit()
+    return run_id
+
+
+async def update_prompt_tune_run(
+    run_id: str, user_id: str, *,
+    generations_json: str | None = None,
+    best_prompt: str | None = None,
+    best_score: float | None = None,
+    completed_prompts: int | None = None,
+    status: str | None = None,
+    duration_s: float | None = None,
+) -> bool:
+    """Update a prompt tune run. Only non-None fields are updated."""
+    updates = []
+    values = []
+    if generations_json is not None:
+        updates.append("generations_json = ?")
+        values.append(generations_json)
+    if best_prompt is not None:
+        updates.append("best_prompt = ?")
+        values.append(best_prompt)
+    if best_score is not None:
+        updates.append("best_score = ?")
+        values.append(best_score)
+    if completed_prompts is not None:
+        updates.append("completed_prompts = ?")
+        values.append(completed_prompts)
+    if status is not None:
+        updates.append("status = ?")
+        values.append(status)
+    if duration_s is not None:
+        updates.append("duration_s = ?")
+        values.append(duration_s)
+    if not updates:
+        return False
+    values.extend([run_id, user_id])
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            f"UPDATE prompt_tune_runs SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
+            values,
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def get_prompt_tune_runs(user_id: str, limit: int = 50) -> list[dict]:
+    """List user's prompt tune runs (exclude large JSON for list view)."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, suite_id, suite_name, mode, target_models_json, meta_model, "
+            "best_score, status, total_prompts, completed_prompts, duration_s, timestamp "
+            "FROM prompt_tune_runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+            (user_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_prompt_tune_run(run_id: str, user_id: str) -> dict | None:
+    """Get full prompt tune run including generations_json."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM prompt_tune_runs WHERE id = ? AND user_id = ?",
+            (run_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def delete_prompt_tune_run(run_id: str, user_id: str) -> bool:
+    """Delete prompt tune run. Returns True if deleted."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "DELETE FROM prompt_tune_runs WHERE id = ? AND user_id = ?",
+            (run_id, user_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+# --- Judge Reports CRUD ---
+
+
+async def save_judge_report(
+    user_id: str,
+    judge_model: str,
+    mode: str,
+    eval_run_id: str | None = None,
+    eval_run_id_b: str | None = None,
+) -> str:
+    """Create a new judge report (status=running). Returns report id."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        cursor = await conn.execute(
+            "INSERT INTO judge_reports (user_id, eval_run_id, eval_run_id_b, judge_model, mode) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (user_id, eval_run_id, eval_run_id_b, judge_model, mode),
+        )
+        await conn.commit()
+        row = await (await conn.execute(
+            "SELECT id FROM judge_reports WHERE rowid = ?", (cursor.lastrowid,)
+        )).fetchone()
+        return row[0]
+
+
+async def update_judge_report(report_id: str, **fields) -> None:
+    """Update judge report fields (verdicts_json, report_json, overall_grade, overall_score, status)."""
+    allowed = {"verdicts_json", "report_json", "overall_grade", "overall_score", "status"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    values = list(updates.values()) + [report_id]
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        await conn.execute(
+            f"UPDATE judge_reports SET {set_clause} WHERE id = ?", values
+        )
+        await conn.commit()
+
+
+async def get_judge_reports(user_id: str, limit: int = 50) -> list[dict]:
+    """List user's judge reports (exclude full verdicts_json for list view)."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT id, eval_run_id, eval_run_id_b, judge_model, mode, "
+            "overall_grade, overall_score, status, timestamp "
+            "FROM judge_reports WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+            (user_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_judge_report(report_id: str, user_id: str) -> dict | None:
+    """Get full judge report including verdicts_json and report_json."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM judge_reports WHERE id = ? AND user_id = ?",
+            (report_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def delete_judge_report(report_id: str, user_id: str) -> bool:
+    """Delete judge report. Returns True if deleted."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        cursor = await conn.execute(
+            "DELETE FROM judge_reports WHERE id = ? AND user_id = ?",
+            (report_id, user_id),
+        )
+        await conn.commit()
         return cursor.rowcount > 0
 
 

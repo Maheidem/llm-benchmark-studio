@@ -748,6 +748,9 @@
         </div>
       </div>
 
+      <!-- PROVIDER PARAMETERS -->
+      <div id="ppBenchmarkPanel" class="hidden mb-6 stagger"></div>
+
       <!-- RUN BUTTON -->
       <div class="flex justify-center mb-10 stagger">
         <button id="runBtn" onclick="startBenchmark()" class="run-btn px-12 py-3 rounded-sm text-sm flex items-center gap-3">
@@ -1095,6 +1098,18 @@
             <p class="text-sm text-zinc-600 font-body">Define tool suites, create test cases, and evaluate model accuracy.</p>
           </div>
           <div class="flex items-center gap-2">
+            <button onclick="showToolEvalView('jg-history')" class="px-4 py-2 rounded-sm text-xs flex items-center gap-2 border transition-colors" style="border-color:rgba(245,158,11,0.2);color:#F59E0B;" onmouseover="this.style.borderColor='rgba(245,158,11,0.5)'" onmouseout="this.style.borderColor='rgba(245,158,11,0.2)'">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg>
+              Judge
+            </button>
+            <button onclick="showToolEvalView('prt-config')" class="px-4 py-2 rounded-sm text-xs flex items-center gap-2 border transition-colors" style="border-color:rgba(168,85,247,0.2);color:#A855F7;" onmouseover="this.style.borderColor='rgba(168,85,247,0.5)'" onmouseout="this.style.borderColor='rgba(168,85,247,0.2)'">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z"/></svg>
+              Prompt Tuner
+            </button>
+            <button onclick="showToolEvalView('pt-config')" class="px-4 py-2 rounded-sm text-xs flex items-center gap-2 border transition-colors" style="border-color:rgba(56,189,248,0.2);color:#38BDF8;" onmouseover="this.style.borderColor='rgba(56,189,248,0.5)'" onmouseout="this.style.borderColor='rgba(56,189,248,0.2)'">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/></svg>
+              Param Tuner
+            </button>
             <button onclick="teNewSuite()" class="run-btn px-4 py-2 rounded-sm text-xs flex items-center gap-2">
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
               New Suite
@@ -1293,6 +1308,8 @@
             </div>
           </div>
           <div id="teModelGrid" class="flex flex-col gap-1"></div>
+          <!-- Provider Parameters (Tool Eval) -->
+          <div id="ppToolEvalPanel" class="hidden mt-4"></div>
           <div class="flex items-center gap-4 mt-4 pt-4" style="border-top:1px solid var(--border-subtle)">
             <div>
               <span class="text-zinc-500 font-body text-xs">Temperature</span>
@@ -1312,6 +1329,35 @@
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
                 Start Eval
               </button>
+            </div>
+          </div>
+
+          <!-- LLM Judge Settings -->
+          <div class="mt-4 pt-4" style="border-top:1px solid var(--border-subtle)">
+            <div class="flex items-center gap-3 mb-3">
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input id="jgToggle" type="checkbox" class="sr-only peer" onchange="jgTogglePanel()">
+                <div class="w-8 h-4 rounded-full transition-colors" style="background:var(--border-subtle);" id="jgToggleTrack"></div>
+                <div class="absolute left-0.5 top-0.5 w-3 h-3 rounded-full transition-transform" style="background:#52525B;" id="jgToggleDot"></div>
+              </label>
+              <span class="text-[10px] font-display tracking-wider uppercase text-zinc-500">LLM Judge</span>
+              <svg class="w-3.5 h-3.5 text-zinc-700" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg>
+            </div>
+            <div id="jgSettingsPanel" class="hidden">
+              <div class="flex items-center gap-4">
+                <div>
+                  <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1 block">Mode</label>
+                  <select id="jgMode" class="text-xs font-mono px-3 py-1.5 rounded-sm" style="background:var(--surface);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;width:140px;">
+                    <option value="live_inline">Live Inline</option>
+                    <option value="post_eval">Post-Eval Report</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1 block">Judge Model</label>
+                  <select id="jgJudgeModel" class="text-xs font-mono px-3 py-1.5 rounded-sm" style="background:var(--surface);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;width:200px;"></select>
+                </div>
+              </div>
+              <p class="text-[10px] text-zinc-700 font-body mt-2">The judge model evaluates quality of tool calling results. Runs at temperature 0.0 for consistency.</p>
             </div>
           </div>
         </div>
@@ -1385,12 +1431,567 @@
                     <th class="px-5 py-2 text-left section-label">Actual</th>
                     <th class="px-5 py-2 text-right section-label">Hops</th>
                     <th class="px-5 py-2 text-right section-label">Score</th>
+                    <th id="jgLiveColHeader" class="px-5 py-2 text-center section-label hidden">Judge</th>
                   </tr>
                 </thead>
                 <tbody id="teLiveBody"></tbody>
               </table>
             </div>
           </div>
+        </div>
+
+        <!-- Judge Report Panel (Post-Eval) -->
+        <div id="jgReportSection" class="hidden mb-6 fade-in">
+          <div class="card rounded-md p-5">
+            <div class="flex items-center justify-between mb-4">
+              <div class="flex items-center gap-3">
+                <svg class="w-5 h-5" style="color:#F59E0B" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg>
+                <span class="font-display font-semibold text-sm tracking-wider uppercase" style="color:#F59E0B;">Judge Report</span>
+                <span id="jgGradeBadge" class="text-sm font-mono font-bold px-2 py-0.5 rounded-full" style="background:rgba(245,158,11,0.1);color:#F59E0B;"></span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span id="jgReportStatus" class="text-[9px] font-display tracking-wider uppercase text-zinc-600"></span>
+                <button onclick="jgDownloadReport()" class="text-[10px] font-display tracking-wider uppercase px-2 py-0.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);">Download JSON</button>
+              </div>
+            </div>
+
+            <!-- Overall Score Bar -->
+            <div id="jgOverallScore" class="mb-5">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-xs text-zinc-500 font-body">Overall Score</span>
+                <span id="jgScoreValue" class="text-sm font-mono font-bold" style="color:#F59E0B;"></span>
+              </div>
+              <div class="h-2 rounded-full overflow-hidden" style="background:rgba(255,255,255,0.05);">
+                <div id="jgScoreBar" class="h-full rounded-full transition-all" style="background:#F59E0B;width:0%;"></div>
+              </div>
+            </div>
+
+            <!-- Strengths / Weaknesses -->
+            <div class="grid grid-cols-2 gap-4 mb-5">
+              <div>
+                <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-2 block">Strengths</label>
+                <ul id="jgStrengths" class="space-y-1"></ul>
+              </div>
+              <div>
+                <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-2 block">Weaknesses</label>
+                <ul id="jgWeaknesses" class="space-y-1"></ul>
+              </div>
+            </div>
+
+            <!-- Cross-Case Analysis -->
+            <div class="mb-5">
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-2 block">Cross-Case Analysis</label>
+              <p id="jgAnalysis" class="text-xs font-body text-zinc-400 leading-relaxed"></p>
+            </div>
+
+            <!-- Recommendations -->
+            <div class="mb-5">
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-2 block">Recommendations</label>
+              <ol id="jgRecommendations" class="space-y-1 list-decimal list-inside"></ol>
+            </div>
+
+            <!-- Per-Case Verdicts (accordion) -->
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-2 block">Per-Case Verdicts</label>
+              <div id="jgVerdicts" class="space-y-2"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sub-View 10: Judge Comparative View -->
+      <div id="jg-compare-view" class="hidden">
+        <div class="flex items-center justify-between mb-6">
+          <button onclick="showToolEvalView('suites')" class="flex items-center gap-2 text-zinc-500 hover:text-zinc-300 transition-colors text-sm font-body">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+            Back to Suites
+          </button>
+          <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase">Model Comparison (Judge)</h3>
+        </div>
+
+        <!-- Compare Header -->
+        <div id="jgCompareHeader" class="card rounded-md p-5 mb-6">
+          <div class="flex items-center justify-between mb-3">
+            <span id="jgCompModelA" class="font-display font-semibold text-sm" style="color:#22D3EE;">Model A</span>
+            <span class="text-[10px] font-display tracking-wider uppercase text-zinc-600">vs</span>
+            <span id="jgCompModelB" class="font-display font-semibold text-sm" style="color:#F59E0B;">Model B</span>
+          </div>
+          <div id="jgCompSummaryBar" class="flex items-center gap-2 text-xs font-mono text-zinc-400"></div>
+        </div>
+
+        <!-- Compare Progress -->
+        <div id="jgCompProgress" class="hidden mb-6 fade-in">
+          <div class="card rounded-md p-5">
+            <div class="flex items-center gap-3 mb-3">
+              <div class="pulse-dot"></div>
+              <span id="jgCompProgressLabel" class="text-sm text-zinc-400 font-body">Comparing...</span>
+              <span id="jgCompProgressCount" class="text-xs font-mono text-zinc-600 ml-auto">0/0</span>
+            </div>
+            <div class="progress-track rounded-full overflow-hidden">
+              <div id="jgCompProgressBar" class="progress-fill" style="width:0%;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Compare Cases -->
+        <div id="jgCompCases" class="space-y-3 mb-6"></div>
+
+        <!-- Compare Overall Verdict -->
+        <div id="jgCompVerdict" class="hidden fade-in">
+          <div class="card rounded-md p-5" style="border:1px solid rgba(245,158,11,0.3);">
+            <div class="flex items-center gap-2 mb-3">
+              <svg class="w-5 h-5" style="color:#F59E0B;" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 18.75h-9m9 0a3 3 0 013 3h-15a3 3 0 013-3m9 0v-4.5A3.375 3.375 0 0012.75 10.5h-1.5A3.375 3.375 0 007.5 14.25v4.5m9-9V6a4.5 4.5 0 00-9 0v3.25"/></svg>
+              <span class="font-display font-semibold text-sm tracking-wider uppercase" style="color:#F59E0B;">Overall Verdict</span>
+            </div>
+            <div id="jgCompWinner" class="text-sm font-body text-zinc-200 mb-2"></div>
+            <p id="jgCompSummary" class="text-xs font-body text-zinc-400 leading-relaxed"></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sub-View 11: Judge History -->
+      <div id="jg-history-view" class="hidden">
+        <div class="flex items-center justify-between mb-6">
+          <button onclick="showToolEvalView('suites')" class="flex items-center gap-2 text-zinc-500 hover:text-zinc-300 transition-colors text-sm font-body">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+            Back to Suites
+          </button>
+          <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase">Judge Reports</h3>
+        </div>
+        <div class="card rounded-md overflow-hidden">
+          <table class="w-full text-sm results-table">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border-subtle)">
+                <th class="px-5 py-3 text-left section-label">Date</th>
+                <th class="px-5 py-3 text-center section-label">Mode</th>
+                <th class="px-5 py-3 text-left section-label">Judge Model</th>
+                <th class="px-5 py-3 text-center section-label">Grade</th>
+                <th class="px-5 py-3 text-right section-label">Score</th>
+                <th class="px-5 py-3 text-center section-label">Status</th>
+                <th class="px-5 py-3 text-right section-label"></th>
+              </tr>
+            </thead>
+            <tbody id="jgHistoryBody">
+              <tr><td colspan="7" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No judge reports yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Sub-View 4: Parameter Tuner Config -->
+      <div id="pt-config-view" class="hidden">
+        <div class="flex items-center justify-between mb-6">
+          <button onclick="showToolEvalView('suites')" class="flex items-center gap-2 text-zinc-500 hover:text-zinc-300 transition-colors text-sm font-body">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+            Back to Suites
+          </button>
+          <div class="flex items-center gap-2">
+            <button onclick="showToolEvalView('pt-history')" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color:#38BDF8;border:1px solid rgba(56,189,248,0.2);" onmouseover="this.style.borderColor='rgba(56,189,248,0.5)'" onmouseout="this.style.borderColor='rgba(56,189,248,0.2)'">History</button>
+          </div>
+        </div>
+
+        <h2 class="font-display font-bold text-lg text-zinc-100 mb-1">Parameter Tuner</h2>
+        <p class="text-sm text-zinc-600 font-body mb-6">Sweep parameter combinations to find optimal tool calling configuration.</p>
+
+        <!-- Search Space Builder -->
+        <div class="card rounded-md p-5 mb-6">
+          <label class="section-label mb-4 block">Search Space</label>
+          <div id="ptSearchSpace" class="space-y-4">
+            <!-- Temperature -->
+            <div class="flex items-start gap-3">
+              <label class="relative inline-flex items-center cursor-pointer mt-1.5">
+                <input type="checkbox" id="ptToggleTemp" checked class="sr-only peer" onchange="ptUpdatePreview()">
+                <div class="w-8 h-4 rounded-full peer bg-zinc-700 peer-checked:bg-lime-accent/40 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-400 after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4 peer-checked:after:bg-[var(--lime)]"></div>
+              </label>
+              <div class="flex-1">
+                <div class="text-xs text-zinc-400 font-body mb-2">Temperature</div>
+                <div class="grid grid-cols-3 gap-2 mb-2">
+                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Min</label><input id="ptTempMin" type="number" min="0" max="2" step="0.1" value="0.0" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
+                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Max</label><input id="ptTempMax" type="number" min="0" max="2" step="0.1" value="1.0" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
+                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Step</label><input id="ptTempStep" type="number" min="0.1" max="2" step="0.1" value="0.5" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
+                </div>
+                <div id="ptTempPills" class="flex flex-wrap gap-1"></div>
+              </div>
+            </div>
+            <!-- Top P -->
+            <div class="flex items-start gap-3">
+              <label class="relative inline-flex items-center cursor-pointer mt-1.5">
+                <input type="checkbox" id="ptToggleTopP" class="sr-only peer" onchange="ptUpdatePreview()">
+                <div class="w-8 h-4 rounded-full peer bg-zinc-700 peer-checked:bg-lime-accent/40 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-400 after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4 peer-checked:after:bg-[var(--lime)]"></div>
+              </label>
+              <div class="flex-1">
+                <div class="text-xs text-zinc-400 font-body mb-2">Top P</div>
+                <div class="grid grid-cols-3 gap-2 mb-2">
+                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Min</label><input id="ptTopPMin" type="number" min="0" max="1" step="0.05" value="0.8" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
+                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Max</label><input id="ptTopPMax" type="number" min="0" max="1" step="0.05" value="1.0" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
+                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Step</label><input id="ptTopPStep" type="number" min="0.05" max="1" step="0.05" value="0.1" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
+                </div>
+                <div id="ptTopPPills" class="flex flex-wrap gap-1"></div>
+              </div>
+            </div>
+            <!-- Max Tokens -->
+            <div class="flex items-start gap-3">
+              <label class="relative inline-flex items-center cursor-pointer mt-1.5">
+                <input type="checkbox" id="ptToggleMaxTok" class="sr-only peer" onchange="ptUpdatePreview()">
+                <div class="w-8 h-4 rounded-full peer bg-zinc-700 peer-checked:bg-lime-accent/40 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-400 after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4 peer-checked:after:bg-[var(--lime)]"></div>
+              </label>
+              <div class="flex-1">
+                <div class="text-xs text-zinc-400 font-body mb-2">Max Tokens</div>
+                <div class="grid grid-cols-3 gap-2 mb-2">
+                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Min</label><input id="ptMaxTokMin" type="number" min="1" max="16384" step="256" value="512" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
+                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Max</label><input id="ptMaxTokMax" type="number" min="1" max="16384" step="256" value="1024" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
+                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Step</label><input id="ptMaxTokStep" type="number" min="1" max="16384" step="256" value="512" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
+                </div>
+                <div id="ptMaxTokPills" class="flex flex-wrap gap-1"></div>
+              </div>
+            </div>
+            <!-- Tool Choice -->
+            <div class="flex items-start gap-3">
+              <label class="relative inline-flex items-center cursor-pointer mt-1.5">
+                <input type="checkbox" id="ptToggleToolChoice" checked class="sr-only peer" onchange="ptUpdatePreview()">
+                <div class="w-8 h-4 rounded-full peer bg-zinc-700 peer-checked:bg-lime-accent/40 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-400 after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4 peer-checked:after:bg-[var(--lime)]"></div>
+              </label>
+              <div class="flex-1">
+                <div class="text-xs text-zinc-400 font-body mb-2">Tool Choice</div>
+                <div class="flex gap-4">
+                  <label class="flex items-center gap-2 text-xs text-zinc-400 font-body cursor-pointer"><input type="checkbox" id="ptTcAuto" checked class="accent-lime-accent" onchange="ptUpdatePreview()"> auto</label>
+                  <label class="flex items-center gap-2 text-xs text-zinc-400 font-body cursor-pointer"><input type="checkbox" id="ptTcRequired" checked class="accent-lime-accent" onchange="ptUpdatePreview()"> required</label>
+                  <label class="flex items-center gap-2 text-xs text-zinc-400 font-body cursor-pointer"><input type="checkbox" id="ptTcNone" class="accent-lime-accent" onchange="ptUpdatePreview()"> none</label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Grid Preview Bar -->
+          <div id="ptGridPreview" class="mt-5 pt-4 flex items-center justify-between" style="border-top:1px solid var(--border-subtle)">
+            <div>
+              <span class="text-xs text-zinc-500 font-body">Total combinations: </span>
+              <span id="ptGridCount" class="font-mono font-bold text-sm text-zinc-200">0</span>
+              <span id="ptGridBreakdown" class="text-[10px] text-zinc-600 font-mono ml-2"></span>
+            </div>
+            <span id="ptGridBadge" class="text-[10px] font-display font-semibold tracking-wider uppercase px-2 py-0.5 rounded-sm"></span>
+          </div>
+        </div>
+
+        <!-- Suite & Model Selection -->
+        <div class="card rounded-md p-5 mb-6">
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div>
+              <label class="section-label mb-3 block">Suite</label>
+              <select id="ptSuiteSelect" class="w-full text-xs font-mono px-3 py-2 rounded-sm" style="background:var(--surface);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;">
+                <option value="">-- Select a tool eval suite --</option>
+              </select>
+            </div>
+            <div>
+              <label class="section-label mb-3 block">Models</label>
+              <div id="ptModelGrid" class="flex flex-col gap-1 max-h-48 overflow-y-auto" style="scrollbar-width:thin;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Start Button -->
+        <div class="flex justify-center mb-10">
+          <button id="ptStartBtn" onclick="ptStartTune()" class="run-btn px-12 py-3 rounded-sm text-sm flex items-center gap-3">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            Start Tuning
+          </button>
+        </div>
+      </div>
+
+      <!-- Sub-View 5: Parameter Tuner Run/Results -->
+      <div id="pt-run-view" class="hidden">
+        <div class="flex items-center justify-between mb-6">
+          <button onclick="showToolEvalView('pt-config')" class="flex items-center gap-2 text-zinc-500 hover:text-zinc-300 transition-colors text-sm font-body">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+            Back to Config
+          </button>
+          <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase">Parameter Tuning</h3>
+        </div>
+
+        <!-- Progress -->
+        <div id="ptProgressSection" class="hidden mb-6 fade-in">
+          <div class="card rounded-md p-5">
+            <div class="flex items-center justify-between mb-3">
+              <div class="flex items-center gap-3">
+                <div class="pulse-dot"></div>
+                <span id="ptProgressLabel" class="text-sm text-zinc-400 font-body">Initializing...</span>
+              </div>
+              <div class="flex items-center gap-4">
+                <span id="ptProgressCount" class="text-xs font-mono text-zinc-600">0/0</span>
+                <button id="ptCancelBtn" onclick="ptCancelTune()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color:var(--coral);border:1px solid rgba(255,59,92,0.3);" onmouseover="this.style.borderColor='rgba(255,59,92,0.6)'" onmouseout="this.style.borderColor='rgba(255,59,92,0.3)'">Cancel</button>
+              </div>
+            </div>
+            <div class="progress-track rounded-full overflow-hidden">
+              <div id="ptProgressBar" class="progress-fill" style="width:0%"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Best Config Summary -->
+        <div id="ptBestCard" class="hidden mb-6 fade-in">
+          <div class="card rounded-md p-5" style="border:1px solid rgba(234,179,8,0.3);">
+            <div class="flex items-center gap-2 mb-2">
+              <svg class="w-4 h-4" style="color:#EAB308" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z"/></svg>
+              <span class="font-display font-semibold text-sm tracking-wider uppercase" style="color:#EAB308;">Best Configuration</span>
+            </div>
+            <div id="ptBestConfigText" class="text-sm font-mono text-zinc-200 mb-1"></div>
+            <div id="ptBestScoreText" class="text-xs text-zinc-500 font-body"></div>
+          </div>
+        </div>
+
+        <!-- Results Table -->
+        <div id="ptResultsSection" class="hidden mb-6 fade-in">
+          <div class="card rounded-md overflow-hidden">
+            <div class="flex items-center justify-between px-5 py-3" style="border-bottom:1px solid var(--border-subtle)">
+              <span class="section-label">Combination Results</span>
+              <div class="flex items-center gap-2">
+                <button id="ptApplyBestBtn" onclick="ptApplyBest()" class="hidden text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);">Apply Best Config</button>
+                <button onclick="ptExportCSV()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);">Export CSV</button>
+              </div>
+            </div>
+            <table class="w-full text-sm results-table">
+              <thead>
+                <tr style="border-bottom:1px solid var(--border-subtle)">
+                  <th class="px-4 py-2 text-left section-label cursor-pointer" onclick="ptSortResults('rank')">#</th>
+                  <th class="px-4 py-2 text-left section-label cursor-pointer" onclick="ptSortResults('model_name')">Model</th>
+                  <th class="px-4 py-2 text-right section-label cursor-pointer" onclick="ptSortResults('temperature')">Temp</th>
+                  <th class="px-4 py-2 text-right section-label cursor-pointer" onclick="ptSortResults('top_p')">Top P</th>
+                  <th class="px-4 py-2 text-center section-label cursor-pointer" onclick="ptSortResults('tool_choice')">Tool Choice</th>
+                  <th class="px-4 py-2 text-right section-label cursor-pointer" onclick="ptSortResults('max_tokens')">Max Tok</th>
+                  <th class="px-4 py-2 text-right section-label cursor-pointer" onclick="ptSortResults('overall_score')">Score</th>
+                  <th class="px-4 py-2 text-right section-label cursor-pointer" onclick="ptSortResults('tool_accuracy')">Tool %</th>
+                  <th class="px-4 py-2 text-right section-label cursor-pointer" onclick="ptSortResults('param_accuracy')">Param %</th>
+                  <th class="px-4 py-2 text-right section-label cursor-pointer" onclick="ptSortResults('latency_avg_ms')">Latency</th>
+                </tr>
+              </thead>
+              <tbody id="ptResultsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sub-View 6: Parameter Tuner History -->
+      <div id="pt-history-view" class="hidden">
+        <div class="flex items-center justify-between mb-6">
+          <button onclick="showToolEvalView('pt-config')" class="flex items-center gap-2 text-zinc-500 hover:text-zinc-300 transition-colors text-sm font-body">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+            Back to Tuner
+          </button>
+          <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase">Tuning History</h3>
+        </div>
+        <div class="card rounded-md overflow-hidden">
+          <table class="w-full text-sm results-table">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border-subtle)">
+                <th class="px-5 py-3 text-left section-label">Date</th>
+                <th class="px-5 py-3 text-left section-label">Suite</th>
+                <th class="px-5 py-3 text-left section-label">Models</th>
+                <th class="px-5 py-3 text-right section-label">Combos</th>
+                <th class="px-5 py-3 text-right section-label">Best Score</th>
+                <th class="px-5 py-3 text-center section-label">Status</th>
+                <th class="px-5 py-3 text-right section-label"></th>
+              </tr>
+            </thead>
+            <tbody id="ptHistoryBody">
+              <tr><td colspan="7" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No tuning runs yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Sub-View 7: Prompt Tuner Config -->
+      <div id="prt-config-view" class="hidden">
+        <div class="flex items-center justify-between mb-6">
+          <button onclick="showToolEvalView('suites')" class="flex items-center gap-2 text-zinc-500 hover:text-zinc-300 transition-colors text-sm font-body">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+            Back to Suites
+          </button>
+          <button onclick="showToolEvalView('prt-history')" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color:#A855F7;border:1px solid rgba(168,85,247,0.2);" onmouseover="this.style.borderColor='rgba(168,85,247,0.5)'" onmouseout="this.style.borderColor='rgba(168,85,247,0.2)'">History</button>
+        </div>
+
+        <h2 class="font-display font-bold text-lg text-zinc-100 mb-1">Prompt Tuner</h2>
+        <p class="text-sm text-zinc-600 font-body mb-6">Use AI to generate and evolve system prompts for optimal tool calling.</p>
+
+        <!-- Mode Selector -->
+        <div class="grid grid-cols-2 gap-4 mb-6">
+          <button id="prtModeQuick" onclick="prtSetMode('quick')" class="card rounded-md p-5 text-left transition-all cursor-pointer" style="border:2px solid var(--lime);">
+            <div class="font-display font-semibold text-sm text-zinc-100 mb-1">Quick Mode</div>
+            <div class="text-xs text-zinc-500 font-body">Generate N prompt variations at once. Fast exploration.</div>
+          </button>
+          <button id="prtModeEvo" onclick="prtSetMode('evolutionary')" class="card rounded-md p-5 text-left transition-all cursor-pointer" style="border:2px solid var(--border-subtle);">
+            <div class="font-display font-semibold text-sm text-zinc-100 mb-1">Evolutionary Mode</div>
+            <div class="text-xs text-zinc-500 font-body">Evolve prompts over generations. Deep optimization.</div>
+          </button>
+        </div>
+
+        <!-- Config Panel -->
+        <div class="card rounded-md p-5 mb-6">
+          <label class="section-label mb-4 block">Configuration</label>
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-5">
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1 block">Suite</label>
+              <select id="prtSuiteSelect" class="w-full text-xs font-mono px-3 py-2 rounded-sm" style="background:var(--surface);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;" onchange="prtUpdateEstimate()">
+                <option value="">-- Select a tool eval suite --</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1 block">Meta-Model (generates prompts)</label>
+              <select id="prtMetaModel" class="w-full text-xs font-mono px-3 py-2 rounded-sm" style="background:var(--surface);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;">
+              </select>
+            </div>
+          </div>
+
+          <div class="mb-5">
+            <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1 block">Target Models (evaluated)</label>
+            <div id="prtModelGrid" class="flex flex-col gap-1 max-h-48 overflow-y-auto" style="scrollbar-width:thin;"></div>
+          </div>
+
+          <div class="mb-5">
+            <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1 block">Base Prompt</label>
+            <textarea id="prtBasePrompt" rows="3" class="w-full px-3 py-2 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;resize:vertical;" placeholder="You are a helpful assistant that uses tools to answer questions. (Leave empty for default)"></textarea>
+          </div>
+
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1 block">Temperature</label>
+              <input id="prtTemperature" type="number" min="0" max="2" step="0.1" value="0.0" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
+            </div>
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1 block">Tool Choice</label>
+              <select id="prtToolChoice" class="w-full text-xs font-mono px-2 py-1.5 rounded-sm" style="background:var(--surface);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;">
+                <option value="required">required</option>
+                <option value="auto">auto</option>
+                <option value="none">none</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1 block">Population Size</label>
+              <input id="prtPopSize" type="number" min="3" max="20" step="1" value="5" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="prtUpdateEstimate()">
+            </div>
+            <div id="prtEvoFields" class="hidden">
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1 block">Generations</label>
+              <input id="prtGenerations" type="number" min="2" max="10" step="1" value="3" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="prtUpdateEstimate()">
+            </div>
+          </div>
+
+          <div id="prtEvoExtra" class="hidden mb-5">
+            <div class="w-48">
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1 block">Selection Ratio</label>
+              <input id="prtSelRatio" type="number" min="0.2" max="0.8" step="0.1" value="0.4" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
+            </div>
+          </div>
+
+          <!-- Estimate Badge -->
+          <div id="prtEstimate" class="flex items-center gap-3 pt-4" style="border-top:1px solid var(--border-subtle)">
+            <span class="text-xs text-zinc-500 font-body">Estimated:</span>
+            <span id="prtEstimateText" class="text-xs font-mono text-zinc-300"></span>
+            <span id="prtEstimateWarn" class="hidden text-[10px] font-display tracking-wider uppercase px-2 py-0.5 rounded-sm" style="background:rgba(255,59,92,0.1);color:var(--coral);">HIGH VOLUME</span>
+          </div>
+        </div>
+
+        <!-- Start Button -->
+        <div class="flex justify-center mb-10">
+          <button id="prtStartBtn" onclick="prtStartTune()" class="run-btn px-12 py-3 rounded-sm text-sm flex items-center gap-3">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
+            Start Prompt Tuning
+          </button>
+        </div>
+      </div>
+
+      <!-- Sub-View 8: Prompt Tuner Run/Results -->
+      <div id="prt-run-view" class="hidden">
+        <div class="flex items-center justify-between mb-6">
+          <button onclick="showToolEvalView('prt-config')" class="flex items-center gap-2 text-zinc-500 hover:text-zinc-300 transition-colors text-sm font-body">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+            Back to Config
+          </button>
+          <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase">Prompt Tuning</h3>
+        </div>
+
+        <!-- Generation Timeline (Evo mode) -->
+        <div id="prtTimeline" class="hidden mb-6">
+          <div id="prtTimelineDots" class="flex items-center justify-center gap-2"></div>
+        </div>
+
+        <!-- Progress -->
+        <div id="prtProgressSection" class="hidden mb-6 fade-in">
+          <div class="card rounded-md p-5">
+            <div class="flex items-center justify-between mb-3">
+              <div class="flex items-center gap-3">
+                <div class="pulse-dot"></div>
+                <span id="prtProgressLabel" class="text-sm text-zinc-400 font-body">Initializing...</span>
+              </div>
+              <div class="flex items-center gap-4">
+                <span id="prtProgressCount" class="text-xs font-mono text-zinc-600">0/0</span>
+                <button onclick="prtCancelTune()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color:var(--coral);border:1px solid rgba(255,59,92,0.3);" onmouseover="this.style.borderColor='rgba(255,59,92,0.6)'" onmouseout="this.style.borderColor='rgba(255,59,92,0.3)'">Cancel</button>
+              </div>
+            </div>
+            <div class="progress-track rounded-full overflow-hidden">
+              <div id="prtProgressBar" class="progress-fill" style="width:0%"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Best Prompt Hero Card -->
+        <div id="prtBestCard" class="hidden mb-6 fade-in">
+          <div class="card rounded-md p-5" style="border:1px solid rgba(168,85,247,0.3);">
+            <div class="flex items-center justify-between mb-3">
+              <div class="flex items-center gap-2">
+                <svg class="w-4 h-4" style="color:#A855F7" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
+                <span class="font-display font-semibold text-sm tracking-wider uppercase" style="color:#A855F7;">Best Prompt</span>
+                <span id="prtBestScore" class="text-xs font-mono text-zinc-400 ml-2"></span>
+              </div>
+              <button onclick="prtCopyBest()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);">Copy</button>
+            </div>
+            <pre id="prtBestPromptText" class="text-xs font-mono text-zinc-300 whitespace-pre-wrap max-h-48 overflow-y-auto p-3 rounded-sm" style="background:rgba(0,0,0,0.2);"></pre>
+          </div>
+        </div>
+
+        <!-- Live Prompt Cards -->
+        <div id="prtPromptsSection" class="hidden mb-6 fade-in">
+          <div class="card rounded-md p-5">
+            <label class="section-label mb-4 block">Prompt Variations</label>
+            <div id="prtPromptCards" class="space-y-3"></div>
+          </div>
+        </div>
+
+        <!-- Score Trend Chart (Evo mode) -->
+        <div id="prtChartSection" class="hidden mb-6 fade-in">
+          <div class="card rounded-md p-5">
+            <label class="section-label mb-4 block">Score Trend</label>
+            <div class="relative" style="height:200px;">
+              <canvas id="prtScoreChart"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sub-View 9: Prompt Tuner History -->
+      <div id="prt-history-view" class="hidden">
+        <div class="flex items-center justify-between mb-6">
+          <button onclick="showToolEvalView('prt-config')" class="flex items-center gap-2 text-zinc-500 hover:text-zinc-300 transition-colors text-sm font-body">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+            Back to Tuner
+          </button>
+          <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase">Prompt Tuning History</h3>
+        </div>
+        <div class="card rounded-md overflow-hidden">
+          <table class="w-full text-sm results-table">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border-subtle)">
+                <th class="px-5 py-3 text-left section-label">Date</th>
+                <th class="px-5 py-3 text-left section-label">Suite</th>
+                <th class="px-5 py-3 text-center section-label">Mode</th>
+                <th class="px-5 py-3 text-left section-label">Models</th>
+                <th class="px-5 py-3 text-right section-label">Best Score</th>
+                <th class="px-5 py-3 text-center section-label">Status</th>
+                <th class="px-5 py-3 text-right section-label"></th>
+              </tr>
+            </thead>
+            <tbody id="prtHistoryBody">
+              <tr><td colspan="7" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No prompt tuning runs yet.</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -1733,6 +2334,8 @@
           document.getElementById('tempVal').textContent = parseFloat(config.defaults.temperature).toFixed(1);
         }
         renderTierChips();
+        ppLoadRegistry(); // async, non-blocking -- upgrades client-side fallback
+        ppRenderPanel('benchmark');
       } catch (e) {
         console.error('Failed to load config:', e);
         document.getElementById('initErrorBanner').classList.remove('hidden');
@@ -1776,6 +2379,7 @@
             if (allSelected) { selectedModels.delete(c.dataset.modelId); c.classList.remove('selected'); }
             else { selectedModels.add(c.dataset.modelId); c.classList.add('selected'); }
           });
+          ppOnModelSelectionChange('benchmark');
         };
         group.appendChild(header);
 
@@ -1812,18 +2416,21 @@
         selectedModels.add(modelId);
         card.classList.add('selected');
       }
+      ppOnModelSelectionChange('benchmark');
     }
 
     function selectAll() {
-      document.querySelectorAll('.model-card').forEach(card => {
+      document.querySelectorAll('#modelGrid .model-card').forEach(card => {
         selectedModels.add(card.dataset.modelId);
         card.classList.add('selected');
       });
+      ppOnModelSelectionChange('benchmark');
     }
 
     function selectNone() {
       selectedModels.clear();
-      document.querySelectorAll('.model-card').forEach(c => c.classList.remove('selected'));
+      document.querySelectorAll('#modelGrid .model-card').forEach(c => c.classList.remove('selected'));
+      ppOnModelSelectionChange('benchmark');
     }
 
     // -------------------------------------------------------------------
@@ -1871,6 +2478,7 @@
       document.getElementById('sseBanner').classList.add('hidden');
       document.getElementById('resultsSection').classList.add('hidden');
 
+      const ppParams = ppCollectParams('benchmark');
       const body = overrideBody || {
         models: Array.from(selectedModels),
         runs: parseInt(document.getElementById('runs').value),
@@ -1879,6 +2487,7 @@
         prompt: document.getElementById('prompt').value,
         context_tiers: Array.from(selectedTiers).sort((a, b) => a - b),
         warmup: document.getElementById('warmupToggle').checked,
+        ...(ppParams ? { provider_params: ppParams } : {}),
       };
       _lastBenchmarkBody = body;
 
@@ -4723,6 +5332,687 @@
     }
 
     // -------------------------------------------------------------------
+    // Provider Parameters — Per-provider param config (pp prefix)
+    // -------------------------------------------------------------------
+
+    // Client-side registry (matches architect spec). Replaced by API when available.
+    const PP_REGISTRY = {
+      openai: {
+        display_name: 'OpenAI',
+        tier1: {
+          temperature: { min: 0, max: 2, default: 1, step: 0.1, type: 'float' },
+          max_tokens: { min: 1, max: 128000, default: 4096, type: 'int', required: false },
+          stop: { type: 'string_array', max_items: 4 }
+        },
+        tier2: {
+          top_p: { min: 0, max: 1, default: 1, step: 0.05, type: 'float', supported: true },
+          top_k: { supported: false, reason: 'OpenAI does not support top_k' },
+          frequency_penalty: { min: -2, max: 2, default: 0, step: 0.1, type: 'float', supported: true },
+          presence_penalty: { min: -2, max: 2, default: 0, step: 0.1, type: 'float', supported: true },
+          seed: { type: 'int', supported: true, deprecated: true, note: 'Seed is deprecated for OpenAI' },
+          reasoning_effort: { type: 'enum', values: ['none','low','medium','high'], supported: true, note: 'Only for reasoning models (o-series, GPT-5)' }
+        },
+        conflicts: [
+          { params: ['temperature'], condition: "model contains 'gpt-5'", resolution: 'Lock to 1.0', message: 'GPT-5 locks temperature to 1.0' }
+        ],
+        model_overrides: {
+          'gpt-5*': { temperature: { locked: true, value: 1.0 } },
+          'o1*|o3*|o4*': { temperature: { locked: true, value: 1.0 }, stop: { supported: false } }
+        }
+      },
+      anthropic: {
+        display_name: 'Anthropic',
+        tier1: {
+          temperature: { min: 0, max: 1, default: 1, step: 0.1, type: 'float' },
+          max_tokens: { min: 1, max: 128000, default: 4096, type: 'int', required: true, note: 'Anthropic REQUIRES max_tokens' }
+        },
+        tier2: {
+          top_p: { min: 0, max: 1, default: null, step: 0.05, type: 'float', supported: true, note: 'Cannot use with temperature on newer models' },
+          top_k: { min: 1, max: 500, default: null, type: 'int', supported: true },
+          frequency_penalty: { supported: false, reason: 'Anthropic does not support penalty parameters' },
+          presence_penalty: { supported: false, reason: 'Anthropic does not support penalty parameters' },
+          seed: { supported: false, reason: 'Anthropic does not support seed' },
+          reasoning_effort: { type: 'enum', values: ['none','low','medium','high'], supported: true, note: 'Maps to thinking.budget_tokens' }
+        },
+        conflicts: [
+          { params: ['temperature','top_p'], condition: 'both set on newer models', resolution: 'Drop top_p, keep temperature', message: 'Anthropic newer models cannot use both temperature and top_p' }
+        ]
+      },
+      gemini: {
+        display_name: 'Google Gemini',
+        tier1: {
+          temperature: { min: 0, max: 2, default: 1, step: 0.1, type: 'float' },
+          max_tokens: { min: 1, max: 65536, default: 4096, type: 'int', required: false }
+        },
+        tier2: {
+          top_p: { min: 0, max: 1, default: null, step: 0.05, type: 'float', supported: true },
+          top_k: { min: 1, max: 100, default: null, type: 'int', supported: true },
+          frequency_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
+          presence_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
+          seed: { type: 'int', supported: true },
+          reasoning_effort: { type: 'enum', values: ['none','low','medium','high'], supported: true, note: 'Maps to thinkingConfig.thinkingLevel' }
+        },
+        conflicts: []
+      },
+      ollama: {
+        display_name: 'Ollama / Local',
+        tier1: {
+          temperature: { min: 0, max: 2, default: 0.8, step: 0.1, type: 'float' },
+          max_tokens: { min: 1, max: 32768, default: 4096, type: 'int', required: false }
+        },
+        tier2: {
+          top_p: { min: 0, max: 1, default: 0.9, step: 0.05, type: 'float', supported: true },
+          top_k: { min: 1, max: 500, default: 40, type: 'int', supported: true },
+          frequency_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
+          presence_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
+          seed: { type: 'int', supported: true },
+          reasoning_effort: { supported: false }
+        },
+        conflicts: [],
+        info_banner: 'Ollama defaults to 2048 token context. Set num_ctx in Custom Parameters to increase (e.g. {"num_ctx": 8192}).'
+      },
+      lm_studio: {
+        display_name: 'LM Studio',
+        tier1: {
+          temperature: { min: 0, max: 2, default: 0.8, step: 0.1, type: 'float' },
+          max_tokens: { min: 1, max: 32768, default: 4096, type: 'int', required: false }
+        },
+        tier2: {
+          top_p: { min: 0, max: 1, default: 0.9, step: 0.05, type: 'float', supported: true },
+          top_k: { min: 1, max: 500, default: 40, type: 'int', supported: true },
+          frequency_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
+          presence_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
+          seed: { type: 'int', supported: true },
+          reasoning_effort: { supported: false }
+        },
+        conflicts: []
+      },
+      mistral: {
+        display_name: 'Mistral',
+        tier1: {
+          temperature: { min: 0, max: 1.5, default: 0.7, step: 0.1, type: 'float' },
+          max_tokens: { min: 1, max: 32768, default: 4096, type: 'int', required: false }
+        },
+        tier2: {
+          top_p: { min: 0, max: 1, default: 1, step: 0.05, type: 'float', supported: true },
+          top_k: { supported: 'partial', reason: 'Limited support in Mistral API' },
+          frequency_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
+          presence_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
+          seed: { type: 'int', supported: true },
+          reasoning_effort: { supported: false }
+        },
+        conflicts: []
+      },
+      deepseek: {
+        display_name: 'DeepSeek',
+        tier1: {
+          temperature: { min: 0, max: 2, default: 1, step: 0.1, type: 'float' },
+          max_tokens: { min: 1, max: 65536, default: 4096, type: 'int', required: false }
+        },
+        tier2: {
+          top_p: { min: 0, max: 1, default: 1, step: 0.05, type: 'float', supported: true },
+          top_k: { supported: false },
+          frequency_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
+          presence_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
+          seed: { supported: false },
+          reasoning_effort: { type: 'enum', values: ['none','enabled'], supported: true, note: 'Any value enables thinking mode' }
+        },
+        conflicts: []
+      },
+      cohere: {
+        display_name: 'Cohere',
+        tier1: {
+          temperature: { min: 0, max: 1, default: 0.3, step: 0.1, type: 'float' },
+          max_tokens: { min: 1, max: 4096, default: 4096, type: 'int', required: false }
+        },
+        tier2: {
+          top_p: { min: 0, max: 0.99, default: null, step: 0.05, type: 'float', supported: true },
+          top_k: { min: 0, max: 500, default: null, type: 'int', supported: true },
+          frequency_penalty: { min: 0, max: 1, default: 0, type: 'float', supported: true, note: 'Range 0-1 only' },
+          presence_penalty: { min: 0, max: 1, default: 0, type: 'float', supported: true, note: 'Range 0-1 only' },
+          seed: { type: 'int', supported: true },
+          reasoning_effort: { supported: false }
+        },
+        conflicts: []
+      },
+      xai: {
+        display_name: 'xAI (Grok)',
+        tier1: {
+          temperature: { min: 0, max: 2, default: 1, step: 0.1, type: 'float' },
+          max_tokens: { min: 1, max: 131072, default: 4096, type: 'int', required: false }
+        },
+        tier2: {
+          top_p: { min: 0, max: 1, default: 1, step: 0.05, type: 'float', supported: true },
+          top_k: { supported: false },
+          frequency_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
+          presence_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
+          seed: { type: 'int', default: 0, supported: true },
+          reasoning_effort: { type: 'enum', values: ['none','low','medium','high'], supported: 'partial', note: 'Reasoning models reject penalties when active' }
+        },
+        conflicts: []
+      },
+      vllm: {
+        display_name: 'vLLM (Self-Hosted)',
+        tier1: {
+          temperature: { min: 0, max: 2, default: 1, step: 0.1, type: 'float' },
+          max_tokens: { min: 1, max: 65536, default: 4096, type: 'int', required: false }
+        },
+        tier2: {
+          top_p: { min: 0, max: 1, default: 1, step: 0.05, type: 'float', supported: true },
+          top_k: { min: 1, max: 500, default: null, type: 'int', supported: true },
+          frequency_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
+          presence_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
+          seed: { type: 'int', supported: true },
+          reasoning_effort: { supported: false }
+        },
+        conflicts: []
+      },
+      _unknown: {
+        display_name: 'Unknown (OpenAI-compatible)',
+        tier1: {
+          temperature: { min: 0, max: 2, default: 1, step: 0.1, type: 'float' },
+          max_tokens: { min: 1, max: 128000, default: 4096, type: 'int', required: false }
+        },
+        tier2: {
+          top_p: { min: 0, max: 1, default: 1, type: 'float', supported: 'unknown' },
+          top_k: { supported: 'unknown' },
+          frequency_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: 'unknown' },
+          presence_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: 'unknown' },
+          seed: { type: 'int', supported: 'unknown' },
+          reasoning_effort: { supported: 'unknown' }
+        },
+        conflicts: []
+      }
+    };
+
+    let ppRegistry = PP_REGISTRY; // replaced by API response when available
+    let ppActiveTab = {};         // context -> active provider key
+    let ppValues = {};            // context -> provider -> param -> value
+    let ppCollapsed = { advanced: true, custom: true }; // shared collapse state
+
+    // Provider key aliases for matching config providers to registry
+    const PP_KEY_ALIASES = {
+      google: 'gemini', google_gemini: 'gemini', zai: '_unknown', zai_glm: '_unknown'
+    };
+
+    function ppResolveProvider(configKey) {
+      const k = configKey.toLowerCase().replace(/[\s-]/g, '_');
+      if (ppRegistry[k]) return k;
+      if (PP_KEY_ALIASES[k]) return PP_KEY_ALIASES[k];
+      // Try prefix match
+      for (const rk of Object.keys(ppRegistry)) {
+        if (rk !== '_unknown' && k.startsWith(rk)) return rk;
+      }
+      return '_unknown';
+    }
+
+    function ppGetSelectedProviders(context) {
+      const sel = context === 'benchmark' ? selectedModels : teSelectedModels;
+      if (!config || !config.providers || sel.size === 0) return [];
+      const provs = new Map(); // registryKey -> {configKey, displayName, models[]}
+      for (const [ck, pd] of Object.entries(config.providers)) {
+        const models = getProviderModels(pd);
+        const selected = models.filter(m => sel.has(m.model_id));
+        if (!selected.length) continue;
+        const rk = ppResolveProvider(ck);
+        const displayName = pd.display_name || ppRegistry[rk]?.display_name || ck;
+        if (provs.has(rk)) {
+          provs.get(rk).models.push(...selected);
+        } else {
+          provs.set(rk, { configKey: ck, displayName, models: selected });
+        }
+      }
+      return [...provs.entries()].map(([rk, info]) => ({ registryKey: rk, ...info }));
+    }
+
+    async function ppLoadRegistry() {
+      try {
+        const res = await apiFetch('/api/provider-params/registry');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.providers) ppRegistry = data.providers;
+        }
+      } catch { /* use client-side fallback */ }
+    }
+
+    function ppRenderPanel(context) {
+      const panelId = context === 'benchmark' ? 'ppBenchmarkPanel' : 'ppToolEvalPanel';
+      const panel = document.getElementById(panelId);
+      if (!panel) return;
+
+      const providers = ppGetSelectedProviders(context);
+      if (providers.length === 0) {
+        panel.classList.add('hidden');
+        panel.innerHTML = '';
+        return;
+      }
+
+      panel.classList.remove('hidden');
+      if (!ppActiveTab[context] || !providers.find(p => p.registryKey === ppActiveTab[context])) {
+        ppActiveTab[context] = providers[0].registryKey;
+      }
+
+      // Init ppValues for each provider
+      for (const prov of providers) {
+        if (!ppValues[context]) ppValues[context] = {};
+        if (!ppValues[context][prov.registryKey]) {
+          ppValues[context][prov.registryKey] = {};
+        }
+      }
+
+      const activeKey = ppActiveTab[context];
+      const activeProv = providers.find(p => p.registryKey === activeKey);
+      const reg = ppRegistry[activeKey] || ppRegistry._unknown;
+      const isUnknown = activeKey === '_unknown';
+
+      let html = '<div class="card rounded-md p-5">';
+
+      // Unknown model warning
+      if (isUnknown) {
+        html += `<div class="mb-4 px-4 py-3 rounded-sm text-xs font-body" style="background:rgba(234,179,8,0.08);border:1px solid rgba(234,179,8,0.2);color:#EAB308;">
+          This provider is not recognized. Using OpenAI-compatible defaults. Some parameters may not be supported.
+        </div>`;
+      }
+
+      // Provider info banner (e.g. Ollama context warning)
+      if (reg.info_banner) {
+        html += `<div class="mb-4 px-4 py-3 rounded-sm text-xs font-body" style="background:rgba(56,189,248,0.06);border:1px solid rgba(56,189,248,0.15);color:#38BDF8;">
+          ${reg.info_banner}
+        </div>`;
+      }
+
+      // Section header with tabs
+      html += '<div class="flex items-center justify-between mb-4">';
+      html += '<label class="section-label">Provider Parameters</label>';
+      html += '</div>';
+
+      // Tabs (only if multiple providers)
+      if (providers.length > 1) {
+        html += '<div class="flex gap-1 mb-4 overflow-x-auto pb-1" style="scrollbar-width:thin;">';
+        for (const p of providers) {
+          const isActive = p.registryKey === activeKey;
+          const color = getColor(p.configKey);
+          html += `<button onclick="ppSwitchTab('${context}','${p.registryKey}')" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1.5 rounded-sm whitespace-nowrap transition-all" style="border:1px solid ${isActive ? color.text + '60' : 'var(--border-subtle)'};${isActive ? 'background:' + color.text + '10;color:' + color.text : 'color:#85858F'}">${p.displayName}</button>`;
+        }
+        html += '</div>';
+      }
+
+      // Conflict banners
+      const conflicts = ppDetectConflicts(context, activeKey);
+      for (const c of conflicts) {
+        html += `<div class="mb-3 px-4 py-2 rounded-sm text-xs font-body flex items-center gap-2" style="background:rgba(249,115,22,0.06);border:1px solid rgba(249,115,22,0.2);color:#F97316;">
+          <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          ${c.message}
+        </div>`;
+      }
+      const conflictParams = new Set(conflicts.flatMap(c => c.droppedParams || []));
+
+      // --- TIER 1: Universal Parameters ---
+      html += ppRenderTier1(context, activeKey, reg, conflictParams);
+
+      // --- TIER 2: Advanced (collapsible) ---
+      html += ppRenderTier2(context, activeKey, reg, conflictParams);
+
+      // --- TIER 3: Custom JSON (collapsible) ---
+      html += ppRenderTier3(context, activeKey);
+
+      html += '</div>';
+      panel.innerHTML = html;
+    }
+
+    function ppRenderTier1(context, provKey, reg, conflictParams) {
+      if (!reg.tier1) return '';
+      const vals = ppValues[context]?.[provKey] || {};
+      let html = '<div class="space-y-4 mb-4">';
+
+      // Temperature
+      if (reg.tier1.temperature) {
+        const t = reg.tier1.temperature;
+        const locked = ppIsLocked(provKey, 'temperature');
+        const val = locked ? locked.value : (vals.temperature ?? t.default ?? t.min);
+        const inConflict = conflictParams.has('temperature');
+        const borderStyle = inConflict ? 'border:1px solid rgba(249,115,22,0.4);' : '';
+        html += `<div class="rounded-sm p-3" style="${borderStyle}">
+          <div class="flex justify-between text-xs mb-2">
+            <span class="text-zinc-500 font-body">Temperature</span>
+            <div class="flex items-center gap-2">
+              ${locked ? '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(234,179,8,0.1);color:#EAB308;">LOCKED</span>' : ''}
+              <input type="number" min="${t.min}" max="${t.max}" step="${t.step || 0.1}" value="${val}" class="w-16 px-2 py-0.5 rounded-sm text-xs font-mono text-zinc-200 text-center" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" ${locked ? 'disabled' : ''} onchange="ppSetValue('${context}','${provKey}','temperature',parseFloat(this.value));ppRenderPanel('${context}')">
+            </div>
+          </div>
+          <input type="range" min="${t.min}" max="${t.max}" step="${t.step || 0.1}" value="${val}" ${locked ? 'disabled' : ''} oninput="ppSetValue('${context}','${provKey}','temperature',parseFloat(this.value));this.previousElementSibling.querySelector('input[type=number]').value=this.value" class="${locked ? 'opacity-40' : ''}">
+        </div>`;
+      }
+
+      // Max Tokens
+      if (reg.tier1.max_tokens) {
+        const mt = reg.tier1.max_tokens;
+        const val = vals.max_tokens ?? mt.default;
+        html += `<div>
+          <div class="flex justify-between text-xs mb-2">
+            <span class="text-zinc-500 font-body">Max Tokens ${mt.required ? '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm ml-1" style="background:rgba(249,115,22,0.1);color:#F97316;">REQUIRED</span>' : ''}</span>
+            <input type="number" min="${mt.min}" max="${mt.max}" step="1" value="${val}" class="w-24 px-2 py-0.5 rounded-sm text-xs font-mono text-zinc-200 text-center" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ppSetValue('${context}','${provKey}','max_tokens',parseInt(this.value))">
+          </div>
+        </div>`;
+      }
+
+      // Stop Sequences
+      if (reg.tier1.stop) {
+        const stopDef = reg.tier1.stop;
+        const stopLocked = ppIsLocked(provKey, 'stop');
+        if (!stopLocked || stopLocked.supported !== false) {
+          const stops = vals.stop || [];
+          const maxItems = stopDef.max_items || 4;
+          html += `<div>
+            <div class="flex justify-between text-xs mb-2">
+              <span class="text-zinc-500 font-body">Stop Sequences</span>
+              <span class="text-zinc-700 text-[10px] font-mono">${stops.length}/${maxItems}</span>
+            </div>
+            <div class="flex flex-wrap gap-1 mb-2" id="ppStopTags-${context}-${provKey}">
+              ${stops.map((s, i) => `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-xs font-mono text-zinc-300" style="background:rgba(255,255,255,0.04);border:1px solid var(--border-subtle);">${_ppEsc(s)}<button onclick="ppRemoveStop('${context}','${provKey}',${i})" class="text-zinc-600 hover:text-red-400 ml-1">&times;</button></span>`).join('')}
+            </div>
+            ${stops.length < maxItems ? `<input type="text" placeholder="Type and press Enter (max ${maxItems})" class="${INPUT_CLASS} text-xs" style="${INPUT_STYLE}" onkeydown="if(event.key==='Enter'){event.preventDefault();ppAddStop('${context}','${provKey}',this.value);this.value='';}">` : ''}
+          </div>`;
+        }
+      }
+
+      html += '</div>';
+      return html;
+    }
+
+    function ppRenderTier2(context, provKey, reg, conflictParams) {
+      if (!reg.tier2) return '';
+      const vals = ppValues[context]?.[provKey] || {};
+      const isCollapsed = ppCollapsed.advanced;
+
+      let html = `<div class="mt-4 pt-4" style="border-top:1px solid var(--border-subtle)">
+        <button onclick="ppCollapsed.advanced=!ppCollapsed.advanced;ppRenderPanel('${context}')" class="flex items-center gap-2 w-full text-left mb-3">
+          <svg class="w-3 h-3 text-zinc-600 transition-transform ${isCollapsed ? '' : 'rotate-90'}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+          <span class="text-[11px] font-display font-medium tracking-wider uppercase text-zinc-500">Advanced Parameters</span>
+        </button>`;
+
+      if (!isCollapsed) {
+        html += '<div class="space-y-4 pl-1">';
+        const paramOrder = ['top_p','top_k','frequency_penalty','presence_penalty','seed','reasoning_effort'];
+
+        for (const pName of paramOrder) {
+          const pDef = reg.tier2[pName];
+          if (!pDef) continue;
+
+          const supported = pDef.supported;
+          const isUnsupported = supported === false;
+          const isPartial = supported === 'partial';
+          const isUnknownSupport = supported === 'unknown';
+          const isDeprecated = pDef.deprecated === true;
+          const inConflict = conflictParams.has(pName);
+
+          // Reasoning effort is a dropdown
+          if (pDef.type === 'enum') {
+            if (isUnsupported) {
+              html += ppRenderUnsupportedParam(pName, pDef);
+              continue;
+            }
+            const val = vals[pName] || '';
+            html += `<div ${inConflict ? 'style="border:1px solid rgba(249,115,22,0.4);border-radius:4px;padding:8px;"' : ''}>
+              <div class="flex justify-between items-center text-xs mb-1">
+                <span class="text-zinc-500 font-body">${ppParamLabel(pName)}</span>
+                <div class="flex items-center gap-2">
+                  ${isDeprecated ? '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(234,179,8,0.1);color:#EAB308;">DEPRECATED</span>' : ''}
+                  ${isPartial ? '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(234,179,8,0.1);color:#EAB308;">PARTIAL</span>' : ''}
+                  ${inConflict ? '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(249,115,22,0.1);color:#F97316;">CONFLICT</span>' : ''}
+                </div>
+              </div>
+              <select onchange="ppSetValue('${context}','${provKey}','${pName}',this.value)" class="text-xs font-mono px-3 py-1.5 rounded-sm w-full" style="background:var(--surface);border:1px solid var(--border-subtle);color:var(--zinc-200);outline:none;" ${inConflict ? 'disabled' : ''}>
+                <option value="">-- None --</option>
+                ${(pDef.values || []).map(v => `<option value="${v}" ${val === v ? 'selected' : ''}>${v}</option>`).join('')}
+              </select>
+              ${pDef.note ? `<div class="text-[10px] text-zinc-700 mt-1 font-body">${pDef.note}</div>` : ''}
+            </div>`;
+            continue;
+          }
+
+          // Unsupported param
+          if (isUnsupported) {
+            html += ppRenderUnsupportedParam(pName, pDef);
+            continue;
+          }
+
+          // Numeric slider params (top_p, top_k, frequency_penalty, presence_penalty)
+          if (pDef.type === 'float' || pDef.type === 'int') {
+            const min = pDef.min ?? 0;
+            const max = pDef.max ?? 1;
+            const step = pDef.step || (pDef.type === 'int' ? 1 : 0.05);
+            const def = pDef.default ?? min;
+            const val = vals[pName] ?? def;
+            const disabled = inConflict;
+            html += `<div ${inConflict ? 'style="border:1px solid rgba(249,115,22,0.4);border-radius:4px;padding:8px;"' : ''}>
+              <div class="flex justify-between items-center text-xs mb-1">
+                <span class="text-zinc-500 font-body ${disabled ? 'line-through' : ''}">${ppParamLabel(pName)}</span>
+                <div class="flex items-center gap-2">
+                  ${isDeprecated ? '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(234,179,8,0.1);color:#EAB308;">DEPRECATED</span>' : ''}
+                  ${isPartial ? '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(234,179,8,0.1);color:#EAB308;">PARTIAL</span>' : ''}
+                  ${isUnknownSupport ? '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(255,255,255,0.04);color:#85858F;">UNKNOWN</span>' : ''}
+                  ${inConflict ? '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(249,115,22,0.1);color:#F97316;">CONFLICT</span>' : ''}
+                  <input type="number" min="${min}" max="${max}" step="${step}" value="${val}" class="w-16 px-2 py-0.5 rounded-sm text-xs font-mono text-zinc-200 text-center" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" ${disabled ? 'disabled' : ''} onchange="ppSetValue('${context}','${provKey}','${pName}',${pDef.type === 'int' ? 'parseInt' : 'parseFloat'}(this.value));ppRenderPanel('${context}')">
+                </div>
+              </div>
+              <input type="range" min="${min}" max="${max}" step="${step}" value="${val}" ${disabled ? 'disabled' : ''} class="${disabled ? 'opacity-30' : ''}" oninput="ppSetValue('${context}','${provKey}','${pName}',${pDef.type === 'int' ? 'parseInt' : 'parseFloat'}(this.value));this.closest('div').querySelector('input[type=number]').value=this.value">
+              ${pDef.note ? `<div class="text-[10px] text-zinc-700 mt-1 font-body">${pDef.note}</div>` : ''}
+            </div>`;
+            continue;
+          }
+
+          // Seed (integer, no slider)
+          if (pName === 'seed') {
+            const val = vals.seed ?? '';
+            html += `<div>
+              <div class="flex justify-between items-center text-xs mb-1">
+                <span class="text-zinc-500 font-body">${ppParamLabel(pName)}</span>
+                <div class="flex items-center gap-1">
+                  ${isDeprecated ? '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(234,179,8,0.1);color:#EAB308;">DEPRECATED</span>' : ''}
+                  ${isUnknownSupport ? '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(255,255,255,0.04);color:#85858F;">UNKNOWN</span>' : ''}
+                </div>
+              </div>
+              <input type="number" min="0" step="1" value="${val}" placeholder="Optional" class="${INPUT_CLASS} text-xs" style="${INPUT_STYLE}" onchange="ppSetValue('${context}','${provKey}','seed',this.value?parseInt(this.value):null)">
+            </div>`;
+          }
+        }
+        html += '</div>';
+      }
+
+      html += '</div>';
+      return html;
+    }
+
+    function ppRenderUnsupportedParam(pName, pDef) {
+      const reason = pDef.reason || 'Not supported by this provider';
+      return `<div class="opacity-40" title="${_ppEsc(reason)}">
+        <div class="flex justify-between items-center text-xs mb-1">
+          <span class="text-zinc-600 font-body">${ppParamLabel(pName)}</span>
+          <span class="text-[9px] font-display tracking-wider uppercase text-red-400/70">NOT SUPPORTED</span>
+        </div>
+        <input type="range" disabled class="w-full opacity-30">
+        <div class="text-[10px] text-zinc-700 font-body">${reason}</div>
+      </div>`;
+    }
+
+    function ppRenderTier3(context, provKey) {
+      const vals = ppValues[context]?.[provKey] || {};
+      const isCollapsed = ppCollapsed.custom;
+      const jsonVal = vals._passthrough || '';
+
+      let html = `<div class="mt-4 pt-4" style="border-top:1px solid var(--border-subtle)">
+        <button onclick="ppCollapsed.custom=!ppCollapsed.custom;ppRenderPanel('${context}')" class="flex items-center gap-2 w-full text-left mb-3">
+          <svg class="w-3 h-3 text-zinc-600 transition-transform ${isCollapsed ? '' : 'rotate-90'}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+          <span class="text-[11px] font-display font-medium tracking-wider uppercase text-zinc-500">Custom Parameters (JSON)</span>
+        </button>`;
+
+      if (!isCollapsed) {
+        html += `<div>
+          <textarea id="ppJsonEditor-${context}-${provKey}" rows="4" class="w-full px-3 py-2 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;resize:vertical;" placeholder='{"key": "value"}' onblur="ppSaveJson('${context}','${provKey}',this.value)">${_ppEsc(jsonVal)}</textarea>
+          <div class="flex items-center justify-between mt-2">
+            <span class="text-[10px] text-zinc-700 font-body">Passed directly to the LLM API. See LiteLLM docs for available parameters.</span>
+            <div class="flex items-center gap-2">
+              <span id="ppJsonStatus-${context}-${provKey}" class="text-[10px] font-mono"></span>
+              <button onclick="ppValidateJson('${context}','${provKey}')" class="text-[10px] font-display font-medium tracking-wider uppercase px-2 py-1 rounded-sm" style="color:#38BDF8;border:1px solid rgba(56,189,248,0.2);">Validate</button>
+            </div>
+          </div>
+        </div>`;
+      }
+
+      html += '</div>';
+      return html;
+    }
+
+    function ppDetectConflicts(context, provKey) {
+      const reg = ppRegistry[provKey] || ppRegistry._unknown;
+      if (!reg.conflicts || !reg.conflicts.length) return [];
+      const vals = ppValues[context]?.[provKey] || {};
+      const results = [];
+
+      for (const c of reg.conflicts) {
+        // Check Anthropic temp + top_p conflict
+        if (c.params.includes('temperature') && c.params.includes('top_p')) {
+          if (vals.temperature != null && vals.top_p != null) {
+            results.push({ ...c, droppedParams: ['top_p'] });
+          }
+        }
+        // Check model-specific conflicts (e.g. GPT-5 temp lock)
+        if (c.condition && c.condition.includes('gpt-5')) {
+          // This is handled by model_overrides / ppIsLocked, not here
+        }
+      }
+      return results;
+    }
+
+    function ppIsLocked(provKey, paramName) {
+      const reg = ppRegistry[provKey];
+      if (!reg || !reg.model_overrides) return null;
+      // Check model overrides (would need actual model ID for full check)
+      // For now, return null - the full lock check requires knowing which models are selected
+      return null;
+    }
+
+    function ppSwitchTab(context, provKey) {
+      ppActiveTab[context] = provKey;
+      ppRenderPanel(context);
+    }
+
+    function ppSetValue(context, provKey, param, value) {
+      if (!ppValues[context]) ppValues[context] = {};
+      if (!ppValues[context][provKey]) ppValues[context][provKey] = {};
+      if (value === null || value === '' || value === undefined || (typeof value === 'number' && isNaN(value))) {
+        delete ppValues[context][provKey][param];
+      } else {
+        ppValues[context][provKey][param] = value;
+      }
+    }
+
+    function ppAddStop(context, provKey, value) {
+      if (!value.trim()) return;
+      if (!ppValues[context]) ppValues[context] = {};
+      if (!ppValues[context][provKey]) ppValues[context][provKey] = {};
+      if (!ppValues[context][provKey].stop) ppValues[context][provKey].stop = [];
+      const reg = ppRegistry[provKey] || ppRegistry._unknown;
+      const maxItems = reg.tier1?.stop?.max_items || 4;
+      if (ppValues[context][provKey].stop.length >= maxItems) return;
+      ppValues[context][provKey].stop.push(value.trim());
+      ppRenderPanel(context);
+    }
+
+    function ppRemoveStop(context, provKey, index) {
+      if (!ppValues[context]?.[provKey]?.stop) return;
+      ppValues[context][provKey].stop.splice(index, 1);
+      ppRenderPanel(context);
+    }
+
+    function ppSaveJson(context, provKey, value) {
+      ppSetValue(context, provKey, '_passthrough', value.trim());
+    }
+
+    function ppValidateJson(context, provKey) {
+      const el = document.getElementById(`ppJsonEditor-${context}-${provKey}`);
+      const statusEl = document.getElementById(`ppJsonStatus-${context}-${provKey}`);
+      if (!el || !statusEl) return;
+      const raw = el.value.trim();
+      if (!raw) {
+        statusEl.innerHTML = '<span style="color:#85858F;">Empty (OK)</span>';
+        return;
+      }
+      try {
+        JSON.parse(raw);
+        statusEl.innerHTML = '<span style="color:var(--lime);">Valid JSON</span>';
+      } catch (e) {
+        statusEl.innerHTML = `<span style="color:var(--coral);">Invalid: ${_ppEsc(e.message)}</span>`;
+      }
+    }
+
+    function ppCollectParams(context) {
+      // Collect provider params into a flat object for the API request.
+      // The backend resolves per-provider constraints from each model's config key.
+      // When multiple providers are selected, we merge params from the active tab
+      // (the one the user most recently configured). Tier 1 params like temperature
+      // and max_tokens are already in the main request body, so we skip them here
+      // and only send tier 2 + passthrough.
+      const providers = ppGetSelectedProviders(context);
+      if (!providers.length) return null;
+
+      const result = {};
+      let passthrough = {};
+      let hasAny = false;
+
+      for (const prov of providers) {
+        const vals = ppValues[context]?.[prov.registryKey] || {};
+
+        // Collect tier2 values (skip internal keys starting with _ and tier1 keys)
+        const tier1Keys = new Set(['temperature', 'max_tokens', 'stop']);
+        for (const [k, v] of Object.entries(vals)) {
+          if (k.startsWith('_')) continue;
+          if (tier1Keys.has(k)) continue; // tier1 handled by main request body
+          if (v !== null && v !== undefined && v !== '') {
+            result[k] = v;
+            hasAny = true;
+          }
+        }
+
+        // Collect passthrough JSON
+        const rawJson = vals._passthrough || '';
+        if (rawJson) {
+          try {
+            const parsed = JSON.parse(rawJson);
+            Object.assign(passthrough, parsed);
+            hasAny = true;
+          } catch { /* skip invalid JSON */ }
+        }
+      }
+
+      if (Object.keys(passthrough).length) {
+        result.passthrough = passthrough;
+      }
+
+      return hasAny ? result : null;
+    }
+
+    function ppParamLabel(name) {
+      const labels = {
+        top_p: 'Top P', top_k: 'Top K',
+        frequency_penalty: 'Frequency Penalty', presence_penalty: 'Presence Penalty',
+        seed: 'Seed', reasoning_effort: 'Reasoning Effort'
+      };
+      return labels[name] || name;
+    }
+
+    function _ppEsc(s) {
+      if (!s) return '';
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // Refresh provider params panel when model selection changes
+    function ppOnModelSelectionChange(context) {
+      ppRenderPanel(context);
+    }
+
+    // -------------------------------------------------------------------
     // Tool Eval — Suite CRUD, Test Cases, Eval Execution, History
     // -------------------------------------------------------------------
     let teSuites = [];
@@ -4739,9 +6029,1682 @@
     let teRunSuiteId = null;         // suite_id for current run view
 
     function showToolEvalView(view) {
-      document.getElementById('te-suites-view').classList.toggle('hidden', view !== 'suites');
-      document.getElementById('te-editor-view').classList.toggle('hidden', view !== 'editor');
-      document.getElementById('te-run-view').classList.toggle('hidden', view !== 'run');
+      const views = ['te-suites-view','te-editor-view','te-run-view',
+        'pt-config-view','pt-run-view','pt-history-view',
+        'prt-config-view','prt-run-view','prt-history-view',
+        'jg-compare-view','jg-history-view'];
+      const viewMap = { suites: 'te-suites-view', editor: 'te-editor-view', run: 'te-run-view',
+        'pt-config': 'pt-config-view', 'pt-run': 'pt-run-view', 'pt-history': 'pt-history-view',
+        'prt-config': 'prt-config-view', 'prt-run': 'prt-run-view', 'prt-history': 'prt-history-view',
+        'jg-compare': 'jg-compare-view', 'jg-history': 'jg-history-view' };
+      const activeId = viewMap[view] || viewMap.suites;
+      views.forEach(v => document.getElementById(v)?.classList.toggle('hidden', v !== activeId));
+      if (view === 'pt-config') { ptLoadSuiteSelector(); ptRenderModelGrid(); ptUpdatePreview(); }
+      if (view === 'pt-history') { ptLoadHistory(); }
+      if (view === 'prt-config') { prtLoadSuiteSelector(); prtRenderModelGrid(); prtPopulateMetaModel(); prtUpdateEstimate(); }
+      if (view === 'prt-history') { prtLoadHistory(); }
+      if (view === 'jg-history') { jgLoadHistory(); }
+    }
+
+    // -------------------------------------------------------------------
+    // Parameter Tuner (pt prefix)
+    // -------------------------------------------------------------------
+    let ptSelectedModels = new Set();
+    let ptResults = [];        // live results from SSE
+    let ptBestConfig = null;
+    let ptBestScore = 0;
+    let ptSortKey = 'overall_score';
+    let ptSortAsc = false;
+    let ptHistory = [];
+    let ptTotalCombos = 0;
+    let _ptSSETimeout = null;
+
+    function ptGenerateValues(min, max, step) {
+      const vals = [];
+      if (step <= 0 || min > max) return vals;
+      // Use epsilon to handle floating point
+      for (let v = min; v <= max + step * 0.001; v += step) {
+        vals.push(Math.round(v * 1000) / 1000);
+      }
+      return vals;
+    }
+
+    function ptUpdatePreview() {
+      const dims = [];
+      const breakdown = [];
+
+      if (document.getElementById('ptToggleTemp').checked) {
+        const vals = ptGenerateValues(
+          parseFloat(document.getElementById('ptTempMin').value) || 0,
+          parseFloat(document.getElementById('ptTempMax').value) || 1,
+          parseFloat(document.getElementById('ptTempStep').value) || 0.5
+        );
+        ptRenderPills('ptTempPills', vals);
+        if (vals.length) { dims.push(vals.length); breakdown.push(vals.length + ' temp'); }
+      } else { document.getElementById('ptTempPills').innerHTML = ''; }
+
+      if (document.getElementById('ptToggleTopP').checked) {
+        const vals = ptGenerateValues(
+          parseFloat(document.getElementById('ptTopPMin').value) || 0,
+          parseFloat(document.getElementById('ptTopPMax').value) || 1,
+          parseFloat(document.getElementById('ptTopPStep').value) || 0.1
+        );
+        ptRenderPills('ptTopPPills', vals);
+        if (vals.length) { dims.push(vals.length); breakdown.push(vals.length + ' top_p'); }
+      } else { document.getElementById('ptTopPPills').innerHTML = ''; }
+
+      if (document.getElementById('ptToggleMaxTok').checked) {
+        const vals = ptGenerateValues(
+          parseInt(document.getElementById('ptMaxTokMin').value) || 512,
+          parseInt(document.getElementById('ptMaxTokMax').value) || 1024,
+          parseInt(document.getElementById('ptMaxTokStep').value) || 512
+        );
+        ptRenderPills('ptMaxTokPills', vals.map(v => Math.round(v)));
+        if (vals.length) { dims.push(vals.length); breakdown.push(vals.length + ' max_tok'); }
+      } else { document.getElementById('ptMaxTokPills').innerHTML = ''; }
+
+      if (document.getElementById('ptToggleToolChoice').checked) {
+        const choices = [];
+        if (document.getElementById('ptTcAuto').checked) choices.push('auto');
+        if (document.getElementById('ptTcRequired').checked) choices.push('required');
+        if (document.getElementById('ptTcNone').checked) choices.push('none');
+        if (choices.length) { dims.push(choices.length); breakdown.push(choices.length + ' tool_choice'); }
+      }
+
+      const total = dims.length ? dims.reduce((a, b) => a * b, 1) : 0;
+      ptTotalCombos = total;
+
+      document.getElementById('ptGridCount').textContent = total;
+      document.getElementById('ptGridBreakdown').textContent = dims.length > 1 ? '= ' + dims.join(' x ') : '';
+
+      const badge = document.getElementById('ptGridBadge');
+      if (total === 0) { badge.textContent = ''; badge.style.background = 'transparent'; badge.style.color = 'transparent'; }
+      else if (total < 20) { badge.textContent = 'QUICK'; badge.style.background = 'rgba(191,255,0,0.1)'; badge.style.color = 'var(--lime)'; }
+      else if (total < 50) { badge.textContent = 'MODERATE'; badge.style.background = 'rgba(234,179,8,0.1)'; badge.style.color = '#EAB308'; }
+      else if (total <= 100) { badge.textContent = 'LARGE'; badge.style.background = 'rgba(249,115,22,0.1)'; badge.style.color = '#F97316'; }
+      else { badge.textContent = 'WARNING'; badge.style.background = 'rgba(255,59,92,0.1)'; badge.style.color = 'var(--coral)'; }
+    }
+
+    function ptRenderPills(containerId, values) {
+      const el = document.getElementById(containerId);
+      if (!el) return;
+      el.innerHTML = values.map(v => `<span class="inline-block px-2 py-0.5 rounded-sm text-[10px] font-mono text-zinc-300" style="background:rgba(255,255,255,0.04);border:1px solid var(--border-subtle);">${v}</span>`).join('');
+    }
+
+    function ptBuildSearchSpace() {
+      const space = {};
+      if (document.getElementById('ptToggleTemp').checked) {
+        space.temperature = {
+          min: parseFloat(document.getElementById('ptTempMin').value) || 0,
+          max: parseFloat(document.getElementById('ptTempMax').value) || 1,
+          step: parseFloat(document.getElementById('ptTempStep').value) || 0.5
+        };
+      }
+      if (document.getElementById('ptToggleTopP').checked) {
+        space.top_p = {
+          min: parseFloat(document.getElementById('ptTopPMin').value) || 0,
+          max: parseFloat(document.getElementById('ptTopPMax').value) || 1,
+          step: parseFloat(document.getElementById('ptTopPStep').value) || 0.1
+        };
+      }
+      if (document.getElementById('ptToggleMaxTok').checked) {
+        space.max_tokens = {
+          min: parseInt(document.getElementById('ptMaxTokMin').value) || 512,
+          max: parseInt(document.getElementById('ptMaxTokMax').value) || 1024,
+          step: parseInt(document.getElementById('ptMaxTokStep').value) || 512
+        };
+      }
+      if (document.getElementById('ptToggleToolChoice').checked) {
+        const choices = [];
+        if (document.getElementById('ptTcAuto').checked) choices.push('auto');
+        if (document.getElementById('ptTcRequired').checked) choices.push('required');
+        if (document.getElementById('ptTcNone').checked) choices.push('none');
+        if (choices.length) space.tool_choice = choices;
+      }
+      return space;
+    }
+
+    function ptLoadSuiteSelector() {
+      const sel = document.getElementById('ptSuiteSelect');
+      const existing = sel.value;
+      sel.innerHTML = '<option value="">-- Select a tool eval suite --</option>';
+      if (teSuites && teSuites.length) {
+        for (const s of teSuites) {
+          sel.innerHTML += `<option value="${s.id}" ${s.id === existing ? 'selected' : ''}>${_teEsc(s.name)} (${s.case_count || 0} cases)</option>`;
+        }
+      }
+    }
+
+    function ptRenderModelGrid() {
+      const grid = document.getElementById('ptModelGrid');
+      grid.innerHTML = '';
+      ptSelectedModels.clear();
+      if (!config || !config.providers) return;
+
+      for (const [provider, provData] of Object.entries(config.providers)) {
+        const color = getColor(provider);
+        const models = getProviderModels(provData);
+        if (!models.length) continue;
+
+        const group = document.createElement('div');
+        group.className = 'provider-group';
+        group.style.borderColor = color.border;
+
+        const header = document.createElement('div');
+        header.className = 'provider-group-header';
+        header.innerHTML = `
+          <div class="provider-group-dot" style="background:${color.text}"></div>
+          <span class="provider-group-label" style="color:${color.text}">${provider}</span>
+          <span class="provider-group-count">${models.length}</span>
+        `;
+        header.onclick = () => {
+          const cards = group.querySelectorAll('.model-card');
+          const allSel = [...cards].every(c => c.classList.contains('selected'));
+          cards.forEach(c => {
+            if (allSel) { ptSelectedModels.delete(c.dataset.modelId); c.classList.remove('selected'); }
+            else { ptSelectedModels.add(c.dataset.modelId); c.classList.add('selected'); }
+          });
+        };
+        group.appendChild(header);
+
+        const subgrid = document.createElement('div');
+        subgrid.className = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pl-3';
+        for (const m of models) {
+          const card = document.createElement('div');
+          card.className = 'model-card rounded-sm px-4 py-3 flex items-center gap-3';
+          card.dataset.modelId = m.model_id;
+          card.onclick = (e) => {
+            e.stopPropagation();
+            if (ptSelectedModels.has(m.model_id)) { ptSelectedModels.delete(m.model_id); card.classList.remove('selected'); }
+            else { ptSelectedModels.add(m.model_id); card.classList.add('selected'); }
+          };
+          card.innerHTML = `<div class="check-dot flex-shrink-0"></div><div class="flex-1 min-w-0"><div class="text-[13px] font-medium text-zinc-200 truncate font-body">${m.display_name}</div></div>`;
+          subgrid.appendChild(card);
+        }
+        group.appendChild(subgrid);
+        grid.appendChild(group);
+      }
+    }
+
+    async function ptStartTune() {
+      const suiteId = document.getElementById('ptSuiteSelect').value;
+      if (!suiteId) { showToast('Select a tool eval suite', 'error'); return; }
+      if (ptSelectedModels.size === 0) { showToast('Select at least one model', 'error'); return; }
+      const searchSpace = ptBuildSearchSpace();
+      if (Object.keys(searchSpace).length === 0) { showToast('Enable at least one parameter to sweep', 'error'); return; }
+
+      const btn = document.getElementById('ptStartBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Running...';
+
+      ptResults = [];
+      ptBestConfig = null;
+      ptBestScore = 0;
+
+      showToolEvalView('pt-run');
+      document.getElementById('ptProgressSection').classList.remove('hidden');
+      document.getElementById('ptBestCard').classList.add('hidden');
+      document.getElementById('ptResultsSection').classList.remove('hidden');
+      document.getElementById('ptApplyBestBtn').classList.add('hidden');
+      document.getElementById('ptResultsBody').innerHTML = '';
+      document.getElementById('ptProgressBar').style.width = '0%';
+      document.getElementById('ptProgressLabel').textContent = 'Initializing...';
+      document.getElementById('ptProgressCount').textContent = '0/0';
+
+      const body = {
+        suite_id: suiteId,
+        models: Array.from(ptSelectedModels),
+        search_space: searchSpace
+      };
+
+      try {
+        const res = await apiFetch('/api/tool-eval/param-tune', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        if (res.status === 409) { showToast('A benchmark or eval is already running', 'error'); _ptResetStartBtn(); return; }
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          showToast(err.error || `Server error (${res.status})`, 'error');
+          _ptResetStartBtn(); return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          _ptResetTimeout();
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try { ptHandleSSE(JSON.parse(line.slice(6))); } catch (e) {}
+            }
+          }
+        }
+      } catch (e) {
+        showToast('Connection error: ' + (e.message || 'unknown'), 'error');
+      } finally {
+        _ptResetStartBtn();
+        _ptClearTimeout();
+      }
+    }
+
+    function ptHandleSSE(evt) {
+      switch (evt.type) {
+        case 'tune_start':
+          ptTotalCombos = evt.total_combos || 0;
+          document.getElementById('ptProgressLabel').textContent = `Tuning ${evt.models?.length || 0} model(s), ${ptTotalCombos} combinations`;
+          document.getElementById('ptProgressCount').textContent = `0/${ptTotalCombos}`;
+          break;
+
+        case 'combo_start':
+          document.getElementById('ptProgressLabel').textContent = `${evt.model || ''}: ${JSON.stringify(evt.config || {})}`;
+          break;
+
+        case 'combo_result':
+          ptResults.push(evt);
+          if (evt.overall_score > ptBestScore) {
+            ptBestScore = evt.overall_score;
+            ptBestConfig = { ...evt.config, model_id: evt.model_id, model_name: evt.model_name };
+          }
+          ptRenderResultsTable();
+          ptUpdateBestCard();
+          break;
+
+        case 'tune_progress':
+          const pct = ptTotalCombos > 0 ? Math.round((evt.completed / ptTotalCombos) * 100) : 0;
+          document.getElementById('ptProgressBar').style.width = pct + '%';
+          document.getElementById('ptProgressCount').textContent = `${evt.completed}/${ptTotalCombos}`;
+          break;
+
+        case 'tune_complete':
+          document.getElementById('ptProgressSection').classList.add('hidden');
+          document.getElementById('ptApplyBestBtn').classList.remove('hidden');
+          if (evt.best_config) { ptBestConfig = evt.best_config; ptBestScore = evt.best_score || ptBestScore; }
+          ptUpdateBestCard();
+          ptRenderResultsTable();
+          showToast('Tuning complete!', 'success');
+          break;
+
+        case 'cancelled':
+          document.getElementById('ptProgressSection').classList.add('hidden');
+          showToast('Tuning cancelled. Partial results saved.', '');
+          break;
+
+        case 'error':
+          document.getElementById('ptProgressSection').classList.add('hidden');
+          showToast(evt.message || 'Tuning error', 'error');
+          break;
+
+        case 'heartbeat': break;
+      }
+    }
+
+    function ptRenderResultsTable() {
+      const body = document.getElementById('ptResultsBody');
+      // Sort results
+      const sorted = [...ptResults].sort((a, b) => {
+        let va = a[ptSortKey], vb = b[ptSortKey];
+        if (typeof va === 'string') { va = va.toLowerCase(); vb = (vb || '').toLowerCase(); }
+        if (va < vb) return ptSortAsc ? -1 : 1;
+        if (va > vb) return ptSortAsc ? 1 : -1;
+        return 0;
+      });
+
+      body.innerHTML = sorted.map((r, i) => {
+        const cfg = r.config || {};
+        const isBest = ptBestConfig && r.overall_score === ptBestScore &&
+          cfg.temperature === ptBestConfig.temperature && cfg.top_p === ptBestConfig.top_p;
+        const rowStyle = isBest ? 'border:1px solid rgba(234,179,8,0.3);background:rgba(234,179,8,0.03);' : '';
+        const boldCls = isBest ? 'font-bold' : '';
+        const scoreColor = _ptScoreColor((r.overall_score || 0) * 100);
+        return `<tr style="${rowStyle}">
+          <td class="px-4 py-2 text-xs font-mono text-zinc-600">${i + 1}</td>
+          <td class="px-4 py-2 text-xs font-body text-zinc-300 ${boldCls}">${_teEsc(r.model_name || r.model_id || '')}</td>
+          <td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${cfg.temperature ?? '-'}</td>
+          <td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${cfg.top_p ?? '-'}</td>
+          <td class="px-4 py-2 text-center text-xs font-mono text-zinc-400">${cfg.tool_choice ?? '-'}</td>
+          <td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${cfg.max_tokens ?? '-'}</td>
+          <td class="px-4 py-2 text-right text-xs font-mono ${boldCls}" style="color:${scoreColor}">${((r.overall_score || 0) * 100).toFixed(1)}%</td>
+          <td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${((r.tool_accuracy || 0) * 100).toFixed(1)}%</td>
+          <td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${((r.param_accuracy || 0) * 100).toFixed(1)}%</td>
+          <td class="px-4 py-2 text-right text-xs font-mono text-zinc-500">${r.latency_avg_ms ? r.latency_avg_ms + 'ms' : '-'}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function ptUpdateBestCard() {
+      if (!ptBestConfig) return;
+      const card = document.getElementById('ptBestCard');
+      card.classList.remove('hidden');
+      const parts = [];
+      if (ptBestConfig.temperature !== undefined) parts.push('temp=' + ptBestConfig.temperature);
+      if (ptBestConfig.top_p !== undefined) parts.push('top_p=' + ptBestConfig.top_p);
+      if (ptBestConfig.tool_choice) parts.push('tool_choice=' + ptBestConfig.tool_choice);
+      if (ptBestConfig.max_tokens) parts.push('max_tokens=' + ptBestConfig.max_tokens);
+      document.getElementById('ptBestConfigText').textContent = parts.join(', ');
+      document.getElementById('ptBestScoreText').textContent =
+        (ptBestConfig.model_name ? ptBestConfig.model_name + ' -- ' : '') +
+        ((ptBestScore * 100).toFixed(1)) + '% overall score';
+    }
+
+    function ptSortResults(key) {
+      if (ptSortKey === key) ptSortAsc = !ptSortAsc;
+      else { ptSortKey = key; ptSortAsc = key === 'model_name' || key === 'tool_choice'; }
+      ptRenderResultsTable();
+    }
+
+    async function ptCancelTune() {
+      try {
+        await apiFetch('/api/tool-eval/param-tune/cancel', { method: 'POST' });
+        showToast('Cancellation requested', '');
+      } catch {}
+    }
+
+    function ptApplyBest() {
+      if (!ptBestConfig) return;
+      // Apply best config values to the main tool eval temperature
+      if (ptBestConfig.temperature !== undefined) {
+        const teTemp = document.getElementById('teTemperature');
+        if (teTemp) teTemp.value = ptBestConfig.temperature;
+      }
+      if (ptBestConfig.tool_choice) {
+        const teTc = document.getElementById('teToolChoice');
+        if (teTc) teTc.value = ptBestConfig.tool_choice;
+      }
+      showToast('Best config applied to Tool Eval settings', 'success');
+    }
+
+    function ptExportCSV() {
+      if (!ptResults.length) { showToast('No results to export', 'error'); return; }
+      const headers = ['model_id','model_name','temperature','top_p','tool_choice','max_tokens','overall_score','tool_accuracy','param_accuracy','latency_avg_ms'];
+      const rows = ptResults.map(r => {
+        const c = r.config || {};
+        return [r.model_id, r.model_name, c.temperature, c.top_p, c.tool_choice, c.max_tokens,
+          ((r.overall_score || 0) * 100).toFixed(1), ((r.tool_accuracy || 0) * 100).toFixed(1),
+          ((r.param_accuracy || 0) * 100).toFixed(1), r.latency_avg_ms || ''].join(',');
+      });
+      const csv = [headers.join(','), ...rows].join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'param-tune-results.csv'; a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // --- PT History ---
+    async function ptLoadHistory() {
+      try {
+        const res = await apiFetch('/api/tool-eval/param-tune/history');
+        if (!res.ok) return;
+        const data = await res.json();
+        ptHistory = data.runs || [];
+        ptRenderHistory();
+      } catch {}
+    }
+
+    function ptRenderHistory() {
+      const body = document.getElementById('ptHistoryBody');
+      if (!ptHistory.length) {
+        body.innerHTML = '<tr><td colspan="7" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No tuning runs yet.</td></tr>';
+        return;
+      }
+      body.innerHTML = ptHistory.map(r => {
+        const models = r.models_json ? (typeof r.models_json === 'string' ? JSON.parse(r.models_json) : r.models_json) : [];
+        const modelStr = models.length <= 2 ? models.join(', ') : models.length + ' models';
+        const scoreColor = r.best_score ? _ptScoreColor(r.best_score * 100) : '#85858F';
+        const statusColor = r.status === 'completed' ? 'var(--lime)' : r.status === 'cancelled' ? '#EAB308' : r.status === 'error' ? 'var(--coral)' : '#85858F';
+        return `<tr>
+          <td class="px-5 py-3 text-xs text-zinc-500 font-body">${_teTimeAgo(r.timestamp)}</td>
+          <td class="px-5 py-3 text-sm font-body text-zinc-300">${_teEsc(r.suite_name || '')}</td>
+          <td class="px-5 py-3 text-xs font-mono text-zinc-500">${_teEsc(modelStr)}</td>
+          <td class="px-5 py-3 text-right text-xs font-mono text-zinc-400">${r.completed_combos || 0}/${r.total_combos || 0}</td>
+          <td class="px-5 py-3 text-right text-sm font-mono font-bold" style="color:${scoreColor}">${r.best_score ? ((r.best_score * 100).toFixed(1) + '%') : '-'}</td>
+          <td class="px-5 py-3 text-center text-[10px] font-display tracking-wider uppercase" style="color:${statusColor}">${r.status || ''}</td>
+          <td class="px-5 py-3 text-right">
+            <button onclick="ptViewHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 mr-2">View</button>
+            <button onclick="ptDeleteHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-700 hover:text-red-400">Delete</button>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    async function ptViewHistoryRun(tuneId) {
+      try {
+        const res = await apiFetch(`/api/tool-eval/param-tune/history/${tuneId}`);
+        if (!res.ok) { showToast('Failed to load run', 'error'); return; }
+        const run = await res.json();
+        ptResults = typeof run.results_json === 'string' ? JSON.parse(run.results_json) : (run.results_json || []);
+        ptBestConfig = typeof run.best_config_json === 'string' ? JSON.parse(run.best_config_json) : run.best_config_json;
+        ptBestScore = run.best_score || 0;
+
+        showToolEvalView('pt-run');
+        document.getElementById('ptProgressSection').classList.add('hidden');
+        document.getElementById('ptResultsSection').classList.remove('hidden');
+        document.getElementById('ptApplyBestBtn').classList.remove('hidden');
+        ptUpdateBestCard();
+        ptRenderResultsTable();
+      } catch (e) {
+        showToast('Failed to load run', 'error');
+      }
+    }
+
+    function ptDeleteHistoryRun(tuneId) {
+      showModal('Delete Tuning Run', 'Delete this tuning run? This cannot be undone.', async () => {
+        try {
+          const res = await apiFetch(`/api/tool-eval/param-tune/history/${tuneId}`, { method: 'DELETE' });
+          if (!res.ok) { showToast('Failed to delete', 'error'); return; }
+          showToast('Tuning run deleted', 'success');
+          await ptLoadHistory();
+        } catch { showToast('Failed to delete', 'error'); }
+      }, { danger: true, confirmLabel: 'Delete' });
+    }
+
+    function _ptResetStartBtn() {
+      const btn = document.getElementById('ptStartBtn');
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> Start Tuning';
+      }
+    }
+
+    function _ptResetTimeout() {
+      _ptClearTimeout();
+      _ptSSETimeout = setTimeout(() => {
+        showToast('Connection timed out', 'error');
+      }, 30000);
+    }
+    function _ptClearTimeout() { if (_ptSSETimeout) { clearTimeout(_ptSSETimeout); _ptSSETimeout = null; } }
+
+    function _ptScoreColor(pct) {
+      if (pct >= 90) return 'var(--lime)';
+      if (pct >= 70) return '#22D3EE';
+      if (pct >= 50) return '#EAB308';
+      return 'var(--coral)';
+    }
+
+    // -------------------------------------------------------------------
+    // Prompt Tuner (prt prefix)
+    // -------------------------------------------------------------------
+    let prtSelectedModels = new Set();
+    let prtMode = 'quick';
+    let prtPrompts = [];           // all prompts from SSE
+    let prtBestPrompt = '';
+    let prtBestScoreVal = 0;
+    let prtHistory = [];
+    let prtRunning = false;
+    let _prtSSETimeout = null;
+    let prtScoreChart = null;
+    let prtGenScores = [];         // best score per generation for chart
+    let prtTotalPrompts = 0;
+    let prtCompletedPrompts = 0;
+    let prtCurrentGeneration = 0;
+    let prtTotalGenerations = 1;
+
+    function prtSetMode(mode) {
+      prtMode = mode;
+      const quickBtn = document.getElementById('prtModeQuick');
+      const evoBtn = document.getElementById('prtModeEvo');
+      const evoFields = document.getElementById('prtEvoFields');
+      const evoExtra = document.getElementById('prtEvoExtra');
+      if (mode === 'quick') {
+        quickBtn.style.borderColor = 'var(--lime)';
+        evoBtn.style.borderColor = 'var(--border-subtle)';
+        evoFields.classList.add('hidden');
+        evoExtra.classList.add('hidden');
+      } else {
+        quickBtn.style.borderColor = 'var(--border-subtle)';
+        evoBtn.style.borderColor = 'var(--lime)';
+        evoFields.classList.remove('hidden');
+        evoExtra.classList.remove('hidden');
+      }
+      prtUpdateEstimate();
+    }
+
+    async function prtLoadSuiteSelector() {
+      const sel = document.getElementById('prtSuiteSelect');
+      const current = sel.value;
+      try {
+        const res = await apiFetch('/api/tool-suites');
+        if (!res.ok) return;
+        const data = await res.json();
+        const suites = data.suites || [];
+        sel.innerHTML = '<option value="">-- Select a tool eval suite --</option>' +
+          suites.map(s => `<option value="${s.id}" ${s.id === current ? 'selected' : ''}>${s.name} (${(s.cases||[]).length} cases)</option>`).join('');
+      } catch (e) {}
+      prtUpdateEstimate();
+    }
+
+    function prtRenderModelGrid() {
+      const grid = document.getElementById('prtModelGrid');
+      if (!config || !config.providers) { grid.innerHTML = '<div class="text-xs text-zinc-600 font-body">No models loaded</div>'; return; }
+      let html = '';
+      for (const prov of config.providers) {
+        for (const m of (prov.models || [])) {
+          const modelId = (prov.model_prefix || '') + m.id;
+          const checked = prtSelectedModels.has(modelId);
+          const color = getColor(prov.name);
+          html += `<label class="flex items-center gap-2 py-1 px-2 rounded cursor-pointer hover:bg-white/5 transition-colors">
+            <input type="checkbox" ${checked ? 'checked' : ''} onchange="prtToggleModel('${modelId}', this.checked)" class="accent-[${color}]">
+            <span class="text-xs font-mono text-zinc-400">${m.display_name || m.id}</span>
+            <span class="text-[9px] font-mono text-zinc-700">${prov.name}</span>
+          </label>`;
+        }
+      }
+      grid.innerHTML = html || '<div class="text-xs text-zinc-600 font-body">No models available</div>';
+    }
+
+    function prtToggleModel(modelId, checked) {
+      if (checked) prtSelectedModels.add(modelId);
+      else prtSelectedModels.delete(modelId);
+      prtUpdateEstimate();
+    }
+
+    function prtPopulateMetaModel() {
+      const sel = document.getElementById('prtMetaModel');
+      const current = sel.value;
+      if (!config || !config.providers) return;
+      let html = '';
+      for (const prov of config.providers) {
+        for (const m of (prov.models || [])) {
+          const modelId = (prov.model_prefix || '') + m.id;
+          html += `<option value="${modelId}" ${modelId === current ? 'selected' : ''}>${m.display_name || m.id} (${prov.name})</option>`;
+        }
+      }
+      sel.innerHTML = html;
+    }
+
+    function prtUpdateEstimate() {
+      const popSize = parseInt(document.getElementById('prtPopSize').value) || 5;
+      const gens = prtMode === 'evolutionary' ? (parseInt(document.getElementById('prtGenerations').value) || 3) : 1;
+      const numModels = prtSelectedModels.size || 1;
+      const suiteSelect = document.getElementById('prtSuiteSelect');
+      // estimate test cases from suite name text
+      let numCases = 5; // default guess
+      const opt = suiteSelect.options[suiteSelect.selectedIndex];
+      if (opt && opt.text) {
+        const m = opt.text.match(/\((\d+) cases?\)/);
+        if (m) numCases = parseInt(m[1]);
+      }
+
+      const totalPrompts = gens * popSize;
+      const totalEvalCalls = totalPrompts * numCases * numModels;
+      const totalCalls = totalPrompts + totalEvalCalls;
+
+      const textEl = document.getElementById('prtEstimateText');
+      const warnEl = document.getElementById('prtEstimateWarn');
+      textEl.textContent = `${totalPrompts} prompts + ${totalEvalCalls} eval calls = ~${totalCalls} API calls`;
+      if (totalCalls > 100) {
+        warnEl.classList.remove('hidden');
+      } else {
+        warnEl.classList.add('hidden');
+      }
+    }
+
+    async function prtStartTune() {
+      const suiteId = document.getElementById('prtSuiteSelect').value;
+      if (!suiteId) { showToast('Please select a tool eval suite', 'error'); return; }
+      if (prtSelectedModels.size === 0) { showToast('Please select at least one target model', 'error'); return; }
+      const metaModel = document.getElementById('prtMetaModel').value;
+      if (!metaModel) { showToast('Please select a meta-model', 'error'); return; }
+
+      const popSize = parseInt(document.getElementById('prtPopSize').value) || 5;
+      const temperature = parseFloat(document.getElementById('prtTemperature').value) || 0.0;
+      const toolChoice = document.getElementById('prtToolChoice').value;
+      const basePrompt = document.getElementById('prtBasePrompt').value.trim() || undefined;
+
+      const cfg = { population_size: popSize, temperature, tool_choice: toolChoice };
+      if (prtMode === 'evolutionary') {
+        cfg.generations = parseInt(document.getElementById('prtGenerations').value) || 3;
+        cfg.selection_ratio = parseFloat(document.getElementById('prtSelRatio').value) || 0.4;
+      }
+
+      const body = {
+        suite_id: suiteId,
+        target_models: Array.from(prtSelectedModels),
+        meta_model: metaModel,
+        mode: prtMode,
+        config: cfg
+      };
+      if (basePrompt) body.base_prompt = basePrompt;
+
+      // Reset state
+      prtPrompts = [];
+      prtBestPrompt = '';
+      prtBestScoreVal = 0;
+      prtGenScores = [];
+      prtTotalPrompts = 0;
+      prtCompletedPrompts = 0;
+      prtCurrentGeneration = 0;
+      prtTotalGenerations = prtMode === 'evolutionary' ? (cfg.generations || 3) : 1;
+      prtRunning = true;
+
+      // Switch to run view
+      showToolEvalView('prt-run');
+      document.getElementById('prtProgressSection').classList.remove('hidden');
+      document.getElementById('prtBestCard').classList.add('hidden');
+      document.getElementById('prtPromptsSection').classList.remove('hidden');
+      document.getElementById('prtPromptCards').innerHTML = '';
+      document.getElementById('prtProgressBar').style.width = '0%';
+      document.getElementById('prtProgressLabel').textContent = 'Initializing...';
+      document.getElementById('prtProgressCount').textContent = '0/0';
+
+      // Timeline (evo mode)
+      if (prtMode === 'evolutionary') {
+        document.getElementById('prtTimeline').classList.remove('hidden');
+        prtRenderTimeline(0);
+        document.getElementById('prtChartSection').classList.remove('hidden');
+      } else {
+        document.getElementById('prtTimeline').classList.add('hidden');
+        document.getElementById('prtChartSection').classList.add('hidden');
+      }
+
+      // Disable start button
+      const btn = document.getElementById('prtStartBtn');
+      btn.disabled = true;
+      btn.classList.add('opacity-50');
+      btn.innerHTML = '<div class="pulse-dot"></div> Running...';
+
+      try {
+        const res = await apiFetch('/api/tool-eval/prompt-tune', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        if (res.status === 409) { showToast('A benchmark or eval is already running', 'error'); _prtResetStartBtn(); return; }
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          showToast(err.error || `Server error (${res.status})`, 'error');
+          _prtResetStartBtn(); return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          _prtResetTimeout();
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try { prtHandleSSE(JSON.parse(line.slice(6))); } catch (e) {}
+            }
+          }
+        }
+      } catch (e) {
+        showToast('Connection error: ' + (e.message || 'unknown'), 'error');
+      } finally {
+        prtRunning = false;
+        _prtResetStartBtn();
+        _prtClearTimeout();
+      }
+    }
+
+    function prtHandleSSE(evt) {
+      switch (evt.type) {
+        case 'tune_start':
+          prtTotalPrompts = evt.total_prompts || 0;
+          document.getElementById('prtProgressLabel').textContent =
+            `${evt.mode === 'evolutionary' ? 'Evolving' : 'Generating'} prompts for ${evt.suite_name || 'suite'}`;
+          document.getElementById('prtProgressCount').textContent = `0/${prtTotalPrompts}`;
+          break;
+
+        case 'generation_start':
+          prtCurrentGeneration = evt.generation || 1;
+          prtTotalGenerations = evt.total_generations || 1;
+          document.getElementById('prtProgressLabel').textContent =
+            `Generation ${prtCurrentGeneration}/${prtTotalGenerations} — generating ${evt.population_size || '?'} prompts`;
+          if (prtMode === 'evolutionary') prtRenderTimeline(prtCurrentGeneration);
+          break;
+
+        case 'prompt_generated': {
+          const p = {
+            generation: evt.generation || 1,
+            index: evt.prompt_index,
+            text: evt.prompt_text || '',
+            style: evt.style || evt.mutation_type || 'variation',
+            parent: evt.parent_prompt || null,
+            scores: {},
+            avgScore: null,
+            status: 'pending'
+          };
+          prtPrompts.push(p);
+          prtRenderPromptCard(p, prtPrompts.length - 1);
+          break;
+        }
+
+        case 'prompt_eval_start': {
+          const idx = prtPrompts.findIndex(p => p.generation === (evt.generation || 1) && p.index === evt.prompt_index);
+          if (idx >= 0) {
+            prtPrompts[idx].status = 'evaluating';
+            _prtUpdateCardStatus(idx, 'evaluating');
+          }
+          break;
+        }
+
+        case 'prompt_eval_result': {
+          prtCompletedPrompts++;
+          const idx = prtPrompts.findIndex(p => p.generation === (evt.generation || 1) && p.index === evt.prompt_index);
+          if (idx >= 0) {
+            prtPrompts[idx].scores[evt.model_id] = {
+              overall: evt.overall_score || 0,
+              tool_acc: evt.tool_accuracy || 0,
+              param_acc: evt.param_accuracy || 0
+            };
+            // Compute avg score across all models
+            const scoreVals = Object.values(prtPrompts[idx].scores).map(s => s.overall);
+            prtPrompts[idx].avgScore = scoreVals.reduce((a, b) => a + b, 0) / scoreVals.length;
+            prtPrompts[idx].status = 'scored';
+            _prtUpdateCardScore(idx);
+          }
+
+          // Update progress
+          const pct = prtTotalPrompts > 0 ? Math.round((prtCompletedPrompts / prtTotalPrompts) * 100) : 0;
+          document.getElementById('prtProgressBar').style.width = pct + '%';
+          document.getElementById('prtProgressCount').textContent = `${prtCompletedPrompts}/${prtTotalPrompts}`;
+
+          // Update best
+          if (idx >= 0 && prtPrompts[idx].avgScore > prtBestScoreVal) {
+            prtBestScoreVal = prtPrompts[idx].avgScore;
+            prtBestPrompt = prtPrompts[idx].text;
+            prtUpdateBestCard();
+          }
+          break;
+        }
+
+        case 'generation_complete':
+          if (evt.best_score != null) {
+            prtGenScores.push({ gen: evt.generation, score: evt.best_score });
+            if (prtMode === 'evolutionary') prtRenderScoreChart();
+          }
+          // Mark survivors
+          if (evt.survivors && Array.isArray(evt.survivors)) {
+            for (const p of prtPrompts) {
+              if (p.generation === evt.generation) {
+                p.survived = evt.survivors.includes(p.index);
+              }
+            }
+            _prtRefreshCards();
+          }
+          break;
+
+        case 'tune_complete':
+          prtRunning = false;
+          document.getElementById('prtProgressLabel').textContent = 'Complete!';
+          document.getElementById('prtProgressBar').style.width = '100%';
+          if (evt.best_prompt) {
+            prtBestPrompt = evt.best_prompt;
+            prtBestScoreVal = evt.best_score || 0;
+            prtUpdateBestCard();
+          }
+          showToast('Prompt tuning complete!', 'success');
+          break;
+
+        case 'cancelled':
+          prtRunning = false;
+          document.getElementById('prtProgressLabel').textContent = 'Cancelled — partial results saved';
+          showToast('Prompt tuning cancelled', 'error');
+          break;
+
+        case 'error':
+          prtRunning = false;
+          document.getElementById('prtProgressLabel').textContent = 'Error: ' + (evt.message || 'unknown');
+          showToast(evt.message || 'Tuning error', 'error');
+          break;
+
+        case 'heartbeat':
+          break;
+      }
+    }
+
+    function prtUpdateBestCard() {
+      const card = document.getElementById('prtBestCard');
+      card.classList.remove('hidden');
+      document.getElementById('prtBestScore').textContent = `Score: ${Math.round(prtBestScoreVal * 100)}%`;
+      document.getElementById('prtBestPromptText').textContent = prtBestPrompt;
+    }
+
+    function prtCopyBest() {
+      if (!prtBestPrompt) return;
+      navigator.clipboard.writeText(prtBestPrompt).then(() => {
+        showToast('Best prompt copied to clipboard', 'success');
+      }).catch(() => {
+        showToast('Failed to copy', 'error');
+      });
+    }
+
+    function prtRenderTimeline(activeGen) {
+      const el = document.getElementById('prtTimelineDots');
+      let html = '';
+      for (let g = 1; g <= prtTotalGenerations; g++) {
+        const isActive = g === activeGen;
+        const isDone = g < activeGen;
+        const color = isDone ? 'var(--lime)' : (isActive ? '#A855F7' : 'var(--border-subtle)');
+        const size = isActive ? 'w-8 h-8' : 'w-6 h-6';
+        html += `<div class="flex items-center gap-1">
+          <div class="${size} rounded-full flex items-center justify-center text-[10px] font-mono font-bold transition-all" style="border:2px solid ${color};color:${color};${isDone ? 'background:rgba(191,255,0,0.1)' : (isActive ? 'background:rgba(168,85,247,0.1)' : '')}">${g}</div>
+          ${g < prtTotalGenerations ? '<div class="w-6 h-px" style="background:var(--border-subtle)"></div>' : ''}
+        </div>`;
+      }
+      el.innerHTML = html;
+    }
+
+    function prtRenderPromptCard(p, idx) {
+      const container = document.getElementById('prtPromptCards');
+      const div = document.createElement('div');
+      div.id = `prt-card-${idx}`;
+      div.className = 'rounded-sm p-3 transition-all';
+      div.style.cssText = 'background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);';
+      const preview = (p.text || '').length > 120 ? p.text.slice(0, 120) + '...' : p.text;
+      const styleColor = _prtStyleColor(p.style);
+      div.innerHTML = `
+        <div class="flex items-center justify-between mb-2">
+          <div class="flex items-center gap-2">
+            ${prtMode === 'evolutionary' ? `<span class="text-[9px] font-mono text-zinc-700">Gen ${p.generation}</span>` : ''}
+            <span class="text-[9px] font-display tracking-wider uppercase px-2 py-0.5 rounded-sm" style="background:${styleColor}15;color:${styleColor};border:1px solid ${styleColor}30;">${p.style}</span>
+          </div>
+          <span id="prt-score-${idx}" class="text-xs font-mono text-zinc-600">${p.status === 'pending' ? 'pending' : ''}</span>
+        </div>
+        <div class="text-xs font-mono text-zinc-500 leading-relaxed">${_prtEsc(preview)}</div>
+        ${p.avgScore != null ? `<div class="mt-2 h-1 rounded-full overflow-hidden" style="background:rgba(255,255,255,0.05);"><div style="width:${Math.round(p.avgScore * 100)}%;background:${_prtScoreColor(Math.round(p.avgScore * 100))};height:100%;border-radius:9999px;"></div></div>` : ''}
+      `;
+      container.appendChild(div);
+    }
+
+    function _prtUpdateCardStatus(idx, status) {
+      const scoreEl = document.getElementById(`prt-score-${idx}`);
+      if (scoreEl) {
+        scoreEl.textContent = status === 'evaluating' ? 'evaluating...' : status;
+        if (status === 'evaluating') scoreEl.style.color = '#A855F7';
+      }
+    }
+
+    function _prtUpdateCardScore(idx) {
+      const p = prtPrompts[idx];
+      if (!p) return;
+      const scoreEl = document.getElementById(`prt-score-${idx}`);
+      if (scoreEl) {
+        const pct = Math.round((p.avgScore || 0) * 100);
+        scoreEl.textContent = `${pct}%`;
+        scoreEl.style.color = _prtScoreColor(pct);
+      }
+      // Add score bar
+      const card = document.getElementById(`prt-card-${idx}`);
+      if (card && p.avgScore != null) {
+        const existing = card.querySelector('.prt-score-bar');
+        if (existing) existing.remove();
+        const bar = document.createElement('div');
+        bar.className = 'prt-score-bar mt-2 h-1 rounded-full overflow-hidden';
+        bar.style.cssText = 'background:rgba(255,255,255,0.05);';
+        const pct = Math.round(p.avgScore * 100);
+        bar.innerHTML = `<div style="width:${pct}%;background:${_prtScoreColor(pct)};height:100%;border-radius:9999px;transition:width 0.3s;"></div>`;
+        card.appendChild(bar);
+      }
+    }
+
+    function _prtRefreshCards() {
+      for (let i = 0; i < prtPrompts.length; i++) {
+        const p = prtPrompts[i];
+        const card = document.getElementById(`prt-card-${i}`);
+        if (card && p.survived === true) {
+          card.style.borderColor = 'rgba(191,255,0,0.3)';
+          card.style.background = 'rgba(191,255,0,0.03)';
+        } else if (card && p.survived === false) {
+          card.style.opacity = '0.4';
+        }
+      }
+    }
+
+    function prtRenderScoreChart() {
+      const canvas = document.getElementById('prtScoreChart');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (prtScoreChart) prtScoreChart.destroy();
+
+      prtScoreChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: prtGenScores.map(g => `Gen ${g.gen}`),
+          datasets: [{
+            label: 'Best Score',
+            data: prtGenScores.map(g => Math.round(g.score * 100)),
+            borderColor: '#A855F7',
+            backgroundColor: 'rgba(168,85,247,0.1)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 5,
+            pointBackgroundColor: '#A855F7',
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: {
+              min: 0, max: 100,
+              ticks: { color: '#52525B', font: { size: 10, family: "'JetBrains Mono', monospace" }, callback: v => v + '%' },
+              grid: { color: 'rgba(255,255,255,0.03)' }
+            },
+            x: {
+              ticks: { color: '#52525B', font: { size: 10, family: "'JetBrains Mono', monospace" } },
+              grid: { display: false }
+            }
+          }
+        }
+      });
+    }
+
+    async function prtCancelTune() {
+      try {
+        await apiFetch('/api/tool-eval/prompt-tune/cancel', { method: 'POST' });
+        showToast('Cancelling prompt tuning...', 'success');
+      } catch (e) {
+        showToast('Failed to cancel', 'error');
+      }
+    }
+
+    async function prtLoadHistory() {
+      try {
+        const res = await apiFetch('/api/tool-eval/prompt-tune/history');
+        if (!res.ok) { showToast('Failed to load prompt tuning history', 'error'); return; }
+        const data = await res.json();
+        prtHistory = data.runs || [];
+        prtRenderHistory();
+      } catch (e) {
+        showToast('Failed to load history', 'error');
+      }
+    }
+
+    function prtRenderHistory() {
+      const tbody = document.getElementById('prtHistoryBody');
+      if (!prtHistory.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No prompt tuning runs yet.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = prtHistory.map(r => {
+        const models = (() => { try { return JSON.parse(r.target_models_json || '[]'); } catch { return []; } })();
+        const modelNames = models.map(m => m.split('/').pop()).join(', ');
+        const statusColor = r.status === 'completed' ? 'var(--lime)' : r.status === 'cancelled' ? '#EAB308' : r.status === 'error' ? 'var(--coral)' : '#A855F7';
+        const scorePct = Math.round((r.best_score || 0) * 100);
+        return `<tr style="border-bottom:1px solid var(--border-subtle)" class="hover:bg-white/[0.02] transition-colors">
+          <td class="px-5 py-3 text-xs font-mono text-zinc-500">${(r.timestamp || '').slice(0, 16)}</td>
+          <td class="px-5 py-3 text-xs font-mono text-zinc-300">${_prtEsc(r.suite_name || 'Unknown')}</td>
+          <td class="px-5 py-3 text-center"><span class="text-[9px] font-display tracking-wider uppercase px-2 py-0.5 rounded-sm" style="background:${r.mode === 'evolutionary' ? 'rgba(168,85,247,0.1)' : 'rgba(191,255,0,0.1)'};color:${r.mode === 'evolutionary' ? '#A855F7' : 'var(--lime)'}">${r.mode || 'quick'}</span></td>
+          <td class="px-5 py-3 text-xs font-mono text-zinc-400">${modelNames || '-'}</td>
+          <td class="px-5 py-3 text-right text-xs font-mono" style="color:${_prtScoreColor(scorePct)}">${scorePct}%</td>
+          <td class="px-5 py-3 text-center"><span class="text-[9px] font-display tracking-wider uppercase" style="color:${statusColor}">${r.status || 'unknown'}</span></td>
+          <td class="px-5 py-3 text-right">
+            <button onclick="prtViewHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-200 mr-3">View</button>
+            <button onclick="prtDeleteHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-700 hover:text-red-400">Delete</button>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    async function prtViewHistoryRun(tuneId) {
+      try {
+        const res = await apiFetch(`/api/tool-eval/prompt-tune/history/${tuneId}`);
+        if (!res.ok) { showToast('Failed to load run details', 'error'); return; }
+        const run = await res.json();
+
+        // Reset state and populate from history
+        prtPrompts = [];
+        prtBestPrompt = run.best_prompt || '';
+        prtBestScoreVal = run.best_score || 0;
+        prtGenScores = [];
+        prtMode = run.mode || 'quick';
+        prtTotalGenerations = 1;
+
+        // Parse generations
+        const generations = (() => { try { return JSON.parse(run.generations_json || '[]'); } catch { return []; } })();
+        prtTotalGenerations = generations.length || 1;
+
+        for (const gen of generations) {
+          if (gen.best_score != null) {
+            prtGenScores.push({ gen: gen.generation, score: gen.best_score });
+          }
+          for (const p of (gen.prompts || [])) {
+            prtPrompts.push({
+              generation: gen.generation,
+              index: p.index,
+              text: p.text || '',
+              style: p.style || p.mutation_type || 'variation',
+              parent: null,
+              scores: p.scores || {},
+              avgScore: p.avg_score != null ? p.avg_score : null,
+              status: 'scored',
+              survived: p.survived || false
+            });
+          }
+        }
+
+        // Switch to run view and render
+        showToolEvalView('prt-run');
+        document.getElementById('prtProgressSection').classList.add('hidden');
+
+        // Timeline
+        if (prtMode === 'evolutionary' && prtTotalGenerations > 1) {
+          document.getElementById('prtTimeline').classList.remove('hidden');
+          prtRenderTimeline(prtTotalGenerations);
+          document.getElementById('prtChartSection').classList.remove('hidden');
+          prtRenderScoreChart();
+        } else {
+          document.getElementById('prtTimeline').classList.add('hidden');
+          document.getElementById('prtChartSection').classList.add('hidden');
+        }
+
+        // Best card
+        if (prtBestPrompt) prtUpdateBestCard();
+        else document.getElementById('prtBestCard').classList.add('hidden');
+
+        // Prompt cards
+        document.getElementById('prtPromptsSection').classList.remove('hidden');
+        document.getElementById('prtPromptCards').innerHTML = '';
+        for (let i = 0; i < prtPrompts.length; i++) {
+          prtRenderPromptCard(prtPrompts[i], i);
+          if (prtPrompts[i].avgScore != null) _prtUpdateCardScore(i);
+        }
+        _prtRefreshCards();
+
+      } catch (e) {
+        showToast('Failed to load run: ' + (e.message || 'unknown'), 'error');
+      }
+    }
+
+    async function prtDeleteHistoryRun(tuneId) {
+      if (!confirm('Delete this prompt tuning run?')) return;
+      try {
+        const res = await apiFetch(`/api/tool-eval/prompt-tune/history/${tuneId}`, { method: 'DELETE' });
+        if (!res.ok) { showToast('Failed to delete', 'error'); return; }
+        showToast('Run deleted', 'success');
+        prtLoadHistory();
+      } catch (e) {
+        showToast('Failed to delete', 'error');
+      }
+    }
+
+    function _prtResetStartBtn() {
+      const btn = document.getElementById('prtStartBtn');
+      if (!btn) return;
+      btn.disabled = false;
+      btn.classList.remove('opacity-50');
+      btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg> Start Prompt Tuning';
+    }
+
+    function _prtResetTimeout() {
+      _prtClearTimeout();
+      _prtSSETimeout = setTimeout(() => {
+        showToast('Connection timed out', 'error');
+      }, 30000);
+    }
+    function _prtClearTimeout() { if (_prtSSETimeout) { clearTimeout(_prtSSETimeout); _prtSSETimeout = null; } }
+
+    function _prtScoreColor(pct) {
+      if (pct >= 90) return 'var(--lime)';
+      if (pct >= 70) return '#22D3EE';
+      if (pct >= 50) return '#EAB308';
+      return 'var(--coral)';
+    }
+
+    function _prtStyleColor(style) {
+      const map = {
+        concise: '#22D3EE', detailed: '#A855F7', structured: 'var(--lime)',
+        conversational: '#EAB308', technical: '#F97316',
+        bold: '#FF3B5C', conservative: '#22D3EE', crossover: '#A855F7',
+        variation: '#71717A'
+      };
+      return map[(style || '').toLowerCase()] || '#71717A';
+    }
+
+    function _prtEsc(str) {
+      const d = document.createElement('div');
+      d.textContent = str || '';
+      return d.innerHTML;
+    }
+
+    // -------------------------------------------------------------------
+    // LLM Judge (jg prefix)
+    // -------------------------------------------------------------------
+    let jgEnabled = false;
+    let jgVerdicts = [];         // per-case verdicts from SSE
+    let jgReport = null;         // full judge report object
+    let jgHistory = [];
+    let jgCompCases = [];        // comparative cases
+    let jgCompTotal = 0;
+    let jgCompCompleted = 0;
+
+    function jgTogglePanel() {
+      const checkbox = document.getElementById('jgToggle');
+      jgEnabled = checkbox.checked;
+      const panel = document.getElementById('jgSettingsPanel');
+      const track = document.getElementById('jgToggleTrack');
+      const dot = document.getElementById('jgToggleDot');
+      if (jgEnabled) {
+        panel.classList.remove('hidden');
+        track.style.background = '#F59E0B';
+        dot.style.background = '#fff';
+        dot.style.transform = 'translateX(16px)';
+        jgPopulateJudgeModel();
+      } else {
+        panel.classList.add('hidden');
+        track.style.background = 'var(--border-subtle)';
+        dot.style.background = '#52525B';
+        dot.style.transform = 'translateX(0)';
+      }
+    }
+
+    function jgPopulateJudgeModel() {
+      const sel = document.getElementById('jgJudgeModel');
+      const current = sel.value;
+      if (!config || !config.providers) return;
+      let html = '';
+      for (const prov of config.providers) {
+        for (const m of (prov.models || [])) {
+          const modelId = (prov.model_prefix || '') + m.id;
+          html += `<option value="${modelId}" ${modelId === current ? 'selected' : ''}>${m.display_name || m.id} (${prov.name})</option>`;
+        }
+      }
+      sel.innerHTML = html;
+    }
+
+    function jgGetConfig() {
+      if (!jgEnabled) return null;
+      return {
+        enabled: true,
+        mode: document.getElementById('jgMode').value,
+        judge_model: document.getElementById('jgJudgeModel').value
+      };
+    }
+
+    // --- Judge SSE handling (integrated into _teHandleSSE) ---
+    function jgHandleSSE(data) {
+      switch (data.type) {
+        case 'judge_start':
+          document.getElementById('jgReportSection').classList.remove('hidden');
+          document.getElementById('jgReportStatus').textContent = `Judging ${data.cases_to_review || '?'} cases with ${data.judge_model || 'AI'}...`;
+          document.getElementById('jgGradeBadge').textContent = '...';
+          break;
+
+        case 'judge_verdict': {
+          jgVerdicts.push(data);
+          // Show live inline badge if in live mode
+          if (document.getElementById('jgMode')?.value === 'live_inline') {
+            jgAddInlineBadge(data);
+          }
+          // Add to per-case verdicts in report panel
+          jgRenderVerdict(data);
+          break;
+        }
+
+        case 'judge_report':
+          jgReport = data.report || data;
+          jgRenderReport(jgReport);
+          break;
+
+        case 'judge_complete':
+          document.getElementById('jgReportStatus').textContent = 'Complete';
+          if (data.judge_report_id) window.jgLastReportId = data.judge_report_id;
+          showToast('Judge report complete!', 'success');
+          break;
+
+        // Comparative events
+        case 'compare_start':
+          document.getElementById('jgCompModelA').textContent = data.model_a || 'Model A';
+          document.getElementById('jgCompModelB').textContent = data.model_b || 'Model B';
+          jgCompTotal = data.cases || 0;
+          jgCompCompleted = 0;
+          jgCompCases = [];
+          document.getElementById('jgCompProgress').classList.remove('hidden');
+          document.getElementById('jgCompProgressLabel').textContent = `Comparing ${jgCompTotal} cases...`;
+          document.getElementById('jgCompProgressCount').textContent = `0/${jgCompTotal}`;
+          document.getElementById('jgCompProgressBar').style.width = '0%';
+          break;
+
+        case 'compare_case': {
+          jgCompCompleted++;
+          jgCompCases.push(data);
+          const pct = jgCompTotal > 0 ? Math.round((jgCompCompleted / jgCompTotal) * 100) : 0;
+          document.getElementById('jgCompProgressBar').style.width = pct + '%';
+          document.getElementById('jgCompProgressCount').textContent = `${jgCompCompleted}/${jgCompTotal}`;
+          jgRenderCompareCase(data);
+          break;
+        }
+
+        case 'compare_complete':
+          document.getElementById('jgCompProgress').classList.add('hidden');
+          jgRenderCompareVerdict(data);
+          break;
+      }
+    }
+
+    function jgAddInlineBadge(verdict) {
+      // Find the live row matching this test case + model
+      const rows = document.querySelectorAll('#teLiveBody tr');
+      for (const row of rows) {
+        const cells = row.querySelectorAll('td');
+        if (cells.length < 6) continue;
+        // Match by test case text (rough match)
+        const testCaseCell = cells[1]?.textContent?.trim() || '';
+        const modelCell = cells[0]?.textContent?.trim() || '';
+        const tcId = verdict.test_case_id || '';
+        const modelId = verdict.model_id || '';
+        if ((testCaseCell.includes(tcId) || tcId.includes(testCaseCell)) &&
+            (modelCell.includes(modelId.split('/').pop()) || modelId.includes(modelCell))) {
+          // Check if badge column exists
+          let badgeCell = row.querySelector('.jg-badge-cell');
+          if (!badgeCell) {
+            badgeCell = document.createElement('td');
+            badgeCell.className = 'jg-badge-cell px-5 py-2 text-center';
+            row.appendChild(badgeCell);
+          }
+          const stars = _jgStars(verdict.quality_score || 0);
+          const verdictColor = _jgVerdictColor(verdict.verdict);
+          badgeCell.innerHTML = `
+            <div class="inline-flex items-center gap-1 cursor-pointer" onclick="jgExpandBadge(this)" title="Click to see reasoning">
+              <span class="text-[10px]">${stars}</span>
+              <span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:${verdictColor}15;color:${verdictColor};border:1px solid ${verdictColor}30;">${verdict.verdict || '?'}</span>
+            </div>
+            <div class="hidden mt-1 text-left">
+              <p class="text-[10px] font-body text-zinc-400 mb-1">${_jgEsc(verdict.summary || '')}</p>
+              <p class="text-[10px] font-body text-zinc-600 leading-relaxed">${_jgEsc(verdict.reasoning || '')}</p>
+            </div>`;
+          break;
+        }
+      }
+    }
+
+    function jgExpandBadge(el) {
+      const detail = el.nextElementSibling;
+      if (detail) detail.classList.toggle('hidden');
+    }
+
+    function jgRenderVerdict(v) {
+      const container = document.getElementById('jgVerdicts');
+      const verdictColor = _jgVerdictColor(v.verdict);
+      const stars = _jgStars(v.quality_score || 0);
+      const div = document.createElement('div');
+      div.className = 'rounded-sm p-3 cursor-pointer transition-all';
+      div.style.cssText = `background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);`;
+      div.onclick = function() { this.querySelector('.jg-verdict-detail')?.classList.toggle('hidden'); };
+      div.innerHTML = `
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="text-[9px] font-mono text-zinc-600">${_jgEsc(v.test_case_id || '')}</span>
+            <span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:${verdictColor}15;color:${verdictColor};border:1px solid ${verdictColor}30;">${v.verdict || '?'}</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-[10px]">${stars}</span>
+            <span class="text-xs font-mono text-zinc-500">${v.quality_score || 0}/5</span>
+          </div>
+        </div>
+        <div class="jg-verdict-detail hidden mt-2 pt-2" style="border-top:1px solid var(--border-subtle);">
+          <p class="text-xs font-body text-zinc-300 mb-1">${_jgEsc(v.summary || '')}</p>
+          <p class="text-xs font-body text-zinc-500 leading-relaxed">${_jgEsc(v.reasoning || '')}</p>
+          <div class="flex gap-4 mt-2">
+            <span class="text-[9px] text-zinc-600 font-mono">Tool: ${_jgEsc(v.tool_selection_assessment || '-')}</span>
+            <span class="text-[9px] text-zinc-600 font-mono">Params: ${_jgEsc(v.param_assessment || '-')}</span>
+          </div>
+        </div>`;
+      container.appendChild(div);
+    }
+
+    function jgRenderReport(report) {
+      // Grade badge
+      document.getElementById('jgGradeBadge').textContent = report.overall_grade || '?';
+      const gradeColor = _jgGradeColor(report.overall_grade || '');
+      document.getElementById('jgGradeBadge').style.background = gradeColor + '15';
+      document.getElementById('jgGradeBadge').style.color = gradeColor;
+
+      // Score
+      const score = report.overall_score || 0;
+      document.getElementById('jgScoreValue').textContent = `${score}/100`;
+      document.getElementById('jgScoreBar').style.width = score + '%';
+      document.getElementById('jgScoreBar').style.background = _jgScoreColor(score);
+
+      // Strengths
+      const strengthsEl = document.getElementById('jgStrengths');
+      strengthsEl.innerHTML = (report.strengths || []).map(s =>
+        `<li class="text-xs font-body flex items-start gap-2" style="color:var(--lime);"><span class="mt-0.5">+</span><span class="text-zinc-300">${_jgEsc(s)}</span></li>`
+      ).join('');
+
+      // Weaknesses
+      const weaknessesEl = document.getElementById('jgWeaknesses');
+      weaknessesEl.innerHTML = (report.weaknesses || []).map(w =>
+        `<li class="text-xs font-body flex items-start gap-2" style="color:var(--coral);"><span class="mt-0.5">-</span><span class="text-zinc-300">${_jgEsc(w)}</span></li>`
+      ).join('');
+
+      // Analysis
+      document.getElementById('jgAnalysis').textContent = report.cross_case_analysis || '';
+
+      // Recommendations
+      const recsEl = document.getElementById('jgRecommendations');
+      recsEl.innerHTML = (report.recommendations || []).map(r =>
+        `<li class="text-xs font-body text-zinc-300">${_jgEsc(r)}</li>`
+      ).join('');
+    }
+
+    // --- Post-eval judge on existing run ---
+    async function jgCancelJudge() {
+      try {
+        await apiFetch('/api/tool-eval/judge/cancel', { method: 'POST' });
+        showToast('Cancelling judge...', 'success');
+      } catch (e) {
+        showToast('Failed to cancel judge', 'error');
+      }
+    }
+
+    async function jgRunPostEval(evalRunId) {
+      if (!evalRunId) { showToast('No eval run selected', 'error'); return; }
+
+      // Ask for judge model
+      const judgeModel = document.getElementById('jgJudgeModel')?.value;
+      if (!judgeModel) {
+        showToast('Please enable Judge and select a judge model first', 'error');
+        return;
+      }
+
+      // Reset
+      jgVerdicts = [];
+      jgReport = null;
+      document.getElementById('jgVerdicts').innerHTML = '';
+      document.getElementById('jgReportSection').classList.remove('hidden');
+      document.getElementById('jgReportStatus').textContent = 'Starting judge...';
+      document.getElementById('jgGradeBadge').textContent = '...';
+
+      try {
+        const res = await apiFetch('/api/tool-eval/judge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ eval_run_id: evalRunId, judge_model: judgeModel })
+        });
+
+        if (res.status === 409) { showToast('Another operation is running', 'error'); return; }
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          showToast(err.error || `Server error (${res.status})`, 'error');
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try { jgHandleSSE(JSON.parse(line.slice(6))); } catch (e) {}
+            }
+          }
+        }
+      } catch (e) {
+        showToast('Judge error: ' + (e.message || 'unknown'), 'error');
+      }
+    }
+
+    // --- Comparative Judge ---
+    async function jgStartCompare(evalRunIdA, evalRunIdB) {
+      if (!evalRunIdA || !evalRunIdB) { showToast('Select two eval runs to compare', 'error'); return; }
+
+      const judgeModel = document.getElementById('jgJudgeModel')?.value;
+      if (!judgeModel) {
+        // Use first available model
+        jgPopulateJudgeModel();
+        const sel = document.getElementById('jgJudgeModel');
+        if (!sel?.value) { showToast('No judge model available', 'error'); return; }
+      }
+
+      jgCompCases = [];
+      jgCompTotal = 0;
+      jgCompCompleted = 0;
+      document.getElementById('jgCompCases').innerHTML = '';
+      document.getElementById('jgCompVerdict').classList.add('hidden');
+
+      showToolEvalView('jg-compare');
+
+      try {
+        const res = await apiFetch('/api/tool-eval/judge/compare', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            eval_run_id_a: evalRunIdA,
+            eval_run_id_b: evalRunIdB,
+            judge_model: document.getElementById('jgJudgeModel')?.value || ''
+          })
+        });
+
+        if (res.status === 409) { showToast('Another operation is running', 'error'); return; }
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          showToast(err.error || `Server error (${res.status})`, 'error');
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try { jgHandleSSE(JSON.parse(line.slice(6))); } catch (e) {}
+            }
+          }
+        }
+      } catch (e) {
+        showToast('Compare error: ' + (e.message || 'unknown'), 'error');
+      }
+    }
+
+    function jgRenderCompareCase(c) {
+      const container = document.getElementById('jgCompCases');
+      const winColor = c.winner === 'model_a' ? '#22D3EE' : c.winner === 'model_b' ? '#F59E0B' : '#71717A';
+      const arrow = c.winner === 'model_a' ? '&larr;' : c.winner === 'model_b' ? '&rarr;' : '=';
+      const conf = Math.round((c.confidence || 0) * 100);
+      const div = document.createElement('div');
+      div.className = 'card rounded-sm p-3';
+      div.innerHTML = `
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-[9px] font-mono text-zinc-600">${_jgEsc(c.test_case_id || `Case ${jgCompCompleted}`)}</span>
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-bold" style="color:${winColor};">${arrow}</span>
+            <span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:${winColor}15;color:${winColor};border:1px solid ${winColor}30;">${c.winner === 'tie' ? 'Tie' : c.winner === 'model_a' ? 'A wins' : 'B wins'} (${conf}%)</span>
+          </div>
+        </div>
+        <p class="text-[10px] font-body text-zinc-500">${_jgEsc(c.reasoning || '')}</p>`;
+      container.appendChild(div);
+    }
+
+    function jgRenderCompareVerdict(data) {
+      const verdict = document.getElementById('jgCompVerdict');
+      verdict.classList.remove('hidden');
+
+      const winnerText = data.overall_winner === 'model_a'
+        ? document.getElementById('jgCompModelA').textContent + ' wins'
+        : data.overall_winner === 'model_b'
+        ? document.getElementById('jgCompModelB').textContent + ' wins'
+        : 'Tie';
+
+      document.getElementById('jgCompWinner').innerHTML = `<span class="font-display font-bold">${winnerText}</span> &mdash; Score: ${data.score_a || 0} vs ${data.score_b || 0}`;
+      document.getElementById('jgCompSummary').textContent = data.summary || '';
+
+      // Update summary bar
+      const aWins = jgCompCases.filter(c => c.winner === 'model_a').length;
+      const bWins = jgCompCases.filter(c => c.winner === 'model_b').length;
+      const ties = jgCompCases.filter(c => c.winner === 'tie').length;
+      document.getElementById('jgCompSummaryBar').innerHTML = `
+        <span style="color:#22D3EE;">A: ${aWins}</span>
+        <span class="text-zinc-700">|</span>
+        <span class="text-zinc-500">Tie: ${ties}</span>
+        <span class="text-zinc-700">|</span>
+        <span style="color:#F59E0B;">B: ${bWins}</span>`;
+    }
+
+    // --- Judge History ---
+    async function jgLoadHistory() {
+      try {
+        const res = await apiFetch('/api/tool-eval/judge/reports');
+        if (!res.ok) return;
+        const data = await res.json();
+        jgHistory = data.reports || [];
+        jgRenderHistory();
+      } catch (e) {}
+    }
+
+    function jgRenderHistory() {
+      const tbody = document.getElementById('jgHistoryBody');
+      if (!jgHistory.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No judge reports yet.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = jgHistory.map(r => {
+        const modeLabel = r.mode === 'post_eval' ? 'Post-Eval' : r.mode === 'live_inline' ? 'Live Inline' : r.mode === 'comparative' ? 'Compare' : r.mode;
+        const modeColor = r.mode === 'comparative' ? '#22D3EE' : '#F59E0B';
+        const gradeColor = _jgGradeColor(r.overall_grade || '');
+        const statusColor = r.status === 'completed' ? 'var(--lime)' : r.status === 'error' ? 'var(--coral)' : '#F59E0B';
+        return `<tr style="border-bottom:1px solid var(--border-subtle)" class="hover:bg-white/[0.02] transition-colors">
+          <td class="px-5 py-3 text-xs font-mono text-zinc-500">${(r.timestamp || '').slice(0, 16)}</td>
+          <td class="px-5 py-3 text-center"><span class="text-[9px] font-display tracking-wider uppercase px-2 py-0.5 rounded-sm" style="background:${modeColor}15;color:${modeColor}">${modeLabel}</span></td>
+          <td class="px-5 py-3 text-xs font-mono text-zinc-400">${_jgEsc((r.judge_model || '').split('/').pop())}</td>
+          <td class="px-5 py-3 text-center"><span class="text-sm font-mono font-bold" style="color:${gradeColor};">${r.overall_grade || '-'}</span></td>
+          <td class="px-5 py-3 text-right text-xs font-mono" style="color:${_jgScoreColor(r.overall_score || 0)}">${r.overall_score != null ? r.overall_score : '-'}</td>
+          <td class="px-5 py-3 text-center"><span class="text-[9px] font-display tracking-wider uppercase" style="color:${statusColor}">${r.status || 'unknown'}</span></td>
+          <td class="px-5 py-3 text-right">
+            <button onclick="jgViewReport('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-200 mr-3">View</button>
+            <button onclick="jgDeleteReport('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-700 hover:text-red-400">Delete</button>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    async function jgViewReport(reportId) {
+      try {
+        const res = await apiFetch(`/api/tool-eval/judge/reports/${reportId}`);
+        if (!res.ok) { showToast('Failed to load report', 'error'); return; }
+        const data = await res.json();
+
+        // Parse stored data
+        const verdicts = (() => { try { return JSON.parse(data.verdicts_json || '[]'); } catch { return []; } })();
+        const report = (() => { try { return JSON.parse(data.report_json || '{}'); } catch { return {}; } })();
+
+        if (data.mode === 'comparative') {
+          // Show comparative view
+          showToolEvalView('jg-compare');
+          jgCompCases = [];
+          document.getElementById('jgCompCases').innerHTML = '';
+          document.getElementById('jgCompProgress').classList.add('hidden');
+          document.getElementById('jgCompModelA').textContent = 'Model A';
+          document.getElementById('jgCompModelB').textContent = 'Model B';
+          for (const v of verdicts) {
+            jgCompCases.push(v);
+            jgRenderCompareCase(v);
+          }
+          if (report.overall_winner) {
+            jgRenderCompareVerdict(report);
+          }
+        } else {
+          // Show post-eval / live inline report
+          showToolEvalView('run');
+          jgVerdicts = verdicts;
+          jgReport = report;
+          document.getElementById('jgVerdicts').innerHTML = '';
+          document.getElementById('jgReportSection').classList.remove('hidden');
+          document.getElementById('jgReportStatus').textContent = 'Historical Report';
+          for (const v of verdicts) {
+            jgRenderVerdict(v);
+          }
+          if (Object.keys(report).length > 0) {
+            jgRenderReport(report);
+          }
+        }
+      } catch (e) {
+        showToast('Failed to load report', 'error');
+      }
+    }
+
+    async function jgDeleteReport(reportId) {
+      if (!confirm('Delete this judge report?')) return;
+      try {
+        const res = await apiFetch(`/api/tool-eval/judge/reports/${reportId}`, { method: 'DELETE' });
+        if (!res.ok) { showToast('Failed to delete', 'error'); return; }
+        showToast('Report deleted', 'success');
+        jgLoadHistory();
+      } catch (e) {
+        showToast('Failed to delete', 'error');
+      }
+    }
+
+    function jgDownloadReport() {
+      if (!jgReport) { showToast('No report to download', 'error'); return; }
+      const data = { report: jgReport, verdicts: jgVerdicts };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `judge-report-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // --- Judge helpers ---
+    function _jgStars(score) {
+      const full = Math.min(Math.max(Math.round(score), 0), 5);
+      let s = '';
+      for (let i = 0; i < 5; i++) {
+        s += i < full ? '<span style="color:#F59E0B;">&#9733;</span>' : '<span style="color:#3f3f46;">&#9733;</span>';
+      }
+      return s;
+    }
+
+    function _jgVerdictColor(verdict) {
+      if (verdict === 'pass') return 'var(--lime)';
+      if (verdict === 'marginal') return '#EAB308';
+      return 'var(--coral)';
+    }
+
+    function _jgGradeColor(grade) {
+      if (!grade) return '#71717A';
+      const letter = grade.charAt(0).toUpperCase();
+      if (letter === 'A') return 'var(--lime)';
+      if (letter === 'B') return '#22D3EE';
+      if (letter === 'C') return '#EAB308';
+      if (letter === 'D') return '#F97316';
+      return 'var(--coral)';
+    }
+
+    function _jgScoreColor(score) {
+      if (score >= 80) return 'var(--lime)';
+      if (score >= 60) return '#22D3EE';
+      if (score >= 40) return '#EAB308';
+      return 'var(--coral)';
+    }
+
+    function _jgEsc(str) {
+      const d = document.createElement('div');
+      d.textContent = str || '';
+      return d.innerHTML;
     }
 
     // --- Suite List ---
@@ -5507,6 +8470,7 @@
             if (allSel) { teSelectedModels.delete(c.dataset.modelId); c.classList.remove('selected'); }
             else { teSelectedModels.add(c.dataset.modelId); c.classList.add('selected'); }
           });
+          ppOnModelSelectionChange('tooleval');
         };
         group.appendChild(header);
 
@@ -5525,6 +8489,7 @@
               teSelectedModels.add(m.model_id);
               card.classList.add('selected');
             }
+            ppOnModelSelectionChange('tooleval');
           };
           card.innerHTML = `
             <div class="check-dot flex-shrink-0"></div>
@@ -5544,11 +8509,13 @@
         teSelectedModels.add(c.dataset.modelId);
         c.classList.add('selected');
       });
+      ppOnModelSelectionChange('tooleval');
     }
 
     function teClearModels() {
       teSelectedModels.clear();
       document.querySelectorAll('#teModelGrid .model-card').forEach(c => c.classList.remove('selected'));
+      ppOnModelSelectionChange('tooleval');
     }
 
     function _teResetRunView() {
@@ -5590,12 +8557,25 @@
       document.getElementById('teProgressLabel').textContent = 'Initializing...';
       document.getElementById('teProgressCount').textContent = '0/0';
 
+      const tePpParams = ppCollectParams('tooleval');
+      const teJudgeConfig = jgGetConfig();
       const body = {
         suite_id: teRunSuiteId,
         models: Array.from(teSelectedModels),
         temperature: parseFloat(document.getElementById('teTemperature').value) || 0.0,
         tool_choice: document.getElementById('teToolChoice').value,
+        ...(tePpParams ? { provider_params: tePpParams } : {}),
+        ...(teJudgeConfig ? { judge: teJudgeConfig } : {}),
       };
+
+      // Reset judge state
+      jgVerdicts = [];
+      jgReport = null;
+      document.getElementById('jgReportSection')?.classList.add('hidden');
+      document.getElementById('jgVerdicts') && (document.getElementById('jgVerdicts').innerHTML = '');
+      // Show/hide judge column in live results table
+      const jgColHeader = document.getElementById('jgLiveColHeader');
+      if (jgColHeader) jgColHeader.classList.toggle('hidden', !teJudgeConfig);
 
       try {
         const res = await apiFetch('/api/tool-eval', {
@@ -5714,6 +8694,12 @@
 
       if (data.type === 'error') {
         _teShowSSEError(data.message || 'Unknown error');
+      }
+
+      // Judge SSE events (integrated into eval stream)
+      if (data.type === 'judge_start' || data.type === 'judge_verdict' ||
+          data.type === 'judge_report' || data.type === 'judge_complete') {
+        jgHandleSSE(data);
       }
 
       // heartbeat: just resets timeout (handled in resetTimeout)
@@ -5882,6 +8868,7 @@
           <td class="px-5 py-3 text-right text-sm font-mono font-bold" style="color:${overallColor}">${avgOverall}${avgOverall !== '-' ? '%' : ''}</td>
           <td class="px-5 py-3 text-right">
             <button onclick="teViewHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 mr-2">View</button>
+            <button onclick="jgRunPostEval('${r.id}')" class="text-[10px] font-display tracking-wider uppercase mr-2" style="color:#F59E0B;opacity:0.6" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">Judge</button>
             <button onclick="teExportResults('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 mr-2" style="color:var(--lime);opacity:0.6" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">Export</button>
             <button onclick="teDeleteHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-700 hover:text-red-400">Delete</button>
           </td>

@@ -45,6 +45,12 @@ from benchmark import (  # noqa: E402
 import auth
 import db
 from keyvault import vault
+from provider_params import (
+    PROVIDER_REGISTRY,
+    identify_provider,
+    validate_params,
+    build_litellm_kwargs,
+)
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 
@@ -1276,6 +1282,7 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
     prompt = body.get("prompt", "")
     context_tiers = body.get("context_tiers", [0])
     warmup = body.get("warmup", True)
+    provider_params = body.get("provider_params")  # Optional: tier2 + passthrough
 
     # --- Input validation ---
     if not isinstance(model_ids, list) or len(model_ids) == 0:
@@ -1396,14 +1403,16 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
                         # Warm-up run (discarded)
                         if warmup:
                             await async_run_single(
-                                target, prompt, max_tokens, temperature, tier
+                                target, prompt, max_tokens, temperature, tier,
+                                provider_params=provider_params,
                             )
 
                         for r in range(runs):
                             if cancel_event.is_set():
                                 return
                             result = await async_run_single(
-                                target, prompt, max_tokens, temperature, tier
+                                target, prompt, max_tokens, temperature, tier,
+                                provider_params=provider_params,
                             )
                             await queue.put({
                                 "type": "result",
@@ -2127,10 +2136,14 @@ async def run_single_eval(
     test_case: dict,
     temperature: float,
     tool_choice: str = "required",
+    provider_params: dict | None = None,
+    system_prompt: str | None = None,
 ) -> dict:
     """Run one test case against one model. Returns result dict.
 
     Uses litellm.acompletion() (non-streaming, since we need tool_calls).
+    Optional system_prompt injects a system message before the user prompt
+    (used by Prompt Tuner to test prompt variations).
     """
     # Parse expected values
     expected_tool = _parse_expected_tool(test_case.get("expected_tool"))
@@ -2159,9 +2172,21 @@ async def run_single_eval(
         "raw_response": None,
     }
 
+    # Build validated+clamped params via provider_params module
+    pp_copy = dict(provider_params) if provider_params else None
+    extra = build_litellm_kwargs(
+        target, provider_params=pp_copy, temperature=temperature,
+    )
+
+    # Build messages (optional system prompt for prompt tuner)
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": test_case["prompt"]})
+
     kwargs = {
         "model": target.model_id,
-        "messages": [{"role": "user", "content": test_case["prompt"]}],
+        "messages": messages,
         "tools": tools,
         "tool_choice": tool_choice,
         "max_tokens": 1024,
@@ -2172,14 +2197,17 @@ async def run_single_eval(
         kwargs["api_base"] = target.api_base
     if target.api_key:
         kwargs["api_key"] = target.api_key
-    # Only add temperature if not skipped
-    if "temperature" not in (target.skip_params or []):
-        kwargs["temperature"] = temperature
-    # Remove other skipped params
-    if target.skip_params:
-        for p in target.skip_params:
-            if p != "temperature":
-                kwargs.pop(p, None)
+    # Apply validated params from build_litellm_kwargs
+    if extra:
+        kwargs.update(extra)
+    else:
+        # Fallback: no provider_params, apply directly (backward compat)
+        if "temperature" not in (target.skip_params or []):
+            kwargs["temperature"] = temperature
+        if target.skip_params:
+            for p in target.skip_params:
+                if p != "temperature":
+                    kwargs.pop(p, None)
 
     # Capture raw request (sanitize: remove api_key)
     raw_req = dict(kwargs)
@@ -2241,6 +2269,7 @@ async def run_multi_turn_eval(
     test_case: dict,
     temperature: float,
     tool_choice: str = "required",
+    provider_params: dict | None = None,
 ) -> dict:
     """Run a multi-turn test case against one model. Returns result dict.
 
@@ -2290,6 +2319,12 @@ async def run_multi_turn_eval(
 
     messages = [{"role": "user", "content": test_case["prompt"]}]
 
+    # Build validated+clamped params via provider_params module
+    pp_copy = dict(provider_params) if provider_params else None
+    extra = build_litellm_kwargs(
+        target, provider_params=pp_copy, temperature=temperature,
+    )
+
     base_kwargs = {
         "model": target.model_id,
         "tools": tools,
@@ -2302,12 +2337,17 @@ async def run_multi_turn_eval(
         base_kwargs["api_base"] = target.api_base
     if target.api_key:
         base_kwargs["api_key"] = target.api_key
-    if "temperature" not in (target.skip_params or []):
-        base_kwargs["temperature"] = temperature
-    if target.skip_params:
-        for p in target.skip_params:
-            if p != "temperature":
-                base_kwargs.pop(p, None)
+    # Apply validated params from build_litellm_kwargs
+    if extra:
+        base_kwargs.update(extra)
+    else:
+        # Fallback: no provider_params, apply directly (backward compat)
+        if "temperature" not in (target.skip_params or []):
+            base_kwargs["temperature"] = temperature
+        if target.skip_params:
+            for p in target.skip_params:
+                if p != "temperature":
+                    base_kwargs.pop(p, None)
 
     total_latency = 0.0
 
@@ -2482,6 +2522,8 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
     model_ids = body.get("models", [])
     temperature = body.get("temperature", 0.0)
     tool_choice = body.get("tool_choice", "required")
+    provider_params = body.get("provider_params")  # Optional: tier2 + passthrough
+    judge_config = body.get("judge")  # Optional: {"enabled": true, "mode": "...", "judge_model": "..."}
 
     # --- Validation ---
     if not suite_id:
@@ -2536,6 +2578,25 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
                 user_keys_cache[t.provider_key] = encrypted
     targets = inject_user_keys(targets, user_keys_cache)
 
+    # --- Judge setup (opt-in) ---
+    judge_enabled = False
+    judge_mode = "none"
+    judge_target = None
+    if isinstance(judge_config, dict) and judge_config.get("enabled"):
+        judge_mode = judge_config.get("mode", "none")
+        judge_model_id = judge_config.get("judge_model")
+        if judge_mode in ("live_inline", "post_eval") and judge_model_id:
+            judge_enabled = True
+            jt_list = [t for t in all_targets if t.model_id == judge_model_id]
+            if jt_list:
+                judge_target = jt_list[0]
+                if judge_target.provider_key:
+                    enc = await db.get_user_key_for_provider(user["id"], judge_target.provider_key)
+                    if enc:
+                        judge_target = inject_user_keys([judge_target], {judge_target.provider_key: enc})[0]
+            else:
+                judge_enabled = False  # model not found, silently disable
+
     cancel_event = _get_user_cancel(user["id"])
 
     async def generate():
@@ -2567,9 +2628,9 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
                         if mt_config and mt_config.get("multi_turn"):
                             # Inject parsed config into case for the engine
                             case_with_mt = {**case, "_mt_config": mt_config}
-                            result = await run_multi_turn_eval(target, tools, case_with_mt, temperature, tool_choice)
+                            result = await run_multi_turn_eval(target, tools, case_with_mt, temperature, tool_choice, provider_params=provider_params)
                         else:
-                            result = await run_single_eval(target, tools, case, temperature, tool_choice)
+                            result = await run_single_eval(target, tools, case, temperature, tool_choice, provider_params=provider_params)
                         await queue.put(result)
 
             # Launch provider groups in parallel
@@ -2585,10 +2646,21 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
             # Consume and emit SSE events
             current = 0
             all_results = []
+            judge_verdicts = []
+            judge_queue = asyncio.Queue() if (judge_enabled and judge_mode == "live_inline" and judge_target) else None
+            judge_tasks = []
+            tool_defs_text = _build_tool_definitions_text(tools) if judge_enabled else ""
+
             while True:
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=15)
                 except asyncio.TimeoutError:
+                    # Check for completed judge verdicts (live inline)
+                    if judge_queue:
+                        while not judge_queue.empty():
+                            verdict = judge_queue.get_nowait()
+                            judge_verdicts.append(verdict)
+                            yield _sse({"type": "judge_verdict", **verdict})
                     yield _sse({"type": "heartbeat"})
                     continue
                 if item is None:
@@ -2616,6 +2688,44 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
                 yield _sse({"type": "result", **item})
                 all_results.append(item)
 
+                # Live inline judge: fire concurrent judge task per result (AD-2)
+                if judge_queue and judge_target:
+                    async def _judge_async(jt, td, res, jq):
+                        try:
+                            v = await _judge_single_verdict(jt, td, {}, res)
+                            v["test_case_id"] = res.get("test_case_id", "?")
+                            v["model_id"] = res.get("model_id", "?")
+                            await jq.put(v)
+                        except Exception:
+                            await jq.put({
+                                "test_case_id": res.get("test_case_id", "?"),
+                                "model_id": res.get("model_id", "?"),
+                                "quality_score": 0,
+                                "verdict": "error",
+                                "summary": "Judge error",
+                                "reasoning": "Judge model call failed",
+                                "tool_selection_assessment": "unknown",
+                                "param_assessment": "unknown",
+                            })
+                    judge_tasks.append(asyncio.create_task(
+                        _judge_async(judge_target, tool_defs_text, item, judge_queue)
+                    ))
+
+                # Drain any ready judge verdicts
+                if judge_queue:
+                    while not judge_queue.empty():
+                        verdict = judge_queue.get_nowait()
+                        judge_verdicts.append(verdict)
+                        yield _sse({"type": "judge_verdict", **verdict})
+
+            # Wait for remaining live inline judge tasks
+            if judge_tasks:
+                await asyncio.gather(*judge_tasks, return_exceptions=True)
+                while not judge_queue.empty():
+                    verdict = judge_queue.get_nowait()
+                    judge_verdicts.append(verdict)
+                    yield _sse({"type": "judge_verdict", **verdict})
+
             # Compute per-model summaries
             summaries = _compute_eval_summaries(all_results, targets)
             for s in summaries:
@@ -2631,6 +2741,90 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
                 summary_json=json.dumps(summaries),
                 temperature=temperature,
             )
+
+            # --- Post-eval judge mode ---
+            if judge_enabled and judge_mode == "post_eval" and judge_target and all_results:
+                judge_report_id = await db.save_judge_report(
+                    user_id=user["id"],
+                    judge_model=judge_target.model_id,
+                    mode="post_eval",
+                    eval_run_id=eval_id,
+                )
+                yield _sse({
+                    "type": "judge_start",
+                    "mode": "post_eval",
+                    "judge_model": judge_target.display_name,
+                    "cases_to_review": len(all_results),
+                })
+
+                model_results: dict[str, list[dict]] = {}
+                for r in all_results:
+                    mid = r.get("model_id", "unknown")
+                    model_results.setdefault(mid, []).append(r)
+
+                pe_verdicts = []
+                pe_report_data = {}
+                for mid, mres in model_results.items():
+                    model_vds = []
+                    for r in mres:
+                        if cancel_event.is_set():
+                            break
+                        v = await _judge_single_verdict(judge_target, tool_defs_text, {}, r)
+                        v["test_case_id"] = r.get("test_case_id", "?")
+                        v["model_id"] = mid
+                        pe_verdicts.append(v)
+                        model_vds.append(v)
+                        yield _sse({"type": "judge_verdict", **v})
+
+                    tgt = target_map.get(mid)
+                    mname = tgt.display_name if tgt else mid
+                    pe_report_data = await _judge_crosscase(judge_target, mname, model_vds)
+                    pe_report_data["model_id"] = mid
+                    pe_report_data["model_name"] = mname
+                    yield _sse({"type": "judge_report", "eval_id": eval_id, "report": pe_report_data})
+
+                await db.update_judge_report(
+                    judge_report_id,
+                    verdicts_json=json.dumps(pe_verdicts),
+                    report_json=json.dumps(pe_report_data),
+                    overall_grade=pe_report_data.get("overall_grade", "?"),
+                    overall_score=pe_report_data.get("overall_score", 0),
+                    status="completed",
+                )
+                yield _sse({"type": "judge_complete", "judge_report_id": judge_report_id})
+
+            # --- Live inline judge: save report ---
+            elif judge_enabled and judge_mode == "live_inline" and judge_verdicts:
+                judge_report_id = await db.save_judge_report(
+                    user_id=user["id"],
+                    judge_model=judge_target.model_id,
+                    mode="live_inline",
+                    eval_run_id=eval_id,
+                )
+                # Quick cross-case analysis from collected verdicts
+                model_results_j: dict[str, list[dict]] = {}
+                for v in judge_verdicts:
+                    mid = v.get("model_id", "unknown")
+                    model_results_j.setdefault(mid, []).append(v)
+
+                li_report_data = {}
+                for mid, mvds in model_results_j.items():
+                    tgt = target_map.get(mid)
+                    mname = tgt.display_name if tgt else mid
+                    li_report_data = await _judge_crosscase(judge_target, mname, mvds)
+                    li_report_data["model_id"] = mid
+                    li_report_data["model_name"] = mname
+                    yield _sse({"type": "judge_report", "eval_id": eval_id, "report": li_report_data})
+
+                await db.update_judge_report(
+                    judge_report_id,
+                    verdicts_json=json.dumps(judge_verdicts),
+                    report_json=json.dumps(li_report_data),
+                    overall_grade=li_report_data.get("overall_grade", "?"),
+                    overall_score=li_report_data.get("overall_score", 0),
+                    status="completed",
+                )
+                yield _sse({"type": "judge_complete", "judge_report_id": judge_report_id})
 
             yield _sse({"type": "complete", "eval_id": eval_id})
 
@@ -2654,6 +2848,1536 @@ async def cancel_tool_eval(user: dict = Depends(auth.get_current_user)):
     """Cancel a running tool eval."""
     _get_user_cancel(user["id"]).set()
     return {"status": "ok", "message": "Cancellation requested"}
+
+
+# ---------------------------------------------------------------------------
+# Parameter Tuner (GridSearchCV for Tool Calling)
+# ---------------------------------------------------------------------------
+
+
+def _expand_search_space(search_space: dict) -> list[dict]:
+    """Expand a search space definition into a flat list of parameter configs.
+
+    Numeric params: {"min": 0.0, "max": 1.0, "step": 0.5} -> [0.0, 0.5, 1.0]
+    Categorical params: ["auto", "required"] -> ["auto", "required"]
+    """
+    import itertools
+
+    param_names = []
+    param_values = []
+
+    for name, spec in search_space.items():
+        if isinstance(spec, list):
+            # Categorical
+            if not spec:
+                continue
+            param_names.append(name)
+            param_values.append(spec)
+        elif isinstance(spec, dict):
+            # Numeric range
+            p_min = float(spec.get("min", 0))
+            p_max = float(spec.get("max", 1))
+            step = float(spec.get("step", 0.1))
+            if step <= 0 or p_min > p_max:
+                continue
+            vals = []
+            v = p_min
+            while v <= p_max + 1e-9:
+                vals.append(round(v, 6))
+                v += step
+            if not vals:
+                continue
+            param_names.append(name)
+            param_values.append(vals)
+
+    if not param_names:
+        return [{}]
+
+    combos = []
+    for combo in itertools.product(*param_values):
+        combos.append(dict(zip(param_names, combo)))
+    return combos
+
+
+@app.post("/api/tool-eval/param-tune")
+async def run_param_tune(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Run a parameter tuning grid search and stream results via SSE."""
+    body = await request.json()
+    suite_id = body.get("suite_id")
+    model_ids = body.get("models", [])
+    search_space = body.get("search_space", {})
+
+    # --- Validation ---
+    if not suite_id:
+        return JSONResponse({"error": "suite_id is required"}, status_code=400)
+    if not isinstance(model_ids, list) or len(model_ids) == 0:
+        return JSONResponse({"error": "models must be a non-empty list"}, status_code=400)
+    if not isinstance(search_space, dict) or not search_space:
+        return JSONResponse({"error": "search_space must be a non-empty dict"}, status_code=400)
+
+    # Expand search space into grid
+    combos = _expand_search_space(search_space)
+    if len(combos) == 0:
+        return JSONResponse({"error": "search_space produced no combinations"}, status_code=400)
+
+    total_combos = len(combos) * len(model_ids)
+
+    # Load suite + test cases
+    suite = await db.get_tool_suite(suite_id, user["id"])
+    if not suite:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    cases = await db.get_test_cases(suite_id)
+    if not cases:
+        return JSONResponse({"error": "Suite has no test cases"}, status_code=400)
+    tools = json.loads(suite["tools_json"])
+
+    # Rate limit check
+    allowed, remaining = _check_rate_limit(user["id"])
+    if not allowed:
+        return JSONResponse(
+            {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} per hour."},
+            status_code=429,
+        )
+
+    # Concurrent guard (shared with benchmarks and tool eval)
+    user_lock = _get_user_lock(user["id"])
+    if user_lock.locked():
+        return JSONResponse(
+            {"error": "A benchmark or eval is already running"},
+            status_code=409,
+        )
+
+    # Build targets from user config
+    config = await _get_user_config(user["id"])
+    all_targets = build_targets(config)
+    targets = [t for t in all_targets if t.model_id in model_ids]
+    if not targets:
+        return JSONResponse({"error": "No matching models found in config"}, status_code=400)
+
+    # Inject per-user API keys
+    user_keys_cache = {}
+    for t in targets:
+        if t.provider_key and t.provider_key not in user_keys_cache:
+            encrypted = await db.get_user_key_for_provider(user["id"], t.provider_key)
+            if encrypted:
+                user_keys_cache[t.provider_key] = encrypted
+    targets = inject_user_keys(targets, user_keys_cache)
+
+    cancel_event = _get_user_cancel(user["id"])
+
+    # Pre-create the run in DB
+    tune_id = await db.save_param_tune_run(
+        user_id=user["id"],
+        suite_id=suite["id"],
+        suite_name=suite["name"],
+        models_json=json.dumps(model_ids),
+        search_space_json=json.dumps(search_space),
+        total_combos=total_combos,
+    )
+
+    async def generate():
+        await user_lock.acquire()
+        cancel_event.clear()
+        start_time = time.perf_counter()
+        all_results = []
+        completed = 0
+        try:
+            yield _sse({
+                "type": "tune_start",
+                "tune_id": tune_id,
+                "total_combos": total_combos,
+                "models": model_ids,
+                "suite_name": suite["name"],
+            })
+
+            queue = asyncio.Queue()
+
+            # Group targets by provider
+            provider_groups: dict[str, list[Target]] = {}
+            for target in targets:
+                provider_groups.setdefault(target.provider, []).append(target)
+
+            async def run_provider(prov_targets):
+                """Run all combos for all models in this provider group."""
+                for target in prov_targets:
+                    for combo_idx, combo in enumerate(combos):
+                        if cancel_event.is_set():
+                            return
+
+                        # Extract combo params
+                        temp = float(combo.get("temperature", 0.0))
+                        tc = combo.get("tool_choice", "required")
+                        mt = int(combo.get("max_tokens", 1024))
+
+                        # Build provider_params from combo (tier2 params)
+                        pp = {}
+                        for k, v in combo.items():
+                            if k not in ("temperature", "tool_choice", "max_tokens"):
+                                pp[k] = v
+
+                        # Run all test cases for this combo
+                        case_results = []
+                        for case in cases:
+                            if cancel_event.is_set():
+                                return
+
+                            _record_rate_limit(user["id"])
+
+                            # Check if multi-turn
+                            mt_config = None
+                            if case.get("multi_turn_config"):
+                                try:
+                                    mt_config = json.loads(case["multi_turn_config"]) if isinstance(case["multi_turn_config"], str) else case["multi_turn_config"]
+                                except (json.JSONDecodeError, TypeError):
+                                    mt_config = None
+
+                            if mt_config and mt_config.get("multi_turn"):
+                                case_with_mt = {**case, "_mt_config": mt_config}
+                                r = await run_multi_turn_eval(target, tools, case_with_mt, temp, tc, provider_params=pp if pp else None)
+                            else:
+                                r = await run_single_eval(target, tools, case, temp, tc, provider_params=pp if pp else None)
+                            case_results.append(r)
+
+                        # Compute aggregate scores for this combo
+                        tool_scores = [r["tool_selection_score"] for r in case_results if r.get("success")]
+                        param_scores = [r["param_accuracy"] for r in case_results if r.get("success") and r.get("param_accuracy") is not None]
+                        overall_scores = [r["overall_score"] for r in case_results if r.get("success")]
+                        latencies = [r["latency_ms"] for r in case_results if r.get("success") and r.get("latency_ms")]
+
+                        cases_passed = sum(1 for r in case_results if r.get("success") and r.get("overall_score", 0) == 1.0)
+
+                        combo_result = {
+                            "combo_index": combo_idx,
+                            "model_id": target.model_id,
+                            "model_name": target.display_name,
+                            "config": combo,
+                            "overall_score": round(sum(overall_scores) / len(overall_scores), 4) if overall_scores else 0.0,
+                            "tool_accuracy": round(sum(tool_scores) / len(tool_scores) * 100, 2) if tool_scores else 0.0,
+                            "param_accuracy": round(sum(param_scores) / len(param_scores) * 100, 2) if param_scores else 0.0,
+                            "latency_avg_ms": round(sum(latencies) / len(latencies)) if latencies else 0,
+                            "cases_passed": cases_passed,
+                            "cases_total": len(cases),
+                        }
+
+                        await queue.put(combo_result)
+
+            # Launch provider groups in parallel
+            tasks = [asyncio.create_task(run_provider(g))
+                     for g in provider_groups.values()]
+
+            async def sentinel():
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await queue.put(None)
+
+            asyncio.create_task(sentinel())
+
+            # Consume and emit SSE events
+            completed = 0
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield _sse({"type": "heartbeat"})
+                    continue
+                if item is None:
+                    break
+                if cancel_event.is_set():
+                    for t in tasks:
+                        t.cancel()
+                    # Save partial results
+                    duration = time.perf_counter() - start_time
+                    await db.update_param_tune_run(
+                        tune_id, user["id"],
+                        results_json=json.dumps(all_results),
+                        completed_combos=completed,
+                        status="cancelled",
+                        duration_s=round(duration, 2),
+                        best_config_json=json.dumps(_find_best_config(all_results)),
+                        best_score=_find_best_score(all_results),
+                    )
+                    yield _sse({"type": "cancelled"})
+                    return
+
+                completed += 1
+                all_results.append(item)
+
+                yield _sse({"type": "combo_result", **item})
+                yield _sse({
+                    "type": "tune_progress",
+                    "completed": completed,
+                    "total": total_combos,
+                    "elapsed_s": round(time.perf_counter() - start_time, 1),
+                })
+
+            # Tuning complete -- find best config
+            duration = time.perf_counter() - start_time
+            best_config = _find_best_config(all_results)
+            best_score = _find_best_score(all_results)
+
+            await db.update_param_tune_run(
+                tune_id, user["id"],
+                results_json=json.dumps(all_results),
+                best_config_json=json.dumps(best_config),
+                best_score=best_score,
+                completed_combos=completed,
+                status="completed",
+                duration_s=round(duration, 2),
+            )
+
+            yield _sse({
+                "type": "tune_complete",
+                "tune_id": tune_id,
+                "best_config": best_config,
+                "best_score": best_score,
+                "duration_s": round(duration, 2),
+            })
+
+        except Exception as e:
+            duration = time.perf_counter() - start_time
+            await db.update_param_tune_run(
+                tune_id, user["id"],
+                results_json=json.dumps(all_results),
+                completed_combos=completed,
+                status="error",
+                duration_s=round(duration, 2),
+            )
+            yield _sse({"type": "error", "message": sanitize_error(str(e))})
+        finally:
+            user_lock.release()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
+    )
+
+
+def _find_best_config(results: list[dict]) -> dict | None:
+    """Find the config with the highest overall_score."""
+    if not results:
+        return None
+    best = max(results, key=lambda r: r.get("overall_score", 0))
+    return best.get("config")
+
+
+def _find_best_score(results: list[dict]) -> float:
+    """Find the highest overall_score."""
+    if not results:
+        return 0.0
+    return max(r.get("overall_score", 0) for r in results)
+
+
+@app.post("/api/tool-eval/param-tune/cancel")
+async def cancel_param_tune(user: dict = Depends(auth.get_current_user)):
+    """Cancel a running param tune. Reuses same cancellation mechanism."""
+    _get_user_cancel(user["id"]).set()
+    return {"status": "ok", "message": "Cancellation requested"}
+
+
+@app.get("/api/tool-eval/param-tune/history")
+async def get_param_tune_history(user: dict = Depends(auth.get_current_user)):
+    """List user's param tune runs."""
+    runs = await db.get_param_tune_runs(user["id"])
+    return {"runs": runs}
+
+
+@app.get("/api/tool-eval/param-tune/history/{tune_id}")
+async def get_param_tune_detail(tune_id: str, user: dict = Depends(auth.get_current_user)):
+    """Get full param tune run details including all results."""
+    run = await db.get_param_tune_run(tune_id, user["id"])
+    if not run:
+        return JSONResponse({"error": "Tune run not found"}, status_code=404)
+    return run
+
+
+@app.delete("/api/tool-eval/param-tune/history/{tune_id}")
+async def delete_param_tune(tune_id: str, user: dict = Depends(auth.get_current_user)):
+    """Delete a param tune run."""
+    deleted = await db.delete_param_tune_run(tune_id, user["id"])
+    if not deleted:
+        return JSONResponse({"error": "Tune run not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Prompt Tuner (AI-Generated Prompt Optimization)
+# ---------------------------------------------------------------------------
+
+_QUICK_META_PROMPT = """You are a prompt engineering expert. Your job is to create {n} distinct system prompt variations for an LLM that will use tool calling.
+
+CONTEXT:
+- The LLM will use these tools: {tools_summary}
+- Test scenarios it must handle: {test_cases_summary}
+- Base prompt to improve upon: "{base_prompt}"
+
+Generate {n} variations, each with a DIFFERENT approach. Vary structure, tone, and emphasis -- not just word choice. Each prompt must instruct the model to use the provided tools. Keep prompts under 500 tokens each.
+
+Suggested styles: concise & direct, detailed & explicit, structured (numbered rules), conversational, technical/specification-like.
+
+Return ONLY a JSON array: [{{"style": "concise", "prompt": "..."}}, ...]
+Do not include any text before or after the JSON array."""
+
+_EVO_META_PROMPT = """You are a prompt evolution expert. You are mutating winning system prompts to create the next generation.
+
+PARENT PROMPTS (these scored highest in the previous generation):
+{parent_prompts}
+
+CONTEXT:
+- Tools available: {tools_summary}
+- Test scenarios: {test_cases_summary}
+
+TASK:
+Create {n} new variations by mutating the parent prompts. For each:
+- Keep the core intent that made the parent successful
+- Change structure, phrasing, emphasis, or add/remove instructions
+- Try at least one bold mutation (significantly different approach)
+- Try at least one conservative mutation (small refinement of best parent)
+
+Return ONLY a JSON array: [{{"parent_index": 0, "mutation_type": "bold", "prompt": "..."}}, ...]
+Do not include any text before or after the JSON array."""
+
+_DEFAULT_BASE_PROMPT = "You are a helpful assistant that uses tools to answer questions. When the user asks you to perform an action, use the appropriate tool."
+
+
+def _parse_meta_response(text: str) -> list[dict]:
+    """Parse JSON array from meta-model response. Uses regex fallback."""
+    text = text.strip()
+    # Try direct JSON parse
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            return data
+    except json.JSONDecodeError:
+        pass
+    # Strip markdown code blocks and try again
+    stripped = re.sub(r'```(?:json)?\s*', '', text).strip()
+    try:
+        data = json.loads(stripped)
+        if isinstance(data, list):
+            return data
+    except json.JSONDecodeError:
+        pass
+    # Regex fallback: find JSON array in response
+    match = re.search(r'\[[\s\S]*\]', stripped)
+    if match:
+        try:
+            data = json.loads(match.group())
+            if isinstance(data, list):
+                return data
+        except json.JSONDecodeError:
+            pass
+    return []
+
+
+async def _generate_prompts_meta(
+    meta_target: Target,
+    prompt_template: str,
+    **format_kwargs,
+) -> list[dict]:
+    """Call meta-model to generate prompt variations. Returns parsed list."""
+    formatted = prompt_template.format(**format_kwargs)
+
+    kwargs = {
+        "model": meta_target.model_id,
+        "messages": [{"role": "user", "content": formatted}],
+        "max_tokens": 4096,
+        "temperature": 0.9,  # High temp for creative prompt generation
+        "timeout": 120,
+        "num_retries": 1,
+    }
+    if meta_target.api_base:
+        kwargs["api_base"] = meta_target.api_base
+    if meta_target.api_key:
+        kwargs["api_key"] = meta_target.api_key
+
+    response = await litellm.acompletion(**kwargs)
+    content = response.choices[0].message.content or ""
+    return _parse_meta_response(content)
+
+
+def _build_tools_summary(tools: list[dict]) -> str:
+    """Build a concise tools summary for meta-prompts."""
+    parts = []
+    for t in tools:
+        fn = t.get("function", {})
+        name = fn.get("name", "unknown")
+        desc = fn.get("description", "")[:100]
+        params = list(fn.get("parameters", {}).get("properties", {}).keys())
+        parts.append(f"- {name}: {desc} (params: {', '.join(params)})")
+    return "\n".join(parts)
+
+
+def _build_test_cases_summary(cases: list) -> str:
+    """Build a concise test cases summary for meta-prompts."""
+    parts = []
+    for c in cases[:10]:  # Limit to 10 for prompt size
+        prompt = (c.get("prompt") or "")[:120]
+        expected = c.get("expected_tool", "?")
+        parts.append(f"- \"{prompt}\" -> expects tool: {expected}")
+    return "\n".join(parts)
+
+
+@app.post("/api/tool-eval/prompt-tune")
+async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Run a prompt tuning session (Quick or Evolutionary mode) via SSE."""
+    body = await request.json()
+    suite_id = body.get("suite_id")
+    target_model_ids = body.get("target_models", [])
+    meta_model_id = body.get("meta_model", "")
+    mode = body.get("mode", "quick")
+    base_prompt = body.get("base_prompt") or _DEFAULT_BASE_PROMPT
+    cfg = body.get("config", {})
+
+    # --- Validation ---
+    if not suite_id:
+        return JSONResponse({"error": "suite_id is required"}, status_code=400)
+    if not isinstance(target_model_ids, list) or len(target_model_ids) == 0:
+        return JSONResponse({"error": "target_models must be a non-empty list"}, status_code=400)
+    if not meta_model_id:
+        return JSONResponse({"error": "meta_model is required"}, status_code=400)
+    if mode not in ("quick", "evolutionary"):
+        return JSONResponse({"error": "mode must be 'quick' or 'evolutionary'"}, status_code=400)
+
+    population_size = int(cfg.get("population_size", 5))
+    generations = int(cfg.get("generations", 1 if mode == "quick" else 3))
+    selection_ratio = float(cfg.get("selection_ratio", 0.4))
+    eval_temperature = float(cfg.get("temperature", 0.0))
+    eval_tool_choice = cfg.get("tool_choice", "required")
+
+    if mode == "quick":
+        generations = 1  # Quick mode = single generation
+
+    population_size = max(3, min(population_size, 20))
+    generations = max(1, min(generations, 10))
+    selection_ratio = max(0.2, min(selection_ratio, 0.8))
+    total_prompts = population_size * generations
+
+    # Load suite + test cases
+    suite = await db.get_tool_suite(suite_id, user["id"])
+    if not suite:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    cases = await db.get_test_cases(suite_id)
+    if not cases:
+        return JSONResponse({"error": "Suite has no test cases"}, status_code=400)
+    tools = json.loads(suite["tools_json"])
+
+    # Rate limit check
+    allowed, remaining = _check_rate_limit(user["id"])
+    if not allowed:
+        return JSONResponse(
+            {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} per hour."},
+            status_code=429,
+        )
+
+    # Concurrent guard
+    user_lock = _get_user_lock(user["id"])
+    if user_lock.locked():
+        return JSONResponse(
+            {"error": "A benchmark or eval is already running"},
+            status_code=409,
+        )
+
+    # Build targets
+    config = await _get_user_config(user["id"])
+    all_targets = build_targets(config)
+
+    # Find meta-model target
+    meta_targets = [t for t in all_targets if t.model_id == meta_model_id]
+    if not meta_targets:
+        return JSONResponse({"error": f"Meta model '{meta_model_id}' not found in config"}, status_code=400)
+
+    # Find eval targets
+    eval_targets = [t for t in all_targets if t.model_id in target_model_ids]
+    if not eval_targets:
+        return JSONResponse({"error": "No matching target models found in config"}, status_code=400)
+
+    # Inject user keys for all targets
+    user_keys_cache = {}
+    all_needed = meta_targets + eval_targets
+    for t in all_needed:
+        if t.provider_key and t.provider_key not in user_keys_cache:
+            encrypted = await db.get_user_key_for_provider(user["id"], t.provider_key)
+            if encrypted:
+                user_keys_cache[t.provider_key] = encrypted
+    meta_targets = inject_user_keys(meta_targets, user_keys_cache)
+    eval_targets = inject_user_keys(eval_targets, user_keys_cache)
+
+    meta_target = meta_targets[0]
+    cancel_event = _get_user_cancel(user["id"])
+
+    tools_summary = _build_tools_summary(tools)
+    test_cases_summary = _build_test_cases_summary(cases)
+
+    total_eval_calls = total_prompts * len(cases) * len(eval_targets)
+
+    # Pre-create DB record
+    tune_id = await db.save_prompt_tune_run(
+        user_id=user["id"],
+        suite_id=suite["id"],
+        suite_name=suite["name"],
+        mode=mode,
+        target_models_json=json.dumps(target_model_ids),
+        meta_model=meta_model_id,
+        base_prompt=base_prompt,
+        config_json=json.dumps(cfg),
+        total_prompts=total_prompts,
+    )
+
+    async def generate():
+        await user_lock.acquire()
+        cancel_event.clear()
+        start_time = time.perf_counter()
+        all_generations = []
+        completed_prompts = 0
+        best_prompt = None
+        best_score = 0.0
+        try:
+            yield _sse({
+                "type": "tune_start",
+                "tune_id": tune_id,
+                "mode": mode,
+                "total_prompts": total_prompts,
+                "total_eval_calls": total_eval_calls,
+                "suite_name": suite["name"],
+            })
+
+            survivors = []  # For evolutionary mode
+
+            for gen_num in range(1, generations + 1):
+                if cancel_event.is_set():
+                    break
+
+                yield _sse({
+                    "type": "generation_start",
+                    "generation": gen_num,
+                    "total_generations": generations,
+                    "population_size": population_size,
+                })
+
+                # --- Generate prompts ---
+                if gen_num == 1 or mode == "quick":
+                    # First gen / Quick: use variation prompt
+                    raw_prompts = await _generate_prompts_meta(
+                        meta_target, _QUICK_META_PROMPT,
+                        n=population_size,
+                        tools_summary=tools_summary,
+                        test_cases_summary=test_cases_summary,
+                        base_prompt=base_prompt,
+                    )
+                else:
+                    # Evolutionary: mutate survivors
+                    parent_text = "\n".join(
+                        f"#{i+1} (score={s['avg_score']:.2f}): \"{s['text'][:200]}...\""
+                        for i, s in enumerate(survivors)
+                    )
+                    raw_prompts = await _generate_prompts_meta(
+                        meta_target, _EVO_META_PROMPT,
+                        n=population_size,
+                        tools_summary=tools_summary,
+                        test_cases_summary=test_cases_summary,
+                        parent_prompts=parent_text,
+                    )
+
+                # Normalize to list of prompt dicts
+                gen_prompts = []
+                for idx, rp in enumerate(raw_prompts[:population_size]):
+                    text = rp.get("prompt", "") if isinstance(rp, dict) else str(rp)
+                    style = rp.get("style", rp.get("mutation_type", "variation")) if isinstance(rp, dict) else "variation"
+                    parent_idx = rp.get("parent_index") if isinstance(rp, dict) else None
+                    gen_prompts.append({
+                        "index": idx,
+                        "style": style,
+                        "text": text,
+                        "parent_index": parent_idx,
+                        "mutation_type": rp.get("mutation_type") if isinstance(rp, dict) else None,
+                        "scores": {},
+                        "avg_score": 0.0,
+                        "survived": False,
+                    })
+
+                    yield _sse({
+                        "type": "prompt_generated",
+                        "generation": gen_num,
+                        "prompt_index": idx,
+                        "prompt_text": text[:300],
+                        "style": style,
+                        "parent_prompt": parent_idx,
+                    })
+
+                # --- Evaluate each prompt ---
+                for p_info in gen_prompts:
+                    if cancel_event.is_set():
+                        break
+
+                    model_scores = {}
+                    for target in eval_targets:
+                        if cancel_event.is_set():
+                            break
+
+                        yield _sse({
+                            "type": "prompt_eval_start",
+                            "generation": gen_num,
+                            "prompt_index": p_info["index"],
+                            "model": target.display_name,
+                        })
+
+                        # Run all test cases with this prompt as system_prompt
+                        case_results = []
+                        for case in cases:
+                            if cancel_event.is_set():
+                                break
+                            _record_rate_limit(user["id"])
+                            r = await run_single_eval(
+                                target, tools, case, eval_temperature,
+                                eval_tool_choice, system_prompt=p_info["text"],
+                            )
+                            case_results.append(r)
+
+                        # Compute scores
+                        overall_scores = [r["overall_score"] for r in case_results if r.get("success")]
+                        tool_scores = [r["tool_selection_score"] for r in case_results if r.get("success")]
+                        param_scores = [r["param_accuracy"] for r in case_results if r.get("success") and r.get("param_accuracy") is not None]
+
+                        avg_overall = sum(overall_scores) / len(overall_scores) if overall_scores else 0.0
+                        model_scores[target.model_id] = {
+                            "overall": round(avg_overall, 4),
+                            "tool_acc": round(sum(tool_scores) / len(tool_scores) * 100, 2) if tool_scores else 0.0,
+                            "param_acc": round(sum(param_scores) / len(param_scores) * 100, 2) if param_scores else 0.0,
+                        }
+
+                        yield _sse({
+                            "type": "prompt_eval_result",
+                            "generation": gen_num,
+                            "prompt_index": p_info["index"],
+                            "model_id": target.model_id,
+                            "overall_score": model_scores[target.model_id]["overall"],
+                            "tool_accuracy": model_scores[target.model_id]["tool_acc"],
+                            "param_accuracy": model_scores[target.model_id]["param_acc"],
+                        })
+
+                    p_info["scores"] = model_scores
+                    # Average across all target models
+                    all_model_scores = [s["overall"] for s in model_scores.values()]
+                    p_info["avg_score"] = round(sum(all_model_scores) / len(all_model_scores), 4) if all_model_scores else 0.0
+
+                    completed_prompts += 1
+
+                    # Track global best
+                    if p_info["avg_score"] > best_score:
+                        best_score = p_info["avg_score"]
+                        best_prompt = p_info["text"]
+
+                # --- Selection (Evolutionary mode) ---
+                gen_prompts.sort(key=lambda p: p["avg_score"], reverse=True)
+                n_survivors = max(1, int(len(gen_prompts) * selection_ratio))
+                for i, p in enumerate(gen_prompts):
+                    p["survived"] = i < n_survivors
+
+                survivors = [p for p in gen_prompts if p["survived"]]
+
+                gen_best = gen_prompts[0] if gen_prompts else None
+                all_generations.append({
+                    "generation": gen_num,
+                    "prompts": gen_prompts,
+                    "best_index": gen_best["index"] if gen_best else None,
+                    "best_score": gen_best["avg_score"] if gen_best else 0.0,
+                })
+
+                yield _sse({
+                    "type": "generation_complete",
+                    "generation": gen_num,
+                    "best_score": gen_best["avg_score"] if gen_best else 0.0,
+                    "best_prompt_index": gen_best["index"] if gen_best else None,
+                    "survivors": [p["index"] for p in survivors],
+                })
+
+            # --- Tuning complete ---
+            duration = time.perf_counter() - start_time
+
+            if cancel_event.is_set():
+                await db.update_prompt_tune_run(
+                    tune_id, user["id"],
+                    generations_json=json.dumps(all_generations),
+                    best_prompt=best_prompt,
+                    best_score=best_score,
+                    completed_prompts=completed_prompts,
+                    status="cancelled",
+                    duration_s=round(duration, 2),
+                )
+                yield _sse({"type": "cancelled"})
+                return
+
+            await db.update_prompt_tune_run(
+                tune_id, user["id"],
+                generations_json=json.dumps(all_generations),
+                best_prompt=best_prompt,
+                best_score=best_score,
+                completed_prompts=completed_prompts,
+                status="completed",
+                duration_s=round(duration, 2),
+            )
+
+            yield _sse({
+                "type": "tune_complete",
+                "tune_id": tune_id,
+                "best_prompt": best_prompt,
+                "best_score": best_score,
+                "duration_s": round(duration, 2),
+            })
+
+        except Exception as e:
+            duration = time.perf_counter() - start_time
+            await db.update_prompt_tune_run(
+                tune_id, user["id"],
+                generations_json=json.dumps(all_generations),
+                best_prompt=best_prompt,
+                best_score=best_score,
+                completed_prompts=completed_prompts,
+                status="error",
+                duration_s=round(duration, 2),
+            )
+            yield _sse({"type": "error", "message": sanitize_error(str(e))})
+        finally:
+            user_lock.release()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
+    )
+
+
+@app.post("/api/tool-eval/prompt-tune/cancel")
+async def cancel_prompt_tune(user: dict = Depends(auth.get_current_user)):
+    """Cancel a running prompt tune."""
+    _get_user_cancel(user["id"]).set()
+    return {"status": "ok", "message": "Cancellation requested"}
+
+
+@app.get("/api/tool-eval/prompt-tune/estimate")
+async def estimate_prompt_tune(
+    request: Request,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Get cost/time estimate before running prompt tuning."""
+    suite_id = request.query_params.get("suite_id", "")
+    mode = request.query_params.get("mode", "quick")
+    population_size = int(request.query_params.get("population_size", "5"))
+    generations = int(request.query_params.get("generations", "1" if mode == "quick" else "3"))
+    num_models = int(request.query_params.get("num_models", "1"))
+
+    if mode == "quick":
+        generations = 1
+
+    total_prompts = population_size * generations
+
+    # Count test cases
+    num_cases = 0
+    if suite_id:
+        cases = await db.get_test_cases(suite_id)
+        num_cases = len(cases) if cases else 0
+
+    total_eval_calls = total_prompts * num_cases * num_models
+    total_meta_calls = generations  # One meta-call per generation
+    total_api_calls = total_meta_calls + total_eval_calls
+
+    # Rough estimate: ~2s per eval call, ~5s per meta call
+    estimated_s = total_meta_calls * 5 + total_eval_calls * 2
+
+    warning = None
+    if total_api_calls > 100:
+        warning = f"This will make {total_api_calls} API calls. Consider reducing population or generations."
+
+    return {
+        "total_prompt_generations": total_prompts,
+        "total_eval_calls": total_eval_calls,
+        "total_api_calls": total_api_calls,
+        "estimated_duration_s": estimated_s,
+        "warning": warning,
+    }
+
+
+@app.get("/api/tool-eval/prompt-tune/history")
+async def get_prompt_tune_history(user: dict = Depends(auth.get_current_user)):
+    """List user's prompt tune runs."""
+    runs = await db.get_prompt_tune_runs(user["id"])
+    return {"runs": runs}
+
+
+@app.get("/api/tool-eval/prompt-tune/history/{tune_id}")
+async def get_prompt_tune_detail(tune_id: str, user: dict = Depends(auth.get_current_user)):
+    """Get full prompt tune run details."""
+    run = await db.get_prompt_tune_run(tune_id, user["id"])
+    if not run:
+        return JSONResponse({"error": "Tune run not found"}, status_code=404)
+    return run
+
+
+@app.delete("/api/tool-eval/prompt-tune/history/{tune_id}")
+async def delete_prompt_tune(tune_id: str, user: dict = Depends(auth.get_current_user)):
+    """Delete a prompt tune run."""
+    deleted = await db.delete_prompt_tune_run(tune_id, user["id"])
+    if not deleted:
+        return JSONResponse({"error": "Tune run not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# LLM Judge (AI-Powered Eval Quality Assessment)
+# ---------------------------------------------------------------------------
+
+_JUDGE_VERDICT_PROMPT = """You are an expert evaluator of LLM tool calling quality. You are judging how well a model performed on a tool calling task.
+
+TOOL DEFINITIONS:
+{tool_definitions}
+
+TEST CASE:
+- User prompt: "{test_prompt}"
+- Expected tool: {expected_tool}
+- Expected parameters: {expected_params}
+
+MODEL RESPONSE:
+- Tool called: {actual_tool}
+- Parameters used: {actual_params}
+- Automated score: {overall_score}
+
+EVALUATE:
+1. Tool Selection: Was the right tool chosen? If different from expected, was it still reasonable?
+2. Parameter Accuracy: Were parameters correct? Close but not exact? Missing important ones?
+3. Reasoning Quality: Does the tool call show understanding of the user's intent?
+4. Edge Cases: Did the model handle ambiguity well?
+
+Return ONLY valid JSON (no text before/after):
+{{"quality_score": 1, "verdict": "pass", "summary": "One-line summary max 100 chars", "reasoning": "Detailed 2-3 sentence explanation", "tool_selection_assessment": "correct", "param_assessment": "exact"}}
+
+quality_score: integer 1-5
+verdict: "pass" or "marginal" or "fail"
+tool_selection_assessment: "correct" or "acceptable_alternative" or "wrong"
+param_assessment: "exact" or "close" or "partial" or "wrong"
+"""
+
+_JUDGE_COMPARE_PROMPT = """You are an expert judge comparing two LLMs' tool calling performance.
+
+TOOL DEFINITIONS:
+{tool_definitions}
+
+TEST CASE {case_num}/{total_cases}:
+- User prompt: "{test_prompt}"
+- Expected: {expected_tool}({expected_params})
+
+Model A ({model_a_name}):
+- Called: {a_tool}({a_params})
+- Automated score: {a_score}
+
+Model B ({model_b_name}):
+- Called: {b_tool}({b_params})
+- Automated score: {b_score}
+
+Return ONLY valid JSON (no text before/after):
+{{"winner": "model_a", "confidence": 0.85, "reasoning": "Why this model won on this case"}}
+
+winner: "model_a" or "model_b" or "tie"
+confidence: float 0.0-1.0"""
+
+_JUDGE_CROSSCASE_PROMPT = """You have evaluated {n} test cases for model {model_name}. Here are the per-case verdicts:
+
+{verdicts_summary}
+
+Provide a cross-case analysis:
+1. What patterns of strength/weakness do you see?
+2. What types of tool calls does this model handle well/poorly?
+3. Overall grade (A/B/C/D/F with +/-) and what it means
+4. Specific recommendations for improvement
+
+Return ONLY valid JSON (no text before/after):
+{{"overall_grade": "B+", "overall_score": 82, "strengths": ["strength1", "strength2"], "weaknesses": ["weakness1"], "cross_case_analysis": "Paragraph of analysis", "recommendations": ["recommendation1"]}}
+
+overall_score: integer 0-100
+overall_grade: letter grade with optional +/-"""
+
+_JUDGE_COMPARE_SUMMARY_PROMPT = """You compared Model A ({model_a_name}) and Model B ({model_b_name}) across {n} test cases.
+
+Per-case results:
+{case_results}
+
+Provide an overall comparison summary.
+
+Return ONLY valid JSON (no text before/after):
+{{"overall_winner": "model_a", "score_a": 78, "score_b": 65, "summary": "2-3 sentence summary of the comparison", "tie_cases": 1}}
+
+overall_winner: "model_a" or "model_b" or "tie"
+score_a, score_b: integer 0-100"""
+
+
+def _parse_judge_json(text: str) -> dict:
+    """Parse a JSON object from judge model response. Returns dict or empty dict."""
+    text = text.strip()
+    # Direct parse
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+    # Strip markdown code blocks
+    stripped = re.sub(r'```(?:json)?\s*', '', text).strip()
+    try:
+        data = json.loads(stripped)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+    # Regex fallback: find JSON object
+    match = re.search(r'\{[\s\S]*\}', stripped)
+    if match:
+        try:
+            data = json.loads(match.group())
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
+async def _call_judge_model(
+    judge_target: Target,
+    prompt: str,
+) -> dict:
+    """Call the judge model with a prompt, return parsed JSON dict."""
+    kwargs = {
+        "model": judge_target.model_id,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 2048,
+        "temperature": 0.0,  # AD-6: reproducible judge assessments
+        "timeout": 120,
+        "num_retries": 1,
+    }
+    if judge_target.api_base:
+        kwargs["api_base"] = judge_target.api_base
+    if judge_target.api_key:
+        kwargs["api_key"] = judge_target.api_key
+
+    response = await litellm.acompletion(**kwargs)
+    content = response.choices[0].message.content or ""
+    return _parse_judge_json(content)
+
+
+def _build_tool_definitions_text(tools: list[dict]) -> str:
+    """Build tool definitions text for judge prompts."""
+    parts = []
+    for t in tools:
+        fn = t.get("function", {})
+        name = fn.get("name", "unknown")
+        desc = fn.get("description", "")
+        params = fn.get("parameters", {}).get("properties", {})
+        param_strs = []
+        for pname, pspec in params.items():
+            ptype = pspec.get("type", "any")
+            pdesc = pspec.get("description", "")[:60]
+            param_strs.append(f"    {pname} ({ptype}): {pdesc}")
+        parts.append(f"- {name}: {desc}\n  Parameters:\n" + "\n".join(param_strs))
+    return "\n".join(parts)
+
+
+async def _judge_single_verdict(
+    judge_target: Target,
+    tool_defs_text: str,
+    test_case: dict,
+    result: dict,
+) -> dict:
+    """Judge a single test case result. Returns verdict dict."""
+    prompt = _JUDGE_VERDICT_PROMPT.format(
+        tool_definitions=tool_defs_text,
+        test_prompt=result.get("prompt", test_case.get("prompt", "")),
+        expected_tool=result.get("expected_tool", "?"),
+        expected_params=json.dumps(result.get("expected_params", {})),
+        actual_tool=result.get("actual_tool", "none"),
+        actual_params=json.dumps(result.get("actual_params", {})),
+        overall_score=result.get("overall_score", 0),
+    )
+    verdict = await _call_judge_model(judge_target, prompt)
+    if not verdict:
+        return {
+            "quality_score": 0,
+            "verdict": "error",
+            "summary": "Judge model returned invalid response",
+            "reasoning": "Could not parse judge response",
+            "tool_selection_assessment": "unknown",
+            "param_assessment": "unknown",
+        }
+    # Ensure required keys
+    verdict.setdefault("quality_score", 0)
+    verdict.setdefault("verdict", "fail")
+    verdict.setdefault("summary", "")
+    verdict.setdefault("reasoning", "")
+    verdict.setdefault("tool_selection_assessment", "unknown")
+    verdict.setdefault("param_assessment", "unknown")
+    return verdict
+
+
+async def _judge_crosscase(
+    judge_target: Target,
+    model_name: str,
+    verdicts: list[dict],
+) -> dict:
+    """Generate cross-case analysis report from verdicts."""
+    summary_parts = []
+    for v in verdicts:
+        tc_id = v.get("test_case_id", "?")
+        verdict = v.get("verdict", "?")
+        score = v.get("quality_score", 0)
+        summary = v.get("summary", "")
+        summary_parts.append(f"- Case {tc_id}: {verdict} (score {score}/5) - {summary}")
+
+    prompt = _JUDGE_CROSSCASE_PROMPT.format(
+        n=len(verdicts),
+        model_name=model_name,
+        verdicts_summary="\n".join(summary_parts),
+    )
+    report = await _call_judge_model(judge_target, prompt)
+    if not report:
+        return {
+            "overall_grade": "?",
+            "overall_score": 0,
+            "strengths": [],
+            "weaknesses": [],
+            "cross_case_analysis": "Judge model could not generate analysis",
+            "recommendations": [],
+        }
+    report.setdefault("overall_grade", "?")
+    report.setdefault("overall_score", 0)
+    report.setdefault("strengths", [])
+    report.setdefault("weaknesses", [])
+    report.setdefault("cross_case_analysis", "")
+    report.setdefault("recommendations", [])
+    return report
+
+
+@app.post("/api/tool-eval/judge")
+async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Run post-eval judge on a previously completed eval run. Returns SSE stream."""
+    body = await request.json()
+    eval_run_id = body.get("eval_run_id")
+    judge_model_id = body.get("judge_model")
+
+    if not eval_run_id:
+        return JSONResponse({"error": "eval_run_id is required"}, status_code=400)
+    if not judge_model_id:
+        return JSONResponse({"error": "judge_model is required"}, status_code=400)
+
+    # Load eval run
+    eval_run = await db.get_tool_eval_run(eval_run_id, user["id"])
+    if not eval_run:
+        return JSONResponse({"error": "Eval run not found"}, status_code=404)
+
+    results = json.loads(eval_run.get("results_json", "[]"))
+    if not results:
+        return JSONResponse({"error": "Eval run has no results"}, status_code=400)
+
+    # Load suite for tool definitions
+    suite = await db.get_tool_suite(eval_run["suite_id"], user["id"])
+    tools = json.loads(suite["tools_json"]) if suite else []
+
+    # Rate limit
+    allowed, _ = _check_rate_limit(user["id"])
+    if not allowed:
+        return JSONResponse(
+            {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} per hour."},
+            status_code=429,
+        )
+    _record_rate_limit(user["id"])
+
+    # Concurrent guard
+    user_lock = _get_user_lock(user["id"])
+    if user_lock.locked():
+        return JSONResponse(
+            {"error": "A benchmark or eval is already running"},
+            status_code=409,
+        )
+
+    # Build judge target
+    config = await _get_user_config(user["id"])
+    all_targets = build_targets(config)
+    judge_targets = [t for t in all_targets if t.model_id == judge_model_id]
+    if not judge_targets:
+        return JSONResponse({"error": f"Judge model '{judge_model_id}' not found in config"}, status_code=400)
+    judge_target = judge_targets[0]
+
+    # Inject user API key
+    if judge_target.provider_key:
+        encrypted = await db.get_user_key_for_provider(user["id"], judge_target.provider_key)
+        if encrypted:
+            judge_target = inject_user_keys([judge_target], {judge_target.provider_key: encrypted})[0]
+
+    cancel_event = _get_user_cancel(user["id"])
+    tool_defs_text = _build_tool_definitions_text(tools)
+
+    async def generate():
+        await user_lock.acquire()
+        cancel_event.clear()
+        report_id = None
+        verdicts = []
+        try:
+            report_id = await db.save_judge_report(
+                user_id=user["id"],
+                judge_model=judge_model_id,
+                mode="post_eval",
+                eval_run_id=eval_run_id,
+            )
+
+            yield _sse({
+                "type": "judge_start",
+                "mode": "post_eval",
+                "judge_model": judge_target.display_name,
+                "cases_to_review": len(results),
+                "judge_report_id": report_id,
+            })
+
+            # Group results by model for per-model reports
+            model_results: dict[str, list[dict]] = {}
+            for r in results:
+                mid = r.get("model_id", "unknown")
+                model_results.setdefault(mid, []).append(r)
+
+            all_model_reports = []
+            for model_id, model_res in model_results.items():
+                model_verdicts = []
+                for r in model_res:
+                    if cancel_event.is_set():
+                        yield _sse({"type": "cancelled"})
+                        if report_id:
+                            await db.update_judge_report(
+                                report_id,
+                                verdicts_json=json.dumps(verdicts),
+                                status="error",
+                            )
+                        return
+
+                    verdict = await _judge_single_verdict(
+                        judge_target, tool_defs_text, {}, r
+                    )
+                    verdict["test_case_id"] = r.get("test_case_id", "?")
+                    verdict["model_id"] = model_id
+                    verdicts.append(verdict)
+                    model_verdicts.append(verdict)
+
+                    yield _sse({"type": "judge_verdict", **verdict})
+
+                # Cross-case analysis per model
+                target_map = {t.model_id: t for t in all_targets}
+                t = target_map.get(model_id)
+                model_name = t.display_name if t else model_id
+
+                report_data = await _judge_crosscase(judge_target, model_name, model_verdicts)
+                report_data["model_id"] = model_id
+                report_data["model_name"] = model_name
+                all_model_reports.append(report_data)
+
+                yield _sse({"type": "judge_report", "eval_id": eval_run_id, "report": report_data})
+
+            # Save completed report — store all model reports, use best score as overall
+            if all_model_reports:
+                best_report = max(all_model_reports, key=lambda r: r.get("overall_score", 0))
+                final_grade = best_report.get("overall_grade", "?")
+                final_score = best_report.get("overall_score", 0)
+            else:
+                final_grade = "?"
+                final_score = 0
+
+            await db.update_judge_report(
+                report_id,
+                verdicts_json=json.dumps(verdicts),
+                report_json=json.dumps(all_model_reports),
+                overall_grade=final_grade,
+                overall_score=final_score,
+                status="completed",
+            )
+
+            yield _sse({"type": "judge_complete", "judge_report_id": report_id})
+
+        except Exception as e:
+            if report_id:
+                await db.update_judge_report(
+                    report_id,
+                    verdicts_json=json.dumps(verdicts),
+                    status="error",
+                )
+            yield _sse({"type": "error", "message": sanitize_error(str(e))})
+        finally:
+            user_lock.release()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
+    )
+
+
+@app.post("/api/tool-eval/judge/compare")
+async def run_judge_compare(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Run comparative judge between two eval runs. Returns SSE stream."""
+    body = await request.json()
+    eval_run_id_a = body.get("eval_run_id_a")
+    eval_run_id_b = body.get("eval_run_id_b")
+    judge_model_id = body.get("judge_model")
+
+    if not eval_run_id_a or not eval_run_id_b:
+        return JSONResponse({"error": "eval_run_id_a and eval_run_id_b are required"}, status_code=400)
+    if not judge_model_id:
+        return JSONResponse({"error": "judge_model is required"}, status_code=400)
+
+    # Load both runs
+    run_a = await db.get_tool_eval_run(eval_run_id_a, user["id"])
+    run_b = await db.get_tool_eval_run(eval_run_id_b, user["id"])
+    if not run_a:
+        return JSONResponse({"error": "Eval run A not found"}, status_code=404)
+    if not run_b:
+        return JSONResponse({"error": "Eval run B not found"}, status_code=404)
+
+    results_a = json.loads(run_a.get("results_json", "[]"))
+    results_b = json.loads(run_b.get("results_json", "[]"))
+    if not results_a or not results_b:
+        return JSONResponse({"error": "Both eval runs must have results"}, status_code=400)
+
+    # Load suite for tool definitions (use run A's suite)
+    suite = await db.get_tool_suite(run_a["suite_id"], user["id"])
+    tools = json.loads(suite["tools_json"]) if suite else []
+
+    # Rate limit
+    allowed, _ = _check_rate_limit(user["id"])
+    if not allowed:
+        return JSONResponse(
+            {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} per hour."},
+            status_code=429,
+        )
+    _record_rate_limit(user["id"])
+
+    # Concurrent guard
+    user_lock = _get_user_lock(user["id"])
+    if user_lock.locked():
+        return JSONResponse(
+            {"error": "A benchmark or eval is already running"},
+            status_code=409,
+        )
+
+    # Build judge target
+    config = await _get_user_config(user["id"])
+    all_targets = build_targets(config)
+    judge_targets = [t for t in all_targets if t.model_id == judge_model_id]
+    if not judge_targets:
+        return JSONResponse({"error": f"Judge model '{judge_model_id}' not found in config"}, status_code=400)
+    judge_target = judge_targets[0]
+
+    if judge_target.provider_key:
+        encrypted = await db.get_user_key_for_provider(user["id"], judge_target.provider_key)
+        if encrypted:
+            judge_target = inject_user_keys([judge_target], {judge_target.provider_key: encrypted})[0]
+
+    cancel_event = _get_user_cancel(user["id"])
+    tool_defs_text = _build_tool_definitions_text(tools)
+
+    # Determine model names from run results
+    models_a = json.loads(run_a.get("models_json", "[]"))
+    models_b = json.loads(run_b.get("models_json", "[]"))
+    model_a_name = models_a[0] if models_a else "Model A"
+    model_b_name = models_b[0] if models_b else "Model B"
+    target_map = {t.model_id: t for t in all_targets}
+    ta = target_map.get(model_a_name)
+    tb = target_map.get(model_b_name)
+    if ta:
+        model_a_name = ta.display_name
+    if tb:
+        model_b_name = tb.display_name
+
+    # Index results by test_case_id
+    a_by_tc = {r["test_case_id"]: r for r in results_a if "test_case_id" in r}
+    b_by_tc = {r["test_case_id"]: r for r in results_b if "test_case_id" in r}
+    common_tcs = sorted(set(a_by_tc.keys()) & set(b_by_tc.keys()))
+
+    if not common_tcs:
+        return JSONResponse({"error": "No common test cases between the two runs"}, status_code=400)
+
+    async def generate():
+        await user_lock.acquire()
+        cancel_event.clear()
+        report_id = None
+        case_comparisons = []
+        try:
+            report_id = await db.save_judge_report(
+                user_id=user["id"],
+                judge_model=judge_model_id,
+                mode="comparative",
+                eval_run_id=eval_run_id_a,
+                eval_run_id_b=eval_run_id_b,
+            )
+
+            yield _sse({
+                "type": "compare_start",
+                "model_a": model_a_name,
+                "model_b": model_b_name,
+                "cases": len(common_tcs),
+                "judge_report_id": report_id,
+            })
+
+            for idx, tc_id in enumerate(common_tcs):
+                if cancel_event.is_set():
+                    yield _sse({"type": "cancelled"})
+                    if report_id:
+                        await db.update_judge_report(
+                            report_id,
+                            verdicts_json=json.dumps(case_comparisons),
+                            status="error",
+                        )
+                    return
+
+                ra = a_by_tc[tc_id]
+                rb = b_by_tc[tc_id]
+
+                prompt = _JUDGE_COMPARE_PROMPT.format(
+                    tool_definitions=tool_defs_text,
+                    case_num=idx + 1,
+                    total_cases=len(common_tcs),
+                    test_prompt=ra.get("prompt", ""),
+                    expected_tool=ra.get("expected_tool", "?"),
+                    expected_params=json.dumps(ra.get("expected_params", {})),
+                    model_a_name=model_a_name,
+                    a_tool=ra.get("actual_tool", "none"),
+                    a_params=json.dumps(ra.get("actual_params", {})),
+                    a_score=ra.get("overall_score", 0),
+                    model_b_name=model_b_name,
+                    b_tool=rb.get("actual_tool", "none"),
+                    b_params=json.dumps(rb.get("actual_params", {})),
+                    b_score=rb.get("overall_score", 0),
+                )
+                comparison = await _call_judge_model(judge_target, prompt)
+                if not comparison:
+                    comparison = {"winner": "tie", "confidence": 0, "reasoning": "Judge error"}
+                comparison.setdefault("winner", "tie")
+                comparison.setdefault("confidence", 0)
+                comparison.setdefault("reasoning", "")
+                comparison["test_case_id"] = tc_id
+                case_comparisons.append(comparison)
+
+                yield _sse({"type": "compare_case", **comparison})
+
+            # Generate overall summary
+            case_results_text = []
+            for c in case_comparisons:
+                case_results_text.append(
+                    f"- Case {c['test_case_id']}: winner={c['winner']}, "
+                    f"confidence={c.get('confidence', 0)}, reason: {c.get('reasoning', '')[:100]}"
+                )
+
+            summary_prompt = _JUDGE_COMPARE_SUMMARY_PROMPT.format(
+                model_a_name=model_a_name,
+                model_b_name=model_b_name,
+                n=len(case_comparisons),
+                case_results="\n".join(case_results_text),
+            )
+            summary = await _call_judge_model(judge_target, summary_prompt)
+            if not summary:
+                # Fallback: compute from case comparisons
+                a_wins = sum(1 for c in case_comparisons if c.get("winner") == "model_a")
+                b_wins = sum(1 for c in case_comparisons if c.get("winner") == "model_b")
+                ties = len(case_comparisons) - a_wins - b_wins
+                winner = "model_a" if a_wins > b_wins else ("model_b" if b_wins > a_wins else "tie")
+                summary = {
+                    "overall_winner": winner,
+                    "score_a": round(a_wins / len(case_comparisons) * 100) if case_comparisons else 0,
+                    "score_b": round(b_wins / len(case_comparisons) * 100) if case_comparisons else 0,
+                    "summary": f"{model_a_name} won {a_wins}, {model_b_name} won {b_wins}, {ties} ties.",
+                    "tie_cases": ties,
+                }
+
+            summary.setdefault("overall_winner", "tie")
+            summary.setdefault("score_a", 0)
+            summary.setdefault("score_b", 0)
+            summary.setdefault("summary", "")
+            summary.setdefault("tie_cases", 0)
+            summary["judge_report_id"] = report_id
+
+            # Save report
+            overall_grade = summary.get("overall_winner", "tie")
+            overall_score = max(summary.get("score_a", 0), summary.get("score_b", 0))
+
+            full_report = {
+                "model_a": model_a_name,
+                "model_b": model_b_name,
+                "case_comparisons": case_comparisons,
+                **summary,
+            }
+
+            await db.update_judge_report(
+                report_id,
+                verdicts_json=json.dumps(case_comparisons),
+                report_json=json.dumps(full_report),
+                overall_grade=overall_grade,
+                overall_score=overall_score,
+                status="completed",
+            )
+
+            yield _sse({"type": "compare_complete", **summary})
+
+        except Exception as e:
+            if report_id:
+                await db.update_judge_report(
+                    report_id,
+                    verdicts_json=json.dumps(case_comparisons),
+                    status="error",
+                )
+            yield _sse({"type": "error", "message": sanitize_error(str(e))})
+        finally:
+            user_lock.release()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
+    )
+
+
+@app.post("/api/tool-eval/judge/cancel")
+async def cancel_judge(user: dict = Depends(auth.get_current_user)):
+    """Cancel a running judge operation."""
+    _get_user_cancel(user["id"]).set()
+    return {"status": "ok", "message": "Cancellation requested"}
+
+
+@app.get("/api/tool-eval/judge/reports")
+async def list_judge_reports(user: dict = Depends(auth.get_current_user)):
+    """List judge reports for the current user."""
+    reports = await db.get_judge_reports(user["id"])
+    return {"reports": reports}
+
+
+@app.get("/api/tool-eval/judge/reports/{report_id}")
+async def get_judge_report(report_id: str, user: dict = Depends(auth.get_current_user)):
+    """Get full judge report detail."""
+    report = await db.get_judge_report(report_id, user["id"])
+    if not report:
+        return JSONResponse({"error": "Judge report not found"}, status_code=404)
+    return report
+
+
+@app.delete("/api/tool-eval/judge/reports/{report_id}")
+async def delete_judge_report(report_id: str, user: dict = Depends(auth.get_current_user)):
+    """Delete a judge report."""
+    deleted = await db.delete_judge_report(report_id, user["id"])
+    if not deleted:
+        return JSONResponse({"error": "Judge report not found"}, status_code=404)
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
@@ -2946,6 +4670,39 @@ async def health_check_providers(user: dict = Depends(auth.get_current_user)):
 
 
 # ---------------------------------------------------------------------------
+# Provider Parameters API
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/provider-params/registry")
+async def get_provider_params_registry(user: dict = Depends(auth.get_current_user)):
+    """Return the full provider parameter registry for the UI."""
+    return {"providers": PROVIDER_REGISTRY}
+
+
+@app.post("/api/provider-params/validate")
+async def validate_provider_params(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Validate parameters against provider constraints.
+
+    Request: {"provider_key": "anthropic", "model_id": "anthropic/claude-sonnet-4-5", "params": {...}}
+    Returns: {"valid": bool, "adjustments": [...], "warnings": [...], "resolved_params": {...}}
+    """
+    body = await request.json()
+    provider_key = body.get("provider_key", "")
+    model_id = body.get("model_id", "")
+    params = body.get("params", {})
+
+    if not model_id:
+        return JSONResponse({"error": "model_id is required"}, status_code=400)
+    if not isinstance(params, dict):
+        return JSONResponse({"error": "params must be a dict"}, status_code=400)
+
+    provider = identify_provider(model_id, provider_key or None)
+    result = validate_params(provider, model_id, params)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Async benchmark execution (used by SSE endpoint)
 # ---------------------------------------------------------------------------
 
@@ -2982,6 +4739,7 @@ def inject_user_keys(targets: list[Target], user_keys_cache: dict[str, str]) -> 
 async def async_run_single(
     target: Target, prompt: str, max_tokens: int, temperature: float,
     context_tokens: int = 0, timeout: int = 120,
+    provider_params: dict | None = None,
 ) -> RunResult:
     """Execute a single streaming benchmark run using async litellm."""
     result = RunResult(target=target, context_tokens=context_tokens)
@@ -2992,24 +4750,36 @@ async def async_run_single(
         messages.append({"role": "system", "content": context_text})
     messages.append({"role": "user", "content": prompt})
 
+    # Build validated+clamped params via provider_params module
+    pp_copy = dict(provider_params) if provider_params else None
+    extra = build_litellm_kwargs(
+        target, provider_params=pp_copy,
+        temperature=temperature, max_tokens=max_tokens,
+    )
+
     kwargs = {
         "model": target.model_id,
         "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
         "stream": True,
         "stream_options": {"include_usage": True},
         "timeout": timeout,
         "num_retries": 2,
     }
+    # Apply validated params (temperature, max_tokens, plus any tier2/passthrough)
+    if extra:
+        kwargs.update(extra)
+    else:
+        # Fallback: no provider_params, apply directly (backward compat for scheduled benchmarks)
+        kwargs["max_tokens"] = max_tokens
+        kwargs["temperature"] = temperature
+        if target.skip_params:
+            for p in target.skip_params:
+                kwargs.pop(p, None)
+
     if target.api_base:
         kwargs["api_base"] = target.api_base
     if target.api_key:
         kwargs["api_key"] = target.api_key
-    # Remove params this model doesn't support
-    if target.skip_params:
-        for p in target.skip_params:
-            kwargs.pop(p, None)
 
     try:
         start = time.perf_counter()
