@@ -255,6 +255,22 @@
     .tab:hover { color: #A1A1AA; }
     .tab-active { color: var(--lime) !important; border-bottom-color: var(--lime) !important; }
 
+    /* Settings sub-navigation tabs */
+    .settings-tab {
+      display: flex; align-items: center; gap: 6px;
+      padding: 7px 14px; border-radius: 5px;
+      font-family: 'Chakra Petch', sans-serif; font-weight: 500;
+      font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;
+      color: #63636B; background: transparent;
+      transition: all 0.15s ease; cursor: pointer; border: none;
+    }
+    .settings-tab:hover { color: #A1A1AA; background: rgba(255,255,255,0.03); }
+    .settings-tab-active {
+      color: var(--lime) !important;
+      background: rgba(191,255,0,0.06) !important;
+    }
+    .settings-panel:not(.hidden) { animation: stagger-in 0.15s ease forwards; }
+
     /* Sliders */
     input[type=range] { -webkit-appearance: none; background: transparent; width: 100%; }
     input[type=range]::-webkit-slider-track { height: 3px; border-radius: 2px; background: #27272A; }
@@ -856,30 +872,59 @@
 
     <!-- ─── SETTINGS TAB ─── -->
     <div id="view-settings" class="hidden">
+      <!-- Settings Header + Sub-Navigation -->
       <div class="mb-6">
-        <h2 class="font-display font-bold text-lg text-zinc-100 mb-1">Configuration</h2>
-        <p class="text-sm text-zinc-600 font-body">Manage API keys, providers, models, and feature defaults.</p>
-      </div>
-
-      <!-- ── Section 1: API Keys ── -->
-      <div id="apiKeysContainer" class="mb-6"></div>
-
-      <!-- ── Section 2: Providers + Models ── -->
-      <div id="settingsContainer" class="space-y-6 mb-6">
-        <p class="text-zinc-600 text-sm font-body">Loading configuration...</p>
-      </div>
-
-      <!-- ── Section 3: LLM Judge Configuration ── -->
-      <div class="card rounded-md overflow-hidden mb-6">
-        <button onclick="p10ToggleSection('p10-judge')" class="w-full px-5 py-3 flex items-center justify-between text-left" style="border-bottom:1px solid var(--border-subtle)">
-          <div class="flex items-center gap-3">
-            <span class="section-label">LLM Judge</span>
-            <span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(245,158,11,0.08);color:#F59E0B;border:1px solid rgba(245,158,11,0.2)">PHASE 10</span>
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h2 class="font-display font-bold text-lg text-zinc-100 mb-1">Configuration</h2>
+            <p class="text-sm text-zinc-600 font-body">Manage API keys, providers, models, and feature defaults.</p>
           </div>
-          <svg id="p10-judge-chevron" class="w-4 h-4 text-zinc-600 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
-        </button>
-        <div id="p10-judge" class="hidden px-5 py-4">
-          <p class="text-[11px] text-zinc-600 font-body mb-4">Configure default LLM Judge behavior for Tool Eval runs. These defaults can be overridden per-run.</p>
+          <div class="flex items-center gap-2">
+            <button onclick="exportSettings()" class="text-[10px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.15);opacity:0.7" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">Export</button>
+            <button onclick="importSettings()" class="text-[10px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.15);opacity:0.7" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'">Import</button>
+          </div>
+        </div>
+        <!-- Sub-nav tabs -->
+        <div class="flex gap-1 p-1 rounded-md" style="background:var(--surface);">
+          <button onclick="showSettingsTab('keys')" id="stab-keys" class="settings-tab settings-tab-active">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"/></svg>
+            API Keys
+          </button>
+          <button onclick="showSettingsTab('providers')" id="stab-providers" class="settings-tab">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7"/></svg>
+            Providers &amp; Models
+          </button>
+          <button onclick="showSettingsTab('judge')" id="stab-judge" class="settings-tab">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg>
+            LLM Judge
+          </button>
+          <button onclick="showSettingsTab('tuning')" id="stab-tuning" class="settings-tab">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75"/></svg>
+            Tuning
+          </button>
+        </div>
+      </div>
+
+      <!-- ── Sub-view: API Keys ── -->
+      <div id="settings-keys" class="settings-panel">
+        <div id="apiKeysContainer" class="mb-6"></div>
+      </div>
+
+      <!-- ── Sub-view: Providers & Models ── -->
+      <div id="settings-providers" class="settings-panel hidden">
+        <div id="settingsContainer" class="space-y-6 mb-6">
+          <p class="text-zinc-600 text-sm font-body">Loading configuration...</p>
+        </div>
+      </div>
+
+      <!-- ── Sub-view: LLM Judge ── -->
+      <div id="settings-judge" class="settings-panel hidden">
+        <div class="card rounded-md p-5 mb-6">
+          <div class="flex items-center gap-3 mb-4">
+            <svg class="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg>
+            <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase">LLM Judge Configuration</h3>
+          </div>
+          <p class="text-[11px] text-zinc-600 font-body mb-5">Configure default LLM Judge behavior for Tool Eval runs. These defaults can be overridden per-run in the Tool Eval tab.</p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label class="text-[10px] font-display tracking-wider uppercase text-zinc-500 block mb-1">Default Judge Model</label>
@@ -901,7 +946,7 @@
               <input id="p10JudgeMaxTokens" type="number" min="256" max="32768" step="256" value="4096" onchange="p10Save()" class="w-full px-3 py-2 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
             </div>
           </div>
-          <div class="flex items-center gap-3 mt-4 pt-3" style="border-top:1px solid var(--border-subtle)">
+          <div class="flex items-center gap-3 mt-5 pt-4" style="border-top:1px solid var(--border-subtle)">
             <label class="relative inline-flex items-center cursor-pointer">
               <input id="p10JudgeEnabled" type="checkbox" class="sr-only peer" onchange="p10Save()">
               <div class="w-8 h-4 rounded-full transition-colors peer-checked:bg-amber-500" style="background:var(--border-subtle);"></div>
@@ -912,25 +957,23 @@
         </div>
       </div>
 
-      <!-- ── Section 4: Parameter Tuner Defaults ── -->
-      <div class="card rounded-md overflow-hidden mb-6">
-        <button onclick="p10ToggleSection('p10-paramtuner')" class="w-full px-5 py-3 flex items-center justify-between text-left" style="border-bottom:1px solid var(--border-subtle)">
-          <div class="flex items-center gap-3">
-            <span class="section-label">Parameter Tuner</span>
-            <span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(245,158,11,0.08);color:#F59E0B;border:1px solid rgba(245,158,11,0.2)">PHASE 10</span>
+      <!-- ── Sub-view: Tuning (Parameter Tuner + Prompt Tuner) ── -->
+      <div id="settings-tuning" class="settings-panel hidden">
+        <!-- Parameter Tuner -->
+        <div class="card rounded-md p-5 mb-6">
+          <div class="flex items-center gap-3 mb-4">
+            <svg class="w-5 h-5" style="color:var(--lime)" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3v11.25A2.25 2.25 0 006 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0118 16.5h-2.25m-7.5 0h7.5m-7.5 0l-1 3m8.5-3l1 3m0 0l.5 1.5m-.5-1.5h-9.5m0 0l-.5 1.5"/></svg>
+            <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase">Parameter Tuner</h3>
           </div>
-          <svg id="p10-paramtuner-chevron" class="w-4 h-4 text-zinc-600 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
-        </button>
-        <div id="p10-paramtuner" class="hidden px-5 py-4">
-          <p class="text-[11px] text-zinc-600 font-body mb-4">Default search space ranges for the parameter tuner. Controls how many parameter combinations are generated.</p>
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+          <p class="text-[11px] text-zinc-600 font-body mb-5">Default search space ranges for the parameter tuner. Controls how many parameter combinations are generated.</p>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-5">
             <div>
               <label class="text-[10px] font-display tracking-wider uppercase text-zinc-500 block mb-1">Max Combinations</label>
               <input id="p10PtMaxCombos" type="number" min="5" max="500" step="5" value="50" onchange="p10Save()" class="w-full px-3 py-2 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
             </div>
           </div>
           <div class="text-[10px] font-display tracking-wider uppercase text-zinc-500 mb-2">Temperature Search Range</div>
-          <div class="grid grid-cols-3 gap-4 mb-4">
+          <div class="grid grid-cols-3 gap-4 mb-5">
             <div>
               <label class="text-[10px] text-zinc-600 font-body block mb-1">Min</label>
               <input id="p10PtTempMin" type="number" min="0" max="2" step="0.1" value="0.0" onchange="p10Save()" class="w-full px-3 py-2 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
@@ -960,19 +1003,14 @@
             </div>
           </div>
         </div>
-      </div>
 
-      <!-- ── Section 5: Prompt Tuner Defaults ── -->
-      <div class="card rounded-md overflow-hidden mb-6">
-        <button onclick="p10ToggleSection('p10-prompttuner')" class="w-full px-5 py-3 flex items-center justify-between text-left" style="border-bottom:1px solid var(--border-subtle)">
-          <div class="flex items-center gap-3">
-            <span class="section-label">Prompt Tuner</span>
-            <span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:rgba(245,158,11,0.08);color:#F59E0B;border:1px solid rgba(245,158,11,0.2)">PHASE 10</span>
+        <!-- Prompt Tuner -->
+        <div class="card rounded-md p-5 mb-6">
+          <div class="flex items-center gap-3 mb-4">
+            <svg class="w-5 h-5 text-violet-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456zM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 00-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 001.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 001.423 1.423l1.183.394-1.183.394a2.25 2.25 0 00-1.423 1.423z"/></svg>
+            <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase">Prompt Tuner</h3>
           </div>
-          <svg id="p10-prompttuner-chevron" class="w-4 h-4 text-zinc-600 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
-        </button>
-        <div id="p10-prompttuner" class="hidden px-5 py-4">
-          <p class="text-[11px] text-zinc-600 font-body mb-4">Default settings for prompt tuning runs. Controls generation strategy and safety limits.</p>
+          <p class="text-[11px] text-zinc-600 font-body mb-5">Default settings for prompt tuning runs. Controls generation strategy and safety limits.</p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label class="text-[10px] font-display tracking-wider uppercase text-zinc-500 block mb-1">Default Mode</label>
@@ -995,23 +1033,6 @@
               <input id="p10PrtPopulation" type="number" min="2" max="20" step="1" value="5" onchange="p10Save()" class="w-full px-3 py-2 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
               <span class="text-[9px] text-zinc-700 font-body mt-1 block">For evolutionary mode only</span>
             </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- ── Section 6: Backup & Restore ── -->
-      <div class="card rounded-md overflow-hidden mb-6">
-        <button onclick="p10ToggleSection('p10-backup')" class="w-full px-5 py-3 flex items-center justify-between text-left" style="border-bottom:1px solid var(--border-subtle)">
-          <div class="flex items-center gap-3">
-            <span class="section-label">Backup &amp; Restore</span>
-          </div>
-          <svg id="p10-backup-chevron" class="w-4 h-4 text-zinc-600 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
-        </button>
-        <div id="p10-backup" class="hidden px-5 py-4">
-          <p class="text-[11px] text-zinc-600 font-body mb-4">Export your providers, models, and configuration. API keys are not included for security.</p>
-          <div class="flex items-center gap-3">
-            <button onclick="exportSettings()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">Export Settings</button>
-            <button onclick="importSettings()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)">Import Settings</button>
           </div>
         </div>
       </div>
@@ -3425,7 +3446,7 @@
       document.getElementById('tab-schedules').classList.toggle('tab-active', tab === 'schedules');
       document.getElementById('tab-admin').classList.toggle('tab-active', tab === 'admin');
       if (tab === 'history') loadHistory();
-      if (tab === 'settings') renderSettings();
+      if (tab === 'settings') { renderSettings(); showSettingsTab(_currentSettingsTab); }
       if (tab === 'tool-eval') { showToolEvalView('suites'); teLoadSuites(); teLoadHistory(); }
       if (tab === 'analytics') { analyticsShowLeaderboard(); }
       if (tab === 'schedules') loadSchedules();
@@ -3452,6 +3473,19 @@
       el.style.color = ok ? 'var(--lime)' : 'var(--coral)';
       el.textContent = msg;
       setTimeout(() => el.classList.add('hidden'), 3000);
+    }
+
+    // ── Settings Sub-Navigation ──
+    let _currentSettingsTab = 'keys';
+    function showSettingsTab(tab) {
+      const tabs = ['keys', 'providers', 'judge', 'tuning'];
+      tabs.forEach(t => {
+        const panel = document.getElementById('settings-' + t);
+        const btn = document.getElementById('stab-' + t);
+        if (panel) panel.classList.toggle('hidden', t !== tab);
+        if (btn) btn.classList.toggle('settings-tab-active', t === tab);
+      });
+      _currentSettingsTab = tab;
     }
 
     // ── Render Settings (orchestrator) ──
@@ -7569,10 +7603,13 @@
     async function jgRunPostEval(evalRunId) {
       if (!evalRunId) { showToast('No eval run selected', 'error'); return; }
 
-      // Ask for judge model
-      const judgeModel = document.getElementById('jgJudgeModel')?.value;
+      // Get judge model from inline panel, or fall back to saved settings
+      let judgeModel = document.getElementById('jgJudgeModel')?.value;
+      if (!judgeModel && _p10Settings?.judge?.model_id) {
+        judgeModel = _p10Settings.judge.model_id;
+      }
       if (!judgeModel) {
-        showToast('Please enable Judge and select a judge model first', 'error');
+        showToast('No judge model configured. Set one in Settings > LLM Judge.', 'error');
         return;
       }
 
@@ -7617,6 +7654,14 @@
       } catch (e) {
         showToast('Judge error: ' + (e.message || 'unknown'), 'error');
       }
+    }
+
+    /** Judge from history: load the run view first, then trigger judge */
+    async function jgJudgeFromHistory(runId) {
+      await teViewHistoryRun(runId);
+      // Small delay to let DOM settle after view switch
+      await new Promise(r => setTimeout(r, 100));
+      jgRunPostEval(runId);
     }
 
     // --- Comparative Judge ---
@@ -9072,7 +9117,7 @@
           <td class="px-5 py-3 text-right text-sm font-mono font-bold" style="color:${overallColor}">${avgOverall}${avgOverall !== '-' ? '%' : ''}</td>
           <td class="px-5 py-3 text-right">
             <button onclick="teViewHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 mr-2">View</button>
-            <button onclick="jgRunPostEval('${r.id}')" class="text-[10px] font-display tracking-wider uppercase mr-2" style="color:#F59E0B;opacity:0.6" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">Judge</button>
+            <button onclick="jgJudgeFromHistory('${r.id}')" class="text-[10px] font-display tracking-wider uppercase mr-2" style="color:#F59E0B;opacity:0.6" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">Judge</button>
             <button onclick="teExportResults('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 mr-2" style="color:var(--lime);opacity:0.6" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">Export</button>
             <button onclick="teDeleteHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-700 hover:text-red-400">Delete</button>
           </td>
