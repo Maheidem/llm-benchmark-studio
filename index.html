@@ -946,7 +946,13 @@
               <input id="p10JudgeMaxTokens" type="number" min="256" max="32768" step="256" value="4096" onchange="p10Save()" class="w-full px-3 py-2 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
             </div>
           </div>
-          <div class="flex items-center gap-3 mt-5 pt-4" style="border-top:1px solid var(--border-subtle)">
+          <!-- Custom Instructions -->
+          <div class="mt-5 pt-4" style="border-top:1px solid var(--border-subtle)">
+            <label class="text-[10px] font-display tracking-wider uppercase text-zinc-500 block mb-1">Custom Instructions</label>
+            <p class="text-[10px] text-zinc-700 font-body mb-2">Additional evaluation criteria injected into the judge prompt. Use this to guide what the judge should focus on.</p>
+            <textarea id="p10JudgeInstructions" onchange="p10Save()" rows="4" class="w-full px-3 py-2 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;resize:vertical;" placeholder="e.g. Pay special attention to date/time parameter formatting. Penalize missing timezone info. Be strict about parameter types."></textarea>
+          </div>
+          <div class="flex items-center gap-3 mt-4 pt-3" style="border-top:1px solid var(--border-subtle)">
             <label class="relative inline-flex items-center cursor-pointer">
               <input id="p10JudgeEnabled" type="checkbox" class="sr-only peer" onchange="p10Save()">
               <div class="w-8 h-4 rounded-full transition-colors peer-checked:bg-amber-500" style="background:var(--border-subtle);"></div>
@@ -7419,7 +7425,8 @@
       return {
         enabled: true,
         mode: document.getElementById('jgMode').value,
-        judge_model: document.getElementById('jgJudgeModel').value
+        judge_model: document.getElementById('jgJudgeModel').value,
+        custom_instructions: _p10Settings?.judge?.custom_instructions || '',
       };
     }
 
@@ -7625,7 +7632,7 @@
         const res = await apiFetch('/api/tool-eval/judge', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ eval_run_id: evalRunId, judge_model: judgeModel })
+          body: JSON.stringify({ eval_run_id: evalRunId, judge_model: judgeModel, custom_instructions: _p10Settings?.judge?.custom_instructions || '' })
         });
 
         if (res.status === 409) { showToast('Another operation is running', 'error'); return; }
@@ -9324,6 +9331,8 @@
       if (jMax && j.max_tokens) jMax.value = j.max_tokens;
       const jEnabled = document.getElementById('p10JudgeEnabled');
       if (jEnabled) jEnabled.checked = !!j.enabled;
+      const jInstr = document.getElementById('p10JudgeInstructions');
+      if (jInstr && j.custom_instructions) jInstr.value = j.custom_instructions;
 
       // Parameter Tuner
       const ptFields = {
@@ -9358,6 +9367,7 @@
           mode: document.getElementById('p10JudgeMode')?.value || 'post_eval',
           temperature: parseFloat(document.getElementById('p10JudgeTemp')?.value) || 0.0,
           max_tokens: parseInt(document.getElementById('p10JudgeMaxTokens')?.value) || 4096,
+          custom_instructions: document.getElementById('p10JudgeInstructions')?.value || '',
         },
         param_tuner: {
           max_combinations: parseInt(document.getElementById('p10PtMaxCombos')?.value) || 50,

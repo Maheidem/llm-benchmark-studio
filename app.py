@@ -2582,9 +2582,11 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
     judge_enabled = False
     judge_mode = "none"
     judge_target = None
+    judge_custom_instructions = ""
     if isinstance(judge_config, dict) and judge_config.get("enabled"):
         judge_mode = judge_config.get("mode", "none")
         judge_model_id = judge_config.get("judge_model")
+        judge_custom_instructions = judge_config.get("custom_instructions", "")
         if judge_mode in ("live_inline", "post_eval") and judge_model_id:
             judge_enabled = True
             jt_list = [t for t in all_targets if t.model_id == judge_model_id]
@@ -2690,9 +2692,9 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
 
                 # Live inline judge: fire concurrent judge task per result (AD-2)
                 if judge_queue and judge_target:
-                    async def _judge_async(jt, td, res, jq):
+                    async def _judge_async(jt, td, res, jq, ci=judge_custom_instructions):
                         try:
-                            v = await _judge_single_verdict(jt, td, {}, res)
+                            v = await _judge_single_verdict(jt, td, {}, res, custom_instructions=ci)
                             v["test_case_id"] = res.get("test_case_id", "?")
                             v["model_id"] = res.get("model_id", "?")
                             await jq.put(v)
@@ -2769,7 +2771,7 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
                     for r in mres:
                         if cancel_event.is_set():
                             break
-                        v = await _judge_single_verdict(judge_target, tool_defs_text, {}, r)
+                        v = await _judge_single_verdict(judge_target, tool_defs_text, {}, r, custom_instructions=judge_custom_instructions)
                         v["test_case_id"] = r.get("test_case_id", "?")
                         v["model_id"] = mid
                         pe_verdicts.append(v)
@@ -3733,7 +3735,7 @@ async def delete_prompt_tune(tune_id: str, user: dict = Depends(auth.get_current
 # ---------------------------------------------------------------------------
 
 _JUDGE_VERDICT_PROMPT = """You are an expert evaluator of LLM tool calling quality. You are judging how well a model performed on a tool calling task.
-
+{custom_instructions}
 TOOL DEFINITIONS:
 {tool_definitions}
 
@@ -3890,8 +3892,10 @@ async def _judge_single_verdict(
     tool_defs_text: str,
     test_case: dict,
     result: dict,
+    custom_instructions: str = "",
 ) -> dict:
     """Judge a single test case result. Returns verdict dict."""
+    ci_block = f"\nADDITIONAL EVALUATION INSTRUCTIONS:\n{custom_instructions}\n" if custom_instructions.strip() else ""
     prompt = _JUDGE_VERDICT_PROMPT.format(
         tool_definitions=tool_defs_text,
         test_prompt=result.get("prompt", test_case.get("prompt", "")),
@@ -3900,6 +3904,7 @@ async def _judge_single_verdict(
         actual_tool=result.get("actual_tool", "none"),
         actual_params=json.dumps(result.get("actual_params", {})),
         overall_score=result.get("overall_score", 0),
+        custom_instructions=ci_block,
     )
     verdict = await _call_judge_model(judge_target, prompt)
     if not verdict:
@@ -3965,6 +3970,7 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
     body = await request.json()
     eval_run_id = body.get("eval_run_id")
     judge_model_id = body.get("judge_model")
+    custom_instructions = body.get("custom_instructions", "")
 
     if not eval_run_id:
         return JSONResponse({"error": "eval_run_id is required"}, status_code=400)
@@ -4060,7 +4066,8 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
                         return
 
                     verdict = await _judge_single_verdict(
-                        judge_target, tool_defs_text, {}, r
+                        judge_target, tool_defs_text, {}, r,
+                        custom_instructions=custom_instructions,
                     )
                     verdict["test_case_id"] = r.get("test_case_id", "?")
                     verdict["model_id"] = model_id
@@ -4713,6 +4720,7 @@ PHASE10_DEFAULTS = {
         "mode": "post_eval",
         "temperature": 0.0,
         "max_tokens": 4096,
+        "custom_instructions": "",
     },
     "param_tuner": {
         "max_combinations": 50,
