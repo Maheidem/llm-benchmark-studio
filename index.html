@@ -6586,15 +6586,15 @@
       const grid = document.getElementById('prtModelGrid');
       if (!config || !config.providers) { grid.innerHTML = '<div class="text-xs text-zinc-600 font-body">No models loaded</div>'; return; }
       let html = '';
-      for (const prov of config.providers) {
-        for (const m of (prov.models || [])) {
-          const modelId = (prov.model_prefix || '') + m.id;
-          const checked = prtSelectedModels.has(modelId);
-          const color = getColor(prov.name);
+      for (const [provName, provData] of Object.entries(config.providers)) {
+        const models = getProviderModels(provData);
+        for (const m of models) {
+          const checked = prtSelectedModels.has(m.model_id);
+          const color = getColor(provName);
           html += `<label class="flex items-center gap-2 py-1 px-2 rounded cursor-pointer hover:bg-white/5 transition-colors">
-            <input type="checkbox" ${checked ? 'checked' : ''} onchange="prtToggleModel('${modelId}', this.checked)" class="accent-[${color}]">
-            <span class="text-xs font-mono text-zinc-400">${m.display_name || m.id}</span>
-            <span class="text-[9px] font-mono text-zinc-700">${prov.name}</span>
+            <input type="checkbox" ${checked ? 'checked' : ''} onchange="prtToggleModel('${m.model_id}', this.checked)" style="accent-color:${color.text}">
+            <span class="text-xs font-mono text-zinc-400">${m.display_name || m.model_id}</span>
+            <span class="text-[9px] font-mono text-zinc-700">${provName}</span>
           </label>`;
         }
       }
@@ -6612,10 +6612,10 @@
       const current = sel.value;
       if (!config || !config.providers) return;
       let html = '';
-      for (const prov of config.providers) {
-        for (const m of (prov.models || [])) {
-          const modelId = (prov.model_prefix || '') + m.id;
-          html += `<option value="${modelId}" ${modelId === current ? 'selected' : ''}>${m.display_name || m.id} (${prov.name})</option>`;
+      for (const [provName, provData] of Object.entries(config.providers)) {
+        const models = getProviderModels(provData);
+        for (const m of models) {
+          html += `<option value="${m.model_id}" ${m.model_id === current ? 'selected' : ''}>${m.display_name || m.model_id} (${provName})</option>`;
         }
       }
       sel.innerHTML = html;
@@ -7211,10 +7211,10 @@
       const current = sel.value;
       if (!config || !config.providers) return;
       let html = '';
-      for (const prov of config.providers) {
-        for (const m of (prov.models || [])) {
-          const modelId = (prov.model_prefix || '') + m.id;
-          html += `<option value="${modelId}" ${modelId === current ? 'selected' : ''}>${m.display_name || m.id} (${prov.name})</option>`;
+      for (const [provName, provData] of Object.entries(config.providers)) {
+        const models = getProviderModels(provData);
+        for (const m of models) {
+          html += `<option value="${m.model_id}" ${m.model_id === current ? 'selected' : ''}>${m.display_name || m.model_id} (${provName})</option>`;
         }
       }
       sel.innerHTML = html;
