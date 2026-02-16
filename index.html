@@ -6179,6 +6179,7 @@
         'jg-compare': 'jg-compare-view', 'jg-history': 'jg-history-view' };
       const activeId = viewMap[view] || viewMap.suites;
       views.forEach(v => document.getElementById(v)?.classList.toggle('hidden', v !== activeId));
+      if (view === 'run') { jgLoadDefaults(); }
       if (view === 'pt-config') { ptLoadSuiteSelector(); ptRenderModelGrid(); _ptApplyDefaults(); ptUpdatePreview(); }
       if (view === 'pt-history') { ptLoadHistory(); }
       if (view === 'prt-config') { prtLoadSuiteSelector(); prtRenderModelGrid(); prtPopulateMetaModel(); _prtApplyDefaults(); prtUpdateEstimate(); }
@@ -7348,7 +7349,7 @@
 
     function jgPopulateJudgeModel() {
       const sel = document.getElementById('jgJudgeModel');
-      const current = sel.value;
+      const current = sel.value || (_p10Settings?.judge?.model_id || '');
       if (!config || !config.providers) return;
       let html = '';
       for (const [provName, provData] of Object.entries(config.providers)) {
@@ -7358,6 +7359,25 @@
         }
       }
       sel.innerHTML = html;
+    }
+
+    /** Load judge defaults from Phase 10 settings into inline Tool Eval controls */
+    function jgLoadDefaults() {
+      if (!_p10Settings || !_p10Settings.judge) return;
+      const j = _p10Settings.judge;
+      // If judge is enabled in settings, auto-enable the inline toggle
+      if (j.enabled && j.model_id) {
+        const checkbox = document.getElementById('jgToggle');
+        if (checkbox && !checkbox.checked) {
+          checkbox.checked = true;
+          jgTogglePanel(); // triggers panel show + model populate
+        }
+        // Set the model and mode from settings defaults
+        const modeSel = document.getElementById('jgMode');
+        if (modeSel && j.mode) modeSel.value = j.mode;
+        const modelSel = document.getElementById('jgJudgeModel');
+        if (modelSel && j.model_id) modelSel.value = j.model_id;
+      }
     }
 
     function jgGetConfig() {
