@@ -542,18 +542,26 @@
     .notif-bell svg { width: 20px; height: 20px; }
     .notif-badge {
       position: absolute; top: 0; right: 0;
-      min-width: 16px; height: 16px;
+      min-width: 8px; height: 8px;
       border-radius: 8px;
       background: var(--coral);
       color: #fff;
       font-family: 'Outfit', sans-serif;
       font-size: 10px; font-weight: 600;
       display: flex; align-items: center; justify-content: center;
-      padding: 0 4px;
       pointer-events: none;
       transform: translate(4px, -4px);
+      border: 1.5px solid var(--bg);
+      transition: background 0.2s;
     }
-    .notif-badge:empty, .notif-badge[data-count="0"] { display: none; }
+    /* Small dot when no active jobs */
+    .notif-badge:empty { padding: 0; }
+    /* Expand to numbered badge when jobs exist */
+    .notif-badge:not(:empty) { min-width: 16px; height: 16px; padding: 0 4px; }
+    /* WS status colors */
+    .notif-badge.ws-connected { background: var(--lime); color: #111; }
+    .notif-badge.ws-disconnected { background: var(--coral); color: #fff; }
+    .notif-badge.ws-connecting { background: #EAB308; color: #111; animation: notif-ws-blink 1s infinite; }
     .notif-badge.pulse {
       animation: notif-pulse 0.6s ease;
     }
@@ -679,16 +687,6 @@
     .notif-status-badge.cancelled { background: rgba(139,139,149,0.15); color: #8B8B95; }
     .notif-status-badge.interrupted { background: rgba(234,179,8,0.15); color: #EAB308; }
 
-    .notif-ws-indicator {
-      position: absolute; bottom: 10px; right: 5px;
-      width: 7px; height: 7px;
-      border-radius: 50%;
-      border: 1.5px solid var(--bg);
-      pointer-events: none;
-    }
-    .notif-ws-indicator.connected { background: var(--lime); box-shadow: 0 0 4px rgba(191,255,0,0.4); }
-    .notif-ws-indicator.disconnected { background: var(--coral); }
-    .notif-ws-indicator.connecting { background: #EAB308; animation: notif-ws-blink 1s infinite; }
     @keyframes notif-ws-blink {
       0%, 100% { opacity: 1; }
       50% { opacity: 0.3; }
@@ -845,8 +843,7 @@
         <div id="notifWidget" class="relative ml-2" style="display:none;">
           <button class="notif-bell" onclick="toggleNotifDropdown()" aria-label="Notifications" title="Running processes">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0"/></svg>
-            <span id="notifBadge" class="notif-badge" data-count="0"></span>
-            <span id="notifWsStatus" class="notif-ws-indicator disconnected" title="WebSocket disconnected"></span>
+            <span id="notifBadge" class="notif-badge ws-disconnected" data-count="0"></span>
           </button>
           <div id="notifDropdown" class="notif-dropdown" role="region" aria-label="Process notifications">
             <div id="notifActiveLabel" class="notif-section-label">Running</div>
@@ -2633,10 +2630,11 @@
     }
 
     function _notifWsSetStatus(status) {
-      const el = document.getElementById('notifWsStatus');
-      if (!el) return;
-      el.className = 'notif-ws-indicator ' + status;
-      el.title = 'WebSocket ' + status;
+      const badge = document.getElementById('notifBadge');
+      if (!badge) return;
+      badge.classList.remove('ws-connected', 'ws-disconnected', 'ws-connecting');
+      badge.classList.add('ws-' + status);
+      badge.title = 'WebSocket ' + status;
     }
 
     // ── Ping keep-alive ──
