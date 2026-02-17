@@ -528,6 +528,173 @@
     @media (min-width: 769px) and (max-width: 1024px) {
       .landing-features { grid-template-columns: repeat(2, 1fr); }
     }
+
+    /* ═══════════════════ Notification Widget ═══════════════════ */
+    .notif-bell {
+      position: relative;
+      background: none; border: none; cursor: pointer;
+      padding: 4px;
+      color: #63636B;
+      transition: color 0.2s;
+    }
+    .notif-bell:hover { color: #E4E4E7; }
+    .notif-bell svg { width: 20px; height: 20px; }
+    .notif-badge {
+      position: absolute; top: 0; right: 0;
+      min-width: 16px; height: 16px;
+      border-radius: 8px;
+      background: var(--coral);
+      color: #fff;
+      font-family: 'Outfit', sans-serif;
+      font-size: 10px; font-weight: 600;
+      display: flex; align-items: center; justify-content: center;
+      padding: 0 4px;
+      pointer-events: none;
+      transform: translate(4px, -4px);
+    }
+    .notif-badge:empty, .notif-badge[data-count="0"] { display: none; }
+    .notif-badge.pulse {
+      animation: notif-pulse 0.6s ease;
+    }
+    @keyframes notif-pulse {
+      0% { transform: translate(4px, -4px) scale(1); }
+      50% { transform: translate(4px, -4px) scale(1.3); }
+      100% { transform: translate(4px, -4px) scale(1); }
+    }
+
+    .notif-dropdown {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      width: 380px;
+      max-height: 480px;
+      overflow-y: auto;
+      background: var(--surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+      z-index: 200;
+      display: none;
+    }
+    .notif-dropdown.open { display: block; animation: notif-dd-in 0.15s ease; }
+    @keyframes notif-dd-in {
+      from { opacity: 0; transform: translateY(-6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .notif-section-label {
+      font-family: 'Chakra Petch', sans-serif;
+      font-size: 10px; font-weight: 600;
+      letter-spacing: 0.12em; text-transform: uppercase;
+      color: #63636B;
+      padding: 12px 16px 6px;
+    }
+    .notif-empty {
+      font-family: 'Outfit', sans-serif;
+      font-size: 12px; color: #63636B;
+      padding: 16px; text-align: center;
+    }
+
+    .notif-item {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border-subtle);
+      transition: background 0.15s;
+    }
+    .notif-item:hover { background: var(--surface-raised); }
+    .notif-item:last-child { border-bottom: none; }
+
+    .notif-icon {
+      flex-shrink: 0;
+      width: 28px; height: 28px;
+      border-radius: 4px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px;
+    }
+    .notif-icon.benchmark { background: rgba(59,130,246,0.15); color: #3B82F6; }
+    .notif-icon.tool_eval { background: rgba(168,85,247,0.15); color: #A855F7; }
+    .notif-icon.judge { background: rgba(234,179,8,0.15); color: #EAB308; }
+    .notif-icon.judge_compare { background: rgba(234,179,8,0.15); color: #EAB308; }
+    .notif-icon.param_tune { background: rgba(34,197,94,0.15); color: #22C55E; }
+    .notif-icon.prompt_tune { background: rgba(14,165,233,0.15); color: #0EA5E9; }
+    .notif-icon.scheduled_benchmark { background: rgba(191,255,0,0.12); color: var(--lime); }
+
+    .notif-body { flex: 1; min-width: 0; }
+    .notif-title {
+      font-family: 'Outfit', sans-serif;
+      font-size: 12px; font-weight: 500;
+      color: #E4E4E7;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .notif-detail {
+      font-family: 'Outfit', sans-serif;
+      font-size: 11px; color: #8B8B95;
+      margin-top: 2px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .notif-progress {
+      margin-top: 4px;
+      height: 3px;
+      background: var(--border-subtle);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .notif-progress-bar {
+      height: 100%;
+      border-radius: 2px;
+      background: var(--lime);
+      transition: width 0.3s ease;
+    }
+    .notif-meta {
+      font-family: 'Outfit', sans-serif;
+      font-size: 10px; color: #63636B;
+      margin-top: 3px;
+      display: flex; align-items: center; gap: 6px;
+    }
+
+    .notif-cancel {
+      flex-shrink: 0;
+      align-self: center;
+      background: none; border: none; cursor: pointer;
+      color: #63636B;
+      padding: 4px;
+      border-radius: 3px;
+      transition: color 0.15s, background 0.15s;
+    }
+    .notif-cancel:hover { color: var(--coral); background: rgba(255,59,92,0.1); }
+    .notif-cancel svg { width: 14px; height: 14px; }
+
+    .notif-status-badge {
+      display: inline-block;
+      font-family: 'Outfit', sans-serif;
+      font-size: 10px; font-weight: 500;
+      padding: 1px 6px;
+      border-radius: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .notif-status-badge.done { background: rgba(191,255,0,0.12); color: var(--lime); }
+    .notif-status-badge.failed { background: rgba(255,59,92,0.1); color: var(--coral); }
+    .notif-status-badge.cancelled { background: rgba(139,139,149,0.15); color: #8B8B95; }
+    .notif-status-badge.interrupted { background: rgba(234,179,8,0.15); color: #EAB308; }
+
+    .notif-ws-indicator {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-left: 4px;
+    }
+    .notif-ws-indicator.connected { background: var(--lime); box-shadow: 0 0 4px rgba(191,255,0,0.4); }
+    .notif-ws-indicator.disconnected { background: var(--coral); }
+    .notif-ws-indicator.connecting { background: #EAB308; animation: notif-ws-blink 1s infinite; }
+    @keyframes notif-ws-blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    @media (max-width: 768px) {
+      .notif-dropdown { width: calc(100vw - 32px); right: -8px; }
+    }
   </style>
 </head>
 <body class="min-h-screen">
@@ -671,6 +838,23 @@
         <button onclick="showTab('analytics')" id="tab-analytics" class="tab">Analytics</button>
         <button onclick="showTab('schedules')" id="tab-schedules" class="tab">Schedules</button>
         <button onclick="showTab('admin')" id="tab-admin" class="tab" style="display:none;">Admin</button>
+
+        <!-- Notification Widget -->
+        <div id="notifWidget" class="relative ml-2" style="display:none;">
+          <button class="notif-bell" onclick="toggleNotifDropdown()" aria-label="Notifications" title="Running processes">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0"/></svg>
+            <span id="notifBadge" class="notif-badge" data-count="0"></span>
+            <span id="notifWsStatus" class="notif-ws-indicator disconnected" title="WebSocket disconnected"></span>
+          </button>
+          <div id="notifDropdown" class="notif-dropdown" role="region" aria-label="Process notifications">
+            <div id="notifActiveLabel" class="notif-section-label">Running</div>
+            <div id="notifActiveList"></div>
+            <div style="border-top:1px solid var(--border-subtle);"></div>
+            <div class="notif-section-label">Recent</div>
+            <div id="notifRecentList"></div>
+          </div>
+        </div>
+
         <div id="userMenu" class="flex items-center gap-3 ml-4 pl-4" style="border-left:1px solid var(--border-subtle); display:none;">
           <span id="userEmail" class="text-[11px] text-zinc-500 font-mono"></span>
           <button onclick="handleLogout()" class="text-[10px] font-display tracking-wider uppercase text-zinc-600 hover:text-zinc-300 px-2 py-1 rounded" style="border:1px solid var(--border-subtle)">Logout</button>
@@ -2300,6 +2484,511 @@
     const POSITION_LABELS = ['P1', 'P2', 'P3'];
 
     // -------------------------------------------------------------------
+    // Notification Widget — Job Store + WebSocket + Rendering
+    // -------------------------------------------------------------------
+    const NOTIF_WS_PATH = '/ws';
+    const NOTIF_JOBS_API = '/api/jobs';
+    const NOTIF_MAX_RECENT = 10;
+
+    const JOB_TYPE_ICONS = {
+      benchmark:            '\u{1F680}',
+      tool_eval:            '\u{1F527}',
+      judge:                '\u2696\uFE0F',
+      judge_compare:        '\u2696\uFE0F',
+      param_tune:           '\u2699\uFE0F',
+      prompt_tune:          '\u{1F4DD}',
+      scheduled_benchmark:  '\u23F0',
+    };
+    const JOB_TYPE_LABELS = {
+      benchmark:            'Benchmark',
+      tool_eval:            'Tool Eval',
+      judge:                'Judge',
+      judge_compare:        'Judge Compare',
+      param_tune:           'Param Tuner',
+      prompt_tune:          'Prompt Tuner',
+      scheduled_benchmark:  'Scheduled',
+    };
+    const ACTIVE_STATUSES = new Set(['pending', 'running', 'queued']);
+
+    // Job store — keyed by job id
+    let _jobStore = {};
+    let _notifDropdownOpen = false;
+    let _notifWs = null;
+    let _notifWsRetryMs = 1000;
+    let _notifWsMaxRetryMs = 30000;
+    let _notifWsTimer = null;
+    let _notifWsFailCount = 0;
+    let _notifWsFailWindowStart = 0;
+    const _NOTIF_WS_FAIL_THRESHOLD = 5;
+    const _NOTIF_WS_FAIL_WINDOW_MS = 60000;
+
+    // ── WebSocket Manager ──
+    function notifWsConnect() {
+      if (!authToken) return;
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = `${proto}//${location.host}${NOTIF_WS_PATH}?token=${encodeURIComponent(authToken)}`;
+
+      _notifWsSetStatus('connecting');
+
+      try {
+        _notifWs = new WebSocket(url);
+      } catch (e) {
+        console.warn('[NotifWS] Failed to create WebSocket:', e);
+        _notifWsTrackFailure();
+        _notifWsScheduleRetry();
+        return;
+      }
+
+      _notifWs.onopen = () => {
+        console.log('[NotifWS] Connected');
+        _notifWsRetryMs = 1000;
+        _notifWsFailCount = 0;
+        _notifWsSetStatus('connected');
+        _notifWsHideWarning();
+        _notifStartPing();
+      };
+
+      _notifWs.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          _notifHandleWsMessage(msg);
+        } catch (e) {
+          console.warn('[NotifWS] Bad message:', e);
+        }
+      };
+
+      _notifWs.onclose = (evt) => {
+        console.log('[NotifWS] Closed:', evt.code, evt.reason);
+        _notifStopPing();
+        _notifWsSetStatus('disconnected');
+        if (evt.code !== 1000) {
+          _notifWsTrackFailure();
+          _notifWsScheduleRetry();
+        }
+      };
+
+      _notifWs.onerror = () => {
+        _notifWsSetStatus('disconnected');
+      };
+    }
+
+    function notifWsDisconnect() {
+      _notifStopPing();
+      _notifWsFailCount = 0;
+      _notifWsHideWarning();
+      if (_notifWsTimer) { clearTimeout(_notifWsTimer); _notifWsTimer = null; }
+      if (_notifWs) { _notifWs.close(1000); _notifWs = null; }
+      _notifWsSetStatus('disconnected');
+    }
+
+    async function _notifWsScheduleRetry() {
+      if (_notifWsTimer) clearTimeout(_notifWsTimer);
+      // Add jitter (0-1s) to prevent thundering herd on Cloudflare reconnects
+      const jitter = Math.random() * 1000;
+      const delay = _notifWsRetryMs + jitter;
+      _notifWsTimer = setTimeout(async () => {
+        _notifWsTimer = null;
+        // Refresh JWT before reconnecting (may have expired during long sessions)
+        const refreshed = await tryRefreshToken();
+        if (!refreshed && !authToken) {
+          console.warn('[NotifWS] Token refresh failed, cannot reconnect');
+          _notifWsSetStatus('disconnected');
+          return;
+        }
+        notifWsConnect();
+      }, delay);
+      _notifWsRetryMs = Math.min(_notifWsRetryMs * 2, _notifWsMaxRetryMs);
+    }
+
+    // ── Consecutive failure tracking ──
+    function _notifWsTrackFailure() {
+      const now = Date.now();
+      if (now - _notifWsFailWindowStart > _NOTIF_WS_FAIL_WINDOW_MS) {
+        _notifWsFailCount = 0;
+        _notifWsFailWindowStart = now;
+      }
+      _notifWsFailCount++;
+      if (_notifWsFailCount >= _NOTIF_WS_FAIL_THRESHOLD) {
+        _notifWsShowWarning();
+      }
+    }
+
+    function _notifWsShowWarning() {
+      let banner = document.getElementById('notifWsBanner');
+      if (banner) return; // already showing
+      banner = document.createElement('div');
+      banner.id = 'notifWsBanner';
+      banner.className = 'text-[11px] font-body px-4 py-2';
+      banner.style.cssText = 'background:rgba(234,179,8,0.1);color:#EAB308;border-bottom:1px solid rgba(234,179,8,0.2);';
+      banner.textContent = 'Real-time connection lost. Retrying\u2026 If this persists, check your network.';
+      const header = document.getElementById('appHeader');
+      if (header) header.parentNode.insertBefore(banner, header.nextSibling);
+    }
+
+    function _notifWsHideWarning() {
+      const banner = document.getElementById('notifWsBanner');
+      if (banner) banner.remove();
+    }
+
+    function _notifWsSetStatus(status) {
+      const el = document.getElementById('notifWsStatus');
+      if (!el) return;
+      el.className = 'notif-ws-indicator ' + status;
+      el.title = 'WebSocket ' + status;
+    }
+
+    // ── Ping keep-alive ──
+    let _notifPingInterval = null;
+
+    function _notifStartPing() {
+      _notifStopPing();
+      _notifPingInterval = setInterval(() => {
+        if (_notifWs && _notifWs.readyState === WebSocket.OPEN) {
+          _notifWs.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 30000);
+    }
+
+    function _notifStopPing() {
+      if (_notifPingInterval) { clearInterval(_notifPingInterval); _notifPingInterval = null; }
+    }
+
+    // ── WebSocket Message Handler ──
+    function _notifHandleWsMessage(msg) {
+      // Handle sync message (sent on connect with full job state)
+      if (msg.type === 'sync') {
+        _jobStore = {};
+        for (const job of (msg.active_jobs || [])) {
+          _jobStore[job.id] = job;
+          // Restore inline benchmark progress if there's an active benchmark job
+          if (job.job_type === 'benchmark' && (job.status === 'running' || job.status === 'pending' || job.status === 'queued')) {
+            _activeBenchmarkJobId = job.id;
+            _restoreBenchmarkInlineProgress(job);
+          }
+        }
+        for (const job of (msg.recent_jobs || [])) { _jobStore[job.id] = job; }
+        notifRender();
+        return;
+      }
+
+      // Handle pong (keep-alive response)
+      if (msg.type === 'pong') return;
+
+      const jobId = msg.job_id;
+      if (!jobId) return;
+
+      switch (msg.type) {
+        case 'job_created':
+        case 'job_queued':
+          _jobStore[jobId] = {
+            id: jobId,
+            job_type: msg.job_type || 'benchmark',
+            status: msg.status || 'pending',
+            progress_pct: msg.progress_pct || 0,
+            progress_detail: msg.progress_detail || JOB_TYPE_LABELS[msg.job_type] + ' queued',
+            result_ref: null,
+            created_at: msg.timestamp || new Date().toISOString(),
+            started_at: null,
+            completed_at: null,
+            error_msg: null,
+          };
+          break;
+
+        case 'job_started':
+          if (_jobStore[jobId]) {
+            _jobStore[jobId].status = 'running';
+            _jobStore[jobId].started_at = msg.timestamp || new Date().toISOString();
+            if (msg.progress_detail) _jobStore[jobId].progress_detail = msg.progress_detail;
+          }
+          break;
+
+        case 'job_progress':
+          if (_jobStore[jobId]) {
+            _jobStore[jobId].progress_pct = msg.progress_pct || _jobStore[jobId].progress_pct;
+            if (msg.progress_detail) _jobStore[jobId].progress_detail = msg.progress_detail;
+            _jobStore[jobId].status = 'running';
+          }
+          break;
+
+        case 'job_completed':
+          if (_jobStore[jobId]) {
+            _jobStore[jobId].status = 'done';
+            _jobStore[jobId].progress_pct = 100;
+            _jobStore[jobId].completed_at = msg.timestamp || new Date().toISOString();
+            if (msg.result_ref) _jobStore[jobId].result_ref = msg.result_ref;
+            if (msg.progress_detail) _jobStore[jobId].progress_detail = msg.progress_detail;
+          }
+          break;
+
+        case 'job_failed':
+          if (_jobStore[jobId]) {
+            _jobStore[jobId].status = 'failed';
+            _jobStore[jobId].completed_at = msg.timestamp || new Date().toISOString();
+            _jobStore[jobId].error_msg = msg.error || msg.error_msg || 'Unknown error';
+            if (msg.progress_detail) _jobStore[jobId].progress_detail = msg.progress_detail;
+          }
+          break;
+
+        case 'job_cancelled':
+          if (_jobStore[jobId]) {
+            _jobStore[jobId].status = 'cancelled';
+            _jobStore[jobId].completed_at = msg.timestamp || new Date().toISOString();
+          }
+          break;
+
+        default:
+          console.log('[NotifWS] Unknown message type:', msg.type);
+          return;
+      }
+
+      notifRender();
+
+      // Bridge: forward job events to inline benchmark progress if applicable
+      if (typeof _onBenchmarkJobEvent === 'function') {
+        _onBenchmarkJobEvent(msg);
+      }
+    }
+
+    // ── Hydrate from REST API ──
+    async function notifHydrate() {
+      try {
+        const res = await apiFetch(NOTIF_JOBS_API);
+        if (!res.ok) return;
+        const jobs = await res.json();
+        // Merge into store (API is source of truth on load)
+        for (const job of (Array.isArray(jobs) ? jobs : jobs.jobs || [])) {
+          _jobStore[job.id] = job;
+        }
+        notifRender();
+      } catch (e) {
+        console.warn('[Notif] Hydration failed:', e);
+      }
+    }
+
+    // ── Cancel a Job ──
+    async function notifCancelJob(jobId) {
+      // NOTE: WS cancel not yet wired on backend (app.py line 501).
+      // Use REST cancel exclusively until backend enables WS cancel handler.
+      // When ready, uncomment the WS-preferred path below:
+      // if (_notifWs && _notifWs.readyState === WebSocket.OPEN) {
+      //   _notifWs.send(JSON.stringify({ type: 'cancel', job_id: jobId }));
+      //   showToast('Cancelling...', '');
+      //   return;
+      // }
+      try {
+        const res = await apiFetch(`${NOTIF_JOBS_API}/${jobId}/cancel`, { method: 'POST' });
+        if (res.ok) {
+          if (_jobStore[jobId]) {
+            _jobStore[jobId].status = 'cancelled';
+            _jobStore[jobId].completed_at = new Date().toISOString();
+          }
+          notifRender();
+          showToast('Process cancelled', '');
+        } else {
+          const err = await res.json().catch(() => ({}));
+          showToast(err.error || 'Failed to cancel', 'error');
+        }
+      } catch (e) {
+        showToast('Cancel failed: ' + e.message, 'error');
+      }
+    }
+
+    // ── Rendering ──
+    function notifRender() {
+      const allJobs = Object.values(_jobStore);
+      const running = allJobs
+        .filter(j => j.status === 'running')
+        .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+      const queued = allJobs
+        .filter(j => j.status === 'pending' || j.status === 'queued')
+        .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+      const active = [...running, ...queued];
+      const recent = allJobs
+        .filter(j => !ACTIVE_STATUSES.has(j.status))
+        .sort((a, b) => (b.completed_at || b.created_at || '').localeCompare(a.completed_at || a.created_at || ''))
+        .slice(0, NOTIF_MAX_RECENT);
+
+      // Badge
+      const badge = document.getElementById('notifBadge');
+      const count = active.length;
+      const prevCount = parseInt(badge.dataset.count || '0', 10);
+      badge.dataset.count = count;
+      badge.textContent = count > 0 ? (count > 99 ? '99+' : count) : '';
+      if (count > prevCount && count > 0) {
+        badge.classList.remove('pulse');
+        void badge.offsetWidth; // trigger reflow for re-animation
+        badge.classList.add('pulse');
+      }
+
+      // Active list — grouped by Running then Queued
+      const activeLabel = document.getElementById('notifActiveLabel');
+      activeLabel.textContent = running.length > 0
+        ? `Running (${running.length})` + (queued.length > 0 ? ` \u00B7 Queued (${queued.length})` : '')
+        : queued.length > 0 ? `Queued (${queued.length})` : 'Running';
+
+      const activeEl = document.getElementById('notifActiveList');
+      if (active.length === 0) {
+        activeEl.innerHTML = '<div class="notif-empty">No active processes</div>';
+      } else {
+        let html = '';
+        if (running.length > 0) {
+          html += running.map(j => _notifRenderActiveItem(j)).join('');
+        }
+        if (queued.length > 0) {
+          if (running.length > 0) {
+            html += '<div class="notif-section-label" style="padding-top:6px;">Queued (' + queued.length + ')</div>';
+          }
+          html += queued.map(j => _notifRenderActiveItem(j)).join('');
+        }
+        activeEl.innerHTML = html;
+      }
+
+      // Recent list
+      const recentEl = document.getElementById('notifRecentList');
+      if (recent.length === 0) {
+        recentEl.innerHTML = '<div class="notif-empty">No recent processes</div>';
+      } else {
+        recentEl.innerHTML = recent.map(j => _notifRenderRecentItem(j)).join('');
+      }
+    }
+
+    function _notifRenderActiveItem(job) {
+      const icon = JOB_TYPE_ICONS[job.job_type] || '\u{1F4CB}';
+      const label = JOB_TYPE_LABELS[job.job_type] || job.job_type;
+      const detail = job.progress_detail || label;
+      const pct = job.progress_pct || 0;
+      const isQueued = job.status === 'pending' || job.status === 'queued';
+      const queuePos = job.queued_position;
+      const statusText = isQueued
+        ? (queuePos ? `Queue position ${queuePos}` : 'Queued')
+        : `Running &middot; ${pct}%`;
+      const timeAgo = _notifTimeAgo(job.created_at);
+
+      return `<div class="notif-item">
+        <div class="notif-icon ${job.job_type}">${icon}</div>
+        <div class="notif-body">
+          <div class="notif-title">${_escHtml(detail)}</div>
+          ${isQueued ? '' : `<div class="notif-progress"><div class="notif-progress-bar" style="width:${pct}%"></div></div>`}
+          <div class="notif-meta">
+            <span>${statusText}</span>
+            <span>${timeAgo}</span>
+          </div>
+        </div>
+        <button class="notif-cancel" onclick="event.stopPropagation(); notifCancelJob('${job.id}')" title="Cancel">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>`;
+    }
+
+    function _notifRenderRecentItem(job) {
+      const icon = JOB_TYPE_ICONS[job.job_type] || '\u{1F4CB}';
+      const detail = job.progress_detail || JOB_TYPE_LABELS[job.job_type] || job.job_type;
+      const timeAgo = _notifTimeAgo(job.completed_at || job.created_at);
+      const statusClass = job.status;
+      const statusLabel = job.status === 'done' ? 'Done' : job.status === 'failed' ? 'Failed' : job.status === 'cancelled' ? 'Cancelled' : job.status === 'interrupted' ? 'Interrupted' : job.status;
+      const clickable = job.status === 'done' && job.result_ref ? ` onclick="notifNavigateToResult('${job.job_type}', '${job.result_ref}')" style="cursor:pointer;"` : '';
+      const errorTip = job.error_msg ? ` title="${_escHtml(job.error_msg)}"` : '';
+
+      return `<div class="notif-item"${clickable}${errorTip}>
+        <div class="notif-icon ${job.job_type}">${icon}</div>
+        <div class="notif-body">
+          <div class="notif-title">${_escHtml(detail)}</div>
+          <div class="notif-meta">
+            <span class="notif-status-badge ${statusClass}">${statusLabel}</span>
+            <span>${timeAgo}</span>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    // ── Navigate to Result ──
+    function notifNavigateToResult(jobType, resultRef) {
+      // Close dropdown first
+      _notifDropdownOpen = false;
+      document.getElementById('notifDropdown').classList.remove('open');
+
+      switch (jobType) {
+        case 'benchmark':
+          showTab('history');
+          break;
+        case 'tool_eval':
+          showTab('tool-eval');
+          // TODO: navigate to specific run in history sub-tab
+          break;
+        case 'judge':
+        case 'judge_compare':
+          showTab('tool-eval');
+          // TODO: navigate to judge reports sub-tab
+          break;
+        case 'param_tune':
+          showTab('tool-eval');
+          // TODO: navigate to param tune history
+          break;
+        case 'prompt_tune':
+          showTab('tool-eval');
+          // TODO: navigate to prompt tune history
+          break;
+        case 'scheduled_benchmark':
+          showTab('schedules');
+          break;
+      }
+    }
+
+    // ── Dropdown Toggle ──
+    function toggleNotifDropdown() {
+      _notifDropdownOpen = !_notifDropdownOpen;
+      document.getElementById('notifDropdown').classList.toggle('open', _notifDropdownOpen);
+    }
+
+    // Close dropdown on outside click
+    document.addEventListener('click', (e) => {
+      const widget = document.getElementById('notifWidget');
+      if (widget && !widget.contains(e.target) && _notifDropdownOpen) {
+        _notifDropdownOpen = false;
+        document.getElementById('notifDropdown').classList.remove('open');
+      }
+    });
+
+    // ── Helpers ──
+    function _notifTimeAgo(isoStr) {
+      if (!isoStr) return '';
+      const diff = Date.now() - new Date(isoStr).getTime();
+      const mins = Math.floor(diff / 60000);
+      if (mins < 1) return 'just now';
+      if (mins < 60) return mins + 'm ago';
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return hrs + 'h ago';
+      const days = Math.floor(hrs / 24);
+      return days + 'd ago';
+    }
+
+    function _escHtml(str) {
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    // ── Init (called after login) ──
+    function notifInit() {
+      document.getElementById('notifWidget').style.display = '';
+      // WebSocket connect sends a sync message with full state.
+      // We also hydrate via REST as a fallback (in case WS fails).
+      notifWsConnect();
+      notifHydrate();
+    }
+
+    // ── Cleanup (called on logout) ──
+    function notifDestroy() {
+      notifWsDisconnect();
+      _jobStore = {};
+      _activeBenchmarkJobId = null;
+      document.getElementById('notifWidget').style.display = 'none';
+      const badge = document.getElementById('notifBadge');
+      badge.dataset.count = '0';
+      badge.textContent = '';
+    }
+
+    // -------------------------------------------------------------------
     // Toast notifications
     // -------------------------------------------------------------------
     function showToast(message, type = '') {
@@ -2616,12 +3305,20 @@
       banner.classList.remove('hidden');
     }
 
+    // Track current benchmark job for inline progress
+    let _activeBenchmarkJobId = null;
+
     async function cancelBenchmark() {
-      try {
-        await apiFetch('/api/benchmark/cancel', { method: 'POST' });
-        showToast('Cancellation requested...', '');
-      } catch (e) {
-        showToast('Failed to cancel', 'error');
+      if (_activeBenchmarkJobId) {
+        notifCancelJob(_activeBenchmarkJobId);
+      } else {
+        // Legacy fallback
+        try {
+          await apiFetch('/api/benchmark/cancel', { method: 'POST' });
+          showToast('Cancellation requested...', '');
+        } catch (e) {
+          showToast('Failed to cancel', 'error');
+        }
       }
     }
 
@@ -2657,9 +3354,11 @@
       };
       _lastBenchmarkBody = body;
 
-      // Initialize per-provider progress tracking
-      initProviderProgress(body);
-      renderProviderProgress();
+      // Initialize progress display (simplified: single overall progress)
+      document.getElementById('progressLabel').textContent = 'Submitting benchmark...';
+      document.getElementById('progressCount').textContent = '0%';
+      // Clear per-provider panel (job system uses overall progress instead)
+      document.getElementById('providerProgressPanel').innerHTML = '';
 
       try {
         const res = await apiFetch('/api/benchmark', {
@@ -2668,59 +3367,120 @@
           body: JSON.stringify(body),
         });
 
-        // Handle HTTP 409 - concurrent benchmark
-        if (res.status === 409) {
-          showToast('A benchmark is already running', 'error');
-          _resetRunBtn();
-          return;
-        }
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
-          showToast(err.error || `Server error (${res.status})`, 'error');
+          if (res.status === 429) {
+            showToast(err.error || 'Rate limit exceeded', 'error');
+          } else {
+            showToast(err.error || `Server error (${res.status})`, 'error');
+          }
           _resetRunBtn();
+          document.getElementById('progressSection').classList.add('hidden');
           return;
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+        // New job-based response: {job_id, status}
+        const data = await res.json();
+        _activeBenchmarkJobId = data.job_id;
 
-        // SSE no-data timeout (30s)
-        const resetTimeout = () => {
-          if (_sseTimeout) clearTimeout(_sseTimeout);
-          _sseTimeout = setTimeout(() => {
-            _showSSEError('Connection lost - no data received for 30 seconds');
-            _resetRunBtn();
-          }, 30000);
-        };
-        resetTimeout();
+        // Update UI to show job is submitted
+        document.getElementById('progressLabel').textContent = data.status === 'submitted' ? 'Benchmark queued...' : 'Benchmark starting...';
+        showToast('Benchmark submitted', 'success');
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          resetTimeout();
-          buffer += decoder.decode(value, { stream: true });
+        // Progress updates now arrive via WebSocket (handled by _onBenchmarkJobEvent)
+        // User can navigate away — the notification widget tracks progress independently
 
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try { handleSSE(JSON.parse(line.slice(6))); } catch (e) {}
-            }
-          }
-        }
-        if (_sseTimeout) clearTimeout(_sseTimeout);
       } catch (e) {
         console.error('Benchmark error:', e);
         _showSSEError('Connection error: ' + (e.message || 'Network failure'));
+        _resetRunBtn();
       }
+    }
 
-      _resetRunBtn();
+    // ── WebSocket event bridge for inline benchmark progress ──
+    // Called by _notifHandleWsMessage when a job event matches _activeBenchmarkJobId
+    function _onBenchmarkJobEvent(msg) {
+      if (!_activeBenchmarkJobId || msg.job_id !== _activeBenchmarkJobId) return;
+
+      switch (msg.type) {
+        case 'job_started':
+          document.getElementById('progressLabel').textContent = 'Benchmark running...';
+          break;
+
+        case 'job_progress':
+          document.getElementById('progressLabel').textContent = msg.progress_detail || 'Running...';
+          document.getElementById('progressCount').textContent = (msg.progress_pct || 0) + '%';
+          break;
+
+        case 'job_completed':
+          document.getElementById('progressSection').classList.add('hidden');
+          _activeBenchmarkJobId = null;
+          _resetRunBtn();
+          showToast('Benchmark complete', 'success');
+          // Fetch and display results
+          _loadBenchmarkJobResults(msg.result_ref);
+          break;
+
+        case 'job_failed':
+          document.getElementById('progressSection').classList.add('hidden');
+          _activeBenchmarkJobId = null;
+          _resetRunBtn();
+          _showSSEError(msg.error || msg.error_msg || 'Benchmark failed');
+          break;
+
+        case 'job_cancelled':
+          document.getElementById('progressSection').classList.add('hidden');
+          _activeBenchmarkJobId = null;
+          _resetRunBtn();
+          showToast('Benchmark cancelled', '');
+          break;
+      }
+    }
+
+    async function _loadBenchmarkJobResults(resultRef) {
+      if (!resultRef) return;
+      try {
+        const res = await apiFetch(`/api/history/${resultRef}`);
+        if (!res.ok) {
+          showToast('Failed to load results', 'error');
+          return;
+        }
+        const data = await res.json();
+        // Populate currentResults from the saved run data
+        currentResults = (data.results || []).map(r => ({
+          ...r,
+          type: 'result',
+          success: r.success !== false,
+        }));
+        document.getElementById('resultsSection').classList.remove('hidden');
+        if (currentResults.length === 0 || currentResults.every(r => !r.success)) {
+          document.getElementById('statCards').innerHTML = `<div class="col-span-full error-banner">All benchmarks failed. Check your API keys and model configuration.</div>`;
+        }
+        renderFinalResults();
+      } catch (e) {
+        console.error('Failed to load benchmark results:', e);
+        showToast('Failed to load results', 'error');
+      }
+    }
+
+    // ── Restore inline benchmark progress on page load/reconnect ──
+    function _restoreBenchmarkInlineProgress(job) {
+      const btn = document.getElementById('runBtn');
+      btn.disabled = true;
+      btn.innerHTML = `<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> RUNNING...`;
+      document.getElementById('progressSection').classList.remove('hidden');
+      document.getElementById('resultsSection').classList.add('hidden');
+      document.getElementById('providerProgressPanel').innerHTML = '';
+      document.getElementById('sseBanner').classList.add('hidden');
+      const isQueued = job.status === 'pending' || job.status === 'queued';
+      document.getElementById('progressLabel').textContent = isQueued
+        ? 'Benchmark queued...'
+        : (job.progress_detail || 'Benchmark running...');
+      document.getElementById('progressCount').textContent = (job.progress_pct || 0) + '%';
     }
 
     // -------------------------------------------------------------------
-    // Per-provider progress tracking
+    // Per-provider progress tracking (legacy — used by old SSE flow)
     // -------------------------------------------------------------------
     function initProviderProgress(body) {
       providerProgress = {};
@@ -9579,6 +10339,7 @@
         hideAuthModal();
         hideLandingPage();
         init();
+        notifInit();
         checkOnboarding();
       } catch (err) {
         document.getElementById('authError').textContent = 'Connection error';
@@ -9587,6 +10348,7 @@
     }
 
     async function handleLogout() {
+      notifDestroy();
       await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
       authToken = null;
       currentUser = null;
@@ -9621,6 +10383,7 @@
             updateAuthUI();
             hideLandingPage();
             init();
+            notifInit();
             loadPromptTemplates();
             return;
           }
@@ -9630,6 +10393,7 @@
       if (refreshed) {
         hideLandingPage();
         init();
+        notifInit();
         loadPromptTemplates();
       } else {
         showLandingPage();

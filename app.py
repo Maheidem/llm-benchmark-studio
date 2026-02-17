@@ -21,7 +21,7 @@ import litellm
 import yaml
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, Depends
+from fastapi import FastAPI, Request, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Response
 
 # Load .env before importing benchmark (needs API keys)
@@ -53,6 +53,8 @@ from provider_params import (
 )
 from mcp import ClientSession
 from mcp.client.sse import sse_client
+from ws_manager import ConnectionManager
+from job_registry import registry as job_registry
 
 from contextlib import asynccontextmanager
 
@@ -77,6 +79,9 @@ async def lifespan(app_instance):
                 hashed = auth.hash_password(admin_pass)
                 await db.create_user(admin_email, hashed, role="admin")
                 print(f"  Admin account created: {admin_email}")
+    # Initialize job registry (startup recovery + watchdog)
+    job_registry.set_ws_manager(ws_manager)
+    await job_registry.startup()
     # Launch background scheduler for scheduled benchmarks
     scheduler_task = asyncio.create_task(_run_scheduler())
     yield
@@ -85,6 +90,7 @@ async def lifespan(app_instance):
         await scheduler_task
     except asyncio.CancelledError:
         pass
+    await job_registry.shutdown()
 
 async def _run_scheduled_benchmark(schedule: dict):
     """Execute a single scheduled benchmark run and save results."""
@@ -169,6 +175,9 @@ async def _run_scheduler():
 
 
 app = FastAPI(title="LLM Benchmark Studio", lifespan=lifespan)
+
+# WebSocket connection manager (singleton)
+ws_manager = ConnectionManager()
 
 # ---------------------------------------------------------------------------
 # Security Headers Middleware
@@ -430,6 +439,209 @@ async def generate_cli_token(user: dict = Depends(auth.get_current_user)):
 
 
 # ---------------------------------------------------------------------------
+# WebSocket endpoint
+# ---------------------------------------------------------------------------
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    """WebSocket endpoint for real-time job status updates.
+
+    Auth: JWT access token passed as query param ?token=xxx
+    On connect: sends a 'sync' message with active + recent jobs.
+    Listens for client messages: 'ping' (keep-alive), 'cancel' (cancel a job).
+    """
+    from jose import JWTError, ExpiredSignatureError
+
+    # --- Auth: validate JWT from query param ---
+    token = ws.query_params.get("token")
+    if not token:
+        await ws.close(code=4001, reason="Missing token")
+        return
+
+    try:
+        payload = auth.decode_token(token)
+        if payload.get("type") not in ("access", "cli"):
+            raise ValueError("Invalid token type")
+        user_id = payload.get("sub")
+        if not user_id:
+            raise ValueError("No sub in token")
+    except (JWTError, ExpiredSignatureError, ValueError):
+        await ws.close(code=4001, reason="Invalid token")
+        return
+
+    # Look up user to get role (for admin broadcast)
+    user = await db.get_user_by_id(user_id)
+    if not user:
+        await ws.close(code=4001, reason="User not found")
+        return
+
+    role = user.get("role", "user")
+
+    # --- Register connection (max 5 per user) ---
+    connected = await ws_manager.connect(user_id, role, ws)
+    if not connected:
+        return  # Too many connections, already closed by manager
+
+    # --- Send initial sync: active + recent jobs ---
+    try:
+        active_jobs = await db.get_user_active_jobs(user_id)
+        recent_jobs = await db.get_user_recent_jobs(user_id, limit=10)
+        await ws.send_json({
+            "type": "sync",
+            "active_jobs": active_jobs,
+            "recent_jobs": recent_jobs,
+        })
+    except Exception:
+        await ws_manager.disconnect(user_id, ws)
+        return
+
+    # --- Listen loop with 90s receive timeout ---
+    # The timeout catches dead connections from unclean proxy disconnects
+    # (e.g. Cloudflare closing without sending a close frame).
+    # Clients should send a ping at least every 60s to stay alive.
+    try:
+        while True:
+            try:
+                data = await asyncio.wait_for(ws.receive_json(), timeout=90)
+            except asyncio.TimeoutError:
+                # No message received in 90s — assume dead connection
+                try:
+                    await ws.close(code=4002, reason="Receive timeout")
+                except Exception:
+                    pass
+                break
+
+            msg_type = data.get("type")
+
+            if msg_type == "ping":
+                await ws.send_json({"type": "pong"})
+            elif msg_type == "cancel":
+                job_id = data.get("job_id")
+                if job_id:
+                    await job_registry.cancel(job_id, user_id)
+
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        await ws_manager.disconnect(user_id, ws)
+
+
+# ---------------------------------------------------------------------------
+# Job tracking REST endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/jobs")
+async def list_jobs(request: Request, user: dict = Depends(auth.get_current_user)):
+    """List current user's jobs. Optional query params: ?status=running,queued&limit=20"""
+    status_filter = request.query_params.get("status")
+    limit = int(request.query_params.get("limit", "20"))
+    jobs = await db.get_user_jobs(user["id"], status=status_filter, limit=limit)
+    return {"jobs": jobs}
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job(job_id: str, user: dict = Depends(auth.get_current_user)):
+    """Get a single job's details (scoped to the current user)."""
+    job = await db.get_job(job_id)
+    if not job or job["user_id"] != user["id"]:
+        return JSONResponse({"error": "Job not found"}, status_code=404)
+    return job
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str, request: Request, user: dict = Depends(auth.get_current_user)):
+    """Cancel a specific job (user can only cancel their own jobs)."""
+    job = await db.get_job(job_id)
+    if not job or job["user_id"] != user["id"]:
+        return JSONResponse({"error": "Job not found"}, status_code=404)
+
+    if job["status"] in ("done", "failed", "cancelled", "interrupted"):
+        return JSONResponse({"error": "Job already finished"}, status_code=400)
+
+    # For queued jobs, just mark cancelled directly
+    if job["status"] in ("pending", "queued"):
+        await db.update_job_status(
+            job_id, "cancelled",
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        await ws_manager.send_to_user(user["id"], {
+            "type": "job_cancelled", "job_id": job_id,
+        })
+        return {"status": "ok", "message": "Job cancelled"}
+
+    # For running jobs, use the job registry to signal cancellation
+    cancelled = await job_registry.cancel(job_id, user["id"])
+    if not cancelled:
+        # Fallback: mark as cancelled directly if registry doesn't know about it
+        await db.update_job_status(
+            job_id, "cancelled",
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        await ws_manager.send_to_user(user["id"], {
+            "type": "job_cancelled", "job_id": job_id,
+        })
+
+    await db.log_audit(
+        user_id=user["id"],
+        username=user.get("email", ""),
+        action="job_cancel",
+        resource_type="job",
+        resource_id=job_id,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+
+    return {"status": "ok", "message": "Cancellation requested"}
+
+
+@app.get("/api/admin/jobs")
+async def admin_list_jobs(current_user: dict = Depends(auth.require_admin)):
+    """Admin: list all active jobs across all users."""
+    jobs = await db.get_all_active_jobs()
+    return {"jobs": jobs}
+
+
+@app.post("/api/admin/jobs/{job_id}/cancel")
+async def admin_cancel_job(job_id: str, request: Request, current_user: dict = Depends(auth.require_admin)):
+    """Admin: cancel any user's job."""
+    job = await db.get_job(job_id)
+    if not job:
+        return JSONResponse({"error": "Job not found"}, status_code=404)
+
+    if job["status"] in ("done", "failed", "cancelled", "interrupted"):
+        return JSONResponse({"error": "Job already finished"}, status_code=400)
+
+    # Use job registry for running jobs (signals cancel_event)
+    cancelled = await job_registry.cancel(job_id, current_user["id"], is_admin=True)
+    if not cancelled:
+        # Fallback for jobs not tracked by registry
+        await db.update_job_status(
+            job_id, "cancelled",
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        await ws_manager.send_to_user(job["user_id"], {
+            "type": "job_cancelled", "job_id": job_id,
+        })
+
+    await db.log_audit(
+        user_id=current_user["id"],
+        username=current_user.get("email", ""),
+        action="admin_job_cancel",
+        resource_type="job",
+        resource_id=job_id,
+        detail={"target_user": job["user_id"]},
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+
+    return {"status": "ok", "message": "Job cancelled by admin"}
+
+
+# ---------------------------------------------------------------------------
 # Admin endpoints (all require admin role)
 # ---------------------------------------------------------------------------
 _process_start_time = time.time()
@@ -575,11 +787,20 @@ async def admin_system_health(current_user: dict = Depends(auth.require_admin)):
         results_count = len(json_files)
         results_size_mb = round(sum(f.stat().st_size for f in json_files) / 1024 / 1024, 2)
 
+    # Get active jobs from the job registry for system health
+    active_jobs = await db.get_all_active_jobs()
+
     return {
         "db_size_mb": db_size_mb,
         "results_size_mb": results_size_mb,
         "results_count": results_count,
-        "benchmark_active": any(lock.locked() for lock in _user_locks.values()),
+        "benchmark_active": any(lock.locked() for lock in _user_locks.values()) or any(
+            j["job_type"] == "benchmark" for j in active_jobs
+        ),
+        "active_jobs": active_jobs,
+        "total_active": len([j for j in active_jobs if j["status"] == "running"]),
+        "total_queued": len([j for j in active_jobs if j["status"] == "queued"]),
+        "connected_ws_clients": ws_manager.get_connection_count(),
         "process_uptime_s": round(time.time() - _process_start_time),
     }
 
@@ -1249,14 +1470,38 @@ async def delete_my_key(request: Request, user: dict = Depends(auth.get_current_
 
 @app.post("/api/benchmark/cancel")
 async def cancel_benchmark(request: Request, user: dict = Depends(auth.get_current_user)):
-    """Cancel a running benchmark."""
-    _get_user_cancel(user["id"]).set()
+    """Cancel a running benchmark.
+
+    Accepts optional {job_id} in request body. If not provided, cancels
+    the most recent active benchmark job for this user (backward compat).
+    """
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass  # Empty body is OK for backward compat
+
+    job_id = body.get("job_id")
+
+    if job_id:
+        # Cancel specific job
+        await job_registry.cancel(job_id, user["id"])
+    else:
+        # Backward compat: cancel the most recent active benchmark for this user
+        # Also signal the old cancel event for any legacy SSE streams
+        _get_user_cancel(user["id"]).set()
+        active = await db.get_user_active_jobs(user["id"])
+        for j in active:
+            if j["job_type"] == "benchmark":
+                await job_registry.cancel(j["id"], user["id"])
+                break
 
     await db.log_audit(
         user_id=user["id"],
         username=user.get("email", ""),
         action="benchmark_cancel",
         resource_type="benchmark",
+        resource_id=job_id,
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent", ""),
     )
@@ -1271,9 +1516,173 @@ async def get_rate_limit(user: dict = Depends(auth.get_current_user)):
     return {"limit": RATE_LIMIT_PER_HOUR, "remaining": remaining, "window": "1 hour"}
 
 
+async def _benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb) -> str | None:
+    """Job registry handler for benchmark execution.
+
+    Extracts the core benchmark logic from the old SSE generator.
+    Returns the benchmark_run ID on success, or None.
+    """
+    user_id = params["user_id"]
+    model_ids = params["models"]
+    runs = params.get("runs", 3)
+    max_tokens = params.get("max_tokens", 512)
+    temperature = params.get("temperature", 0.7)
+    prompt = params.get("prompt", "")
+    context_tiers = params.get("context_tiers", [0])
+    warmup = params.get("warmup", True)
+    provider_params = params.get("provider_params")
+
+    config = await _get_user_config(user_id)
+    defaults = config.get("defaults", {})
+    all_targets = build_targets(config)
+
+    # Filter to requested models
+    if model_ids:
+        targets = [t for t in all_targets if t.model_id in model_ids]
+    else:
+        targets = all_targets
+
+    # Inject per-user API keys
+    user_keys_cache = {}
+    for t in targets:
+        if t.provider_key and t.provider_key not in user_keys_cache:
+            encrypted = await db.get_user_key_for_provider(user_id, t.provider_key)
+            if encrypted:
+                user_keys_cache[t.provider_key] = encrypted
+    targets = inject_user_keys(targets, user_keys_cache)
+
+    if not prompt.strip():
+        prompt = defaults.get("prompt", "Explain recursion in programming with a Python example.")
+
+    # Calculate total runs across all tiers
+    total = 0
+    for tier in context_tiers:
+        for target in targets:
+            headroom = target.context_window - max_tokens - 100
+            if tier == 0 or tier <= headroom:
+                total += runs
+
+    if total == 0:
+        return None
+
+    # Group targets by provider for parallel execution
+    provider_groups = {}
+    for target in targets:
+        provider_groups.setdefault(target.provider, []).append(target)
+
+    results_queue = asyncio.Queue()
+
+    async def run_provider(prov_targets):
+        """Run all benchmarks for one provider sequentially."""
+        for tier in context_tiers:
+            for target in prov_targets:
+                if cancel_event.is_set():
+                    return
+                headroom = target.context_window - max_tokens - 100
+                if tier > 0 and tier > headroom:
+                    continue  # Skip tier exceeding context window
+
+                # Warm-up run (discarded)
+                if warmup:
+                    await async_run_single(
+                        target, prompt, max_tokens, temperature, tier,
+                        provider_params=provider_params,
+                    )
+
+                for r in range(runs):
+                    if cancel_event.is_set():
+                        return
+                    result = await async_run_single(
+                        target, prompt, max_tokens, temperature, tier,
+                        provider_params=provider_params,
+                    )
+                    await results_queue.put({
+                        "type": "result",
+                        "provider": target.provider,
+                        "model": target.display_name,
+                        "model_id": target.model_id,
+                        "run": r + 1,
+                        "runs": runs,
+                        "context_tokens": tier,
+                        "ttft_ms": round(result.ttft_ms, 2),
+                        "total_time_s": round(result.total_time_s, 3),
+                        "output_tokens": result.output_tokens,
+                        "input_tokens": result.input_tokens,
+                        "tokens_per_second": round(result.tokens_per_second, 2),
+                        "input_tokens_per_second": round(result.input_tokens_per_second, 2),
+                        "cost": round(result.cost, 8),
+                        "success": result.success,
+                        "error": result.error,
+                    })
+
+    # Launch all provider groups as concurrent tasks
+    tasks = [asyncio.create_task(run_provider(g)) for g in provider_groups.values()]
+
+    async def sentinel():
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await results_queue.put(None)
+
+    asyncio.create_task(sentinel())
+
+    # Consume results and report progress
+    current = 0
+    all_results = []
+    while True:
+        try:
+            item = await asyncio.wait_for(results_queue.get(), timeout=15)
+        except asyncio.TimeoutError:
+            continue  # Keep waiting
+        if item is None:
+            break
+        if cancel_event.is_set():
+            for t in tasks:
+                t.cancel()
+            return None
+        if item["type"] == "result":
+            current += 1
+            all_results.append(item)
+            pct = int((current / total) * 100) if total > 0 else 0
+            detail = f"{item['model']}, Run {item['run']}/{item['runs']}"
+            if item["context_tokens"] > 0:
+                detail += f", Context {item['context_tokens'] // 1000}K"
+            await progress_cb(pct, detail)
+
+    # Save results
+    if all_results:
+        agg_results = _aggregate(all_results, config)
+        save_results(agg_results, prompt, context_tiers=context_tiers)
+
+        run_id = await db.save_benchmark_run(
+            user_id=user_id,
+            prompt=prompt,
+            context_tiers=json.dumps(context_tiers),
+            results_json=json.dumps(all_results),
+        )
+
+        await db.log_audit(
+            user_id=user_id,
+            username=params.get("user_email", ""),
+            action="benchmark_complete",
+            resource_type="benchmark",
+            detail={"models": model_ids, "result_count": len(all_results)},
+        )
+
+        return run_id
+
+    return None
+
+
+# Register the benchmark handler with the job registry
+job_registry.register_handler("benchmark", _benchmark_handler)
+
+
 @app.post("/api/benchmark")
 async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_user)):
-    """Run benchmarks and stream results via SSE."""
+    """Run benchmarks via the job registry. Returns job_id immediately.
+
+    Progress is delivered via WebSocket (not SSE). The frontend receives
+    job_created, job_started, job_progress, and job_completed events.
+    """
     body = await request.json()
     model_ids = body.get("models", [])
     runs = body.get("runs", 3)
@@ -1282,7 +1691,7 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
     prompt = body.get("prompt", "")
     context_tiers = body.get("context_tiers", [0])
     warmup = body.get("warmup", True)
-    provider_params = body.get("provider_params")  # Optional: tier2 + passthrough
+    provider_params = body.get("provider_params")
 
     # --- Input validation ---
     if not isinstance(model_ids, list) or len(model_ids) == 0:
@@ -1329,196 +1738,33 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
         user_agent=request.headers.get("user-agent", ""),
     )
 
-    # --- Concurrent benchmark guard (per-user) ---
-    user_lock = _get_user_lock(user["id"])
-    if user_lock.locked():
-        return JSONResponse(
-            {"error": "Benchmark already running"},
-            status_code=409,
-        )
+    # Build progress detail for initial display
+    model_count = len(model_ids)
+    progress_detail = f"Benchmark: {model_count} model{'s' if model_count != 1 else ''}, {runs} run{'s' if runs != 1 else ''} each"
 
-    config = await _get_user_config(user["id"])
-    defaults = config.get("defaults", {})
-    all_targets = build_targets(config)
+    # Submit to job registry (starts immediately or queues based on concurrency limit)
+    params = {
+        "user_id": user["id"],
+        "user_email": user.get("email", ""),
+        "models": model_ids,
+        "runs": runs,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "prompt": prompt,
+        "context_tiers": context_tiers,
+        "warmup": warmup,
+        "provider_params": provider_params,
+    }
 
-    # Filter to requested models (or run all if none specified)
-    if model_ids:
-        targets = [t for t in all_targets if t.model_id in model_ids]
-    else:
-        targets = all_targets
-
-    # Inject per-user API keys (user key > global fallback)
-    user_keys_cache = {}
-    for t in targets:
-        if t.provider_key and t.provider_key not in user_keys_cache:
-            encrypted = await db.get_user_key_for_provider(user["id"], t.provider_key)
-            if encrypted:
-                user_keys_cache[t.provider_key] = encrypted
-    targets = inject_user_keys(targets, user_keys_cache)
-
-    if not prompt.strip():
-        prompt = defaults.get("prompt", "Explain recursion in programming with a Python example.")
-
-    cancel_event = _get_user_cancel(user["id"])
-
-    async def generate():
-        await user_lock.acquire()
-        cancel_event.clear()
-        try:
-            # Calculate total runs across all tiers
-            total = 0
-            for tier in context_tiers:
-                for target in targets:
-                    headroom = target.context_window - max_tokens - 100
-                    if tier == 0 or tier <= headroom:
-                        total += runs
-
-            queue = asyncio.Queue()
-
-            # Group targets by provider for parallel execution
-            # Within a provider: sequential (same endpoint, avoid self-contention)
-            # Across providers: fully parallel (independent endpoints)
-            provider_groups = {}
-            for target in targets:
-                provider_groups.setdefault(target.provider, []).append(target)
-
-            async def run_provider(prov_targets):
-                """Run all benchmarks for one provider sequentially."""
-                for tier in context_tiers:
-                    for target in prov_targets:
-                        if cancel_event.is_set():
-                            return
-                        headroom = target.context_window - max_tokens - 100
-                        if tier > 0 and tier > headroom:
-                            await queue.put({
-                                "type": "skipped",
-                                "provider": target.provider,
-                                "model": target.display_name,
-                                "model_id": target.model_id,
-                                "context_tokens": tier,
-                                "reason": f"{tier // 1000}K exceeds {target.context_window // 1000}K context window",
-                            })
-                            continue
-
-                        # Warm-up run (discarded)
-                        if warmup:
-                            await async_run_single(
-                                target, prompt, max_tokens, temperature, tier,
-                                provider_params=provider_params,
-                            )
-
-                        for r in range(runs):
-                            if cancel_event.is_set():
-                                return
-                            result = await async_run_single(
-                                target, prompt, max_tokens, temperature, tier,
-                                provider_params=provider_params,
-                            )
-                            await queue.put({
-                                "type": "result",
-                                "provider": target.provider,
-                                "model": target.display_name,
-                                "model_id": target.model_id,
-                                "run": r + 1,
-                                "runs": runs,
-                                "context_tokens": tier,
-                                "ttft_ms": round(result.ttft_ms, 2),
-                                "total_time_s": round(result.total_time_s, 3),
-                                "output_tokens": result.output_tokens,
-                                "input_tokens": result.input_tokens,
-                                "tokens_per_second": round(result.tokens_per_second, 2),
-                                "input_tokens_per_second": round(result.input_tokens_per_second, 2),
-                                "cost": round(result.cost, 8),
-                                "success": result.success,
-                                "error": result.error,
-                            })
-
-            # Launch all provider groups as concurrent tasks
-            tasks = [asyncio.create_task(run_provider(g))
-                     for g in provider_groups.values()]
-
-            async def sentinel():
-                """Wait for all provider tasks to finish, then signal done."""
-                await asyncio.gather(*tasks, return_exceptions=True)
-                await queue.put(None)
-
-            asyncio.create_task(sentinel())
-
-            # Consume queue and yield SSE events as they arrive (interleaved)
-            current = 0
-            all_results = []
-            while True:
-                # Use timeout to send heartbeats while waiting for results
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=15)
-                except asyncio.TimeoutError:
-                    yield _sse({"type": "heartbeat"})
-                    continue
-                if item is None:
-                    break
-                if cancel_event.is_set():
-                    # Cancel remaining tasks
-                    for t in tasks:
-                        t.cancel()
-                    yield _sse({"type": "cancelled"})
-                    return
-                if item["type"] == "result":
-                    current += 1
-                    # Emit progress before the result data
-                    yield _sse({
-                        "type": "progress",
-                        "current": current,
-                        "total": total,
-                        "provider": item["provider"],
-                        "model": item["model"],
-                        "run": item["run"],
-                        "runs": item["runs"],
-                        "context_tokens": item["context_tokens"],
-                    })
-                    all_results.append(item)
-                yield _sse(item)
-
-            # Save results to JSON file (for CLI compatibility)
-            if all_results:
-                agg_results = _aggregate(all_results, config)
-                saved = save_results(agg_results, prompt, context_tiers=context_tiers)
-
-                # Save results to DB for per-user history
-                await db.save_benchmark_run(
-                    user_id=user["id"],
-                    prompt=prompt,
-                    context_tiers=json.dumps(context_tiers),
-                    results_json=json.dumps(all_results),
-                )
-
-                # Audit: benchmark complete
-                await db.log_audit(
-                    user_id=user["id"],
-                    username=user.get("email", ""),
-                    action="benchmark_complete",
-                    resource_type="benchmark",
-                    detail={"models": model_ids, "result_count": len(all_results)},
-                    ip_address=request.client.host if request.client else None,
-                    user_agent=request.headers.get("user-agent", ""),
-                )
-
-                yield _sse({"type": "complete", "saved_to": str(saved)})
-            else:
-                yield _sse({"type": "complete", "saved_to": ""})
-
-        except Exception as e:
-            yield _sse({"type": "error", "message": sanitize_error(str(e))})
-        finally:
-            user_lock.release()
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "X-Accel-Buffering": "no",
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-        },
+    job_id = await job_registry.submit(
+        job_type="benchmark",
+        user_id=user["id"],
+        params=params,
+        progress_detail=progress_detail,
     )
+
+    # Return immediately -- frontend gets progress via WebSocket
+    return {"job_id": job_id, "status": "submitted"}
 
 
 @app.get("/api/history")

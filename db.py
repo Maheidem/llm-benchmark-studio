@@ -281,6 +281,55 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_ts ON judge_reports(user_id, timestamp DESC)")
         await db.commit()
 
+        # --- Jobs (Process Tracker) ---
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS jobs (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+
+                -- Type discriminator (one of 7 process types)
+                job_type TEXT NOT NULL CHECK(job_type IN (
+                    'benchmark', 'tool_eval', 'judge', 'judge_compare',
+                    'param_tune', 'prompt_tune', 'scheduled_benchmark'
+                )),
+
+                -- Lifecycle
+                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN (
+                    'pending', 'queued', 'running',
+                    'done', 'failed', 'cancelled', 'interrupted'
+                )),
+
+                -- Progress tracking
+                progress_pct INTEGER DEFAULT 0 CHECK(progress_pct BETWEEN 0 AND 100),
+                progress_detail TEXT DEFAULT '',
+
+                -- Input parameters (type-specific, stored as JSON)
+                params_json TEXT NOT NULL DEFAULT '{}',
+
+                -- Result reference (points to result in type-specific tables)
+                result_ref TEXT,
+                result_type TEXT,
+
+                -- Error info
+                error_msg TEXT,
+
+                -- Timing
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                started_at TEXT,
+                completed_at TEXT,
+                timeout_at TEXT,
+
+                -- Timeout config (seconds, default 7200 = 2 hours)
+                timeout_seconds INTEGER NOT NULL DEFAULT 7200
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_status ON jobs(user_id, status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_id, created_at DESC)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_timeout ON jobs(status, timeout_at)")
+        await db.commit()
+
 
 # --- User CRUD ---
 
@@ -1200,3 +1249,193 @@ async def update_schedule_after_run(schedule_id: str, last_run: str, next_run: s
             (last_run, next_run, schedule_id),
         )
         await conn.commit()
+
+
+# --- Jobs (Process Tracker) CRUD ---
+
+
+async def create_job(
+    job_id: str,
+    user_id: str,
+    job_type: str,
+    status: str,
+    params_json: str,
+    timeout_seconds: int = 7200,
+    progress_detail: str = "",
+) -> dict:
+    """Create a new job record. Returns the job dict."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        await conn.execute(
+            "INSERT INTO jobs (id, user_id, job_type, status, params_json, timeout_seconds, progress_detail) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (job_id, user_id, job_type, status, params_json, timeout_seconds, progress_detail),
+        )
+        await conn.commit()
+        cursor = await conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+        row = await cursor.fetchone()
+        return dict(row)
+
+
+async def get_job(job_id: str) -> dict | None:
+    """Get a single job by ID."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def update_job_started(job_id: str, started_at: str, timeout_at: str):
+    """Mark a job as running with start time and timeout deadline."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        await conn.execute(
+            "UPDATE jobs SET status = 'running', started_at = ?, timeout_at = ? WHERE id = ?",
+            (started_at, timeout_at, job_id),
+        )
+        await conn.commit()
+
+
+async def update_job_progress(job_id: str, progress_pct: int, progress_detail: str = ""):
+    """Update progress fields for a running job."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        await conn.execute(
+            "UPDATE jobs SET progress_pct = ?, progress_detail = ? WHERE id = ?",
+            (progress_pct, progress_detail, job_id),
+        )
+        await conn.commit()
+
+
+async def update_job_status(
+    job_id: str,
+    status: str,
+    completed_at: str | None = None,
+    result_ref: str | None = None,
+    error_msg: str | None = None,
+):
+    """Update job status and optional terminal fields (completed_at, result_ref, error_msg)."""
+    fields = ["status = ?"]
+    values: list = [status]
+    if completed_at is not None:
+        fields.append("completed_at = ?")
+        values.append(completed_at)
+    if result_ref is not None:
+        fields.append("result_ref = ?")
+        values.append(result_ref)
+    if error_msg is not None:
+        fields.append("error_msg = ?")
+        values.append(error_msg)
+    values.append(job_id)
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        await conn.execute(
+            f"UPDATE jobs SET {', '.join(fields)} WHERE id = ?",
+            values,
+        )
+        await conn.commit()
+
+
+async def get_user_active_jobs(user_id: str) -> list[dict]:
+    """Get jobs with status in ('pending', 'queued', 'running') for a user, oldest first."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM jobs WHERE user_id = ? AND status IN ('pending', 'queued', 'running') "
+            "ORDER BY created_at ASC",
+            (user_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_user_recent_jobs(user_id: str, limit: int = 10) -> list[dict]:
+    """Get recent completed/failed/cancelled/interrupted jobs, newest first."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM jobs WHERE user_id = ? AND status IN ('done', 'failed', 'cancelled', 'interrupted') "
+            "ORDER BY completed_at DESC LIMIT ?",
+            (user_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_user_jobs(user_id: str, status: str | None = None, limit: int = 20) -> list[dict]:
+    """List jobs for a user with optional status filter. Newest first."""
+    query = "SELECT * FROM jobs WHERE user_id = ?"
+    params: list = [user_id]
+    if status:
+        # Support comma-separated status values
+        statuses = [s.strip() for s in status.split(",")]
+        placeholders = ", ".join("?" for _ in statuses)
+        query += f" AND status IN ({placeholders})"
+        params.extend(statuses)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_next_queued_job(user_id: str) -> dict | None:
+    """Get the oldest queued job for a user (FIFO)."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM jobs WHERE user_id = ? AND status = 'queued' "
+            "ORDER BY created_at ASC LIMIT 1",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def mark_interrupted_jobs() -> int:
+    """On startup, mark all running/pending/queued jobs as interrupted. Returns count."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        cursor = await conn.execute(
+            "UPDATE jobs SET status = 'interrupted', completed_at = datetime('now') "
+            "WHERE status IN ('running', 'pending', 'queued')"
+        )
+        await conn.commit()
+        return cursor.rowcount
+
+
+async def get_timed_out_jobs() -> list[dict]:
+    """Get jobs where status='running' and timeout_at < now."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM jobs WHERE status = 'running' AND timeout_at IS NOT NULL "
+            "AND timeout_at < datetime('now')"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_all_active_jobs() -> list[dict]:
+    """Admin: get all active jobs across all users with user email."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT j.*, u.email as user_email FROM jobs j "
+            "JOIN users u ON j.user_id = u.id "
+            "WHERE j.status IN ('pending', 'queued', 'running') "
+            "ORDER BY j.created_at ASC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_user_rate_limit(user_id: str) -> dict | None:
+    """Get rate limit row for a user (includes max_concurrent). Returns None if no custom limit."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM rate_limits WHERE user_id = ?",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
