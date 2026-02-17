@@ -8252,39 +8252,30 @@
     }
 
     function jgAddInlineBadge(verdict) {
-      // Find the live row matching this test case + model
-      const rows = document.querySelectorAll('#teLiveBody tr');
-      for (const row of rows) {
-        const cells = row.querySelectorAll('td');
-        if (cells.length < 6) continue;
-        // Match by test case text (rough match)
-        const testCaseCell = cells[1]?.textContent?.trim() || '';
-        const modelCell = cells[0]?.textContent?.trim() || '';
-        const tcId = verdict.test_case_id || '';
-        const modelId = verdict.model_id || '';
-        if ((testCaseCell.includes(tcId) || tcId.includes(testCaseCell)) &&
-            (modelCell.includes(modelId.split('/').pop()) || modelId.includes(modelCell))) {
-          // Check if badge column exists
-          let badgeCell = row.querySelector('.jg-badge-cell');
-          if (!badgeCell) {
-            badgeCell = document.createElement('td');
-            badgeCell.className = 'jg-badge-cell px-5 py-2 text-center';
-            row.appendChild(badgeCell);
-          }
-          const stars = _jgStars(verdict.quality_score || 0);
-          const verdictColor = _jgVerdictColor(verdict.verdict);
-          badgeCell.innerHTML = `
-            <div class="inline-flex items-center gap-1 cursor-pointer" onclick="jgExpandBadge(this)" title="Click to see reasoning">
-              <span class="text-[10px]">${stars}</span>
-              <span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:${verdictColor}15;color:${verdictColor};border:1px solid ${verdictColor}30;">${verdict.verdict || '?'}</span>
-            </div>
-            <div class="hidden mt-1 text-left">
-              <p class="text-[10px] font-body text-zinc-400 mb-1">${_jgEsc(verdict.summary || '')}</p>
-              <p class="text-[10px] font-body text-zinc-600 leading-relaxed">${_jgEsc(verdict.reasoning || '')}</p>
-            </div>`;
-          break;
-        }
+      // Find the live row matching this test case + model via data attributes
+      const mid = (verdict.model_id || '').replace(/"/g, '\\"');
+      const cid = (verdict.test_case_id || '').replace(/"/g, '\\"');
+      const row = document.querySelector(`#teLiveBody tr[data-model-id="${mid}"][data-case-id="${cid}"]`);
+      if (!row) return;
+
+      // Check if badge column exists
+      let badgeCell = row.querySelector('.jg-badge-cell');
+      if (!badgeCell) {
+        badgeCell = document.createElement('td');
+        badgeCell.className = 'jg-badge-cell px-5 py-2 text-center';
+        row.appendChild(badgeCell);
       }
+      const stars = _jgStars(verdict.quality_score || 0);
+      const verdictColor = _jgVerdictColor(verdict.verdict);
+      badgeCell.innerHTML = `
+        <div class="inline-flex items-center gap-1 cursor-pointer" onclick="jgExpandBadge(this)" title="Click to see reasoning">
+          <span class="text-[10px]">${stars}</span>
+          <span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm" style="background:${verdictColor}15;color:${verdictColor};border:1px solid ${verdictColor}30;">${verdict.verdict || '?'}</span>
+        </div>
+        <div class="hidden mt-1 text-left">
+          <p class="text-[10px] font-body text-zinc-400 mb-1">${_jgEsc(verdict.summary || '')}</p>
+          <p class="text-[10px] font-body text-zinc-600 leading-relaxed">${_jgEsc(verdict.reasoning || '')}</p>
+        </div>`;
     }
 
     function jgExpandBadge(el) {
@@ -9736,11 +9727,11 @@
       const prompt = _teTruncate(r.prompt || r.test_case_id || '', 40);
       const hops = r.multi_turn ? (r.tool_chain?.length || 1) : '';
       const hopsTitle = r.tool_chain ? r.tool_chain.map(c => c.tool_name).join(' \u2192 ') : '';
-      body.insertAdjacentHTML('beforeend', `<tr>
+      body.insertAdjacentHTML('beforeend', `<tr data-model-id="${_teEsc(r.model_id || '')}" data-case-id="${_teEsc(r.test_case_id || '')}">
         <td class="px-5 py-2 text-xs font-mono text-zinc-300">${_teEsc(r.model_name || r.model_id || '')}</td>
         <td class="px-5 py-2 text-xs font-body text-zinc-400">${_teEsc(prompt)}</td>
         <td class="px-5 py-2 text-xs font-mono text-zinc-500">${_teEsc(typeof expectedTool === 'object' ? JSON.stringify(expectedTool) : expectedTool)}</td>
-        <td class="px-5 py-2 text-xs font-mono" style="color:${r.success !== false ? 'var(--lime)' : 'var(--coral)'}">${_teEsc(actualTool)}</td>
+        <td class="px-5 py-2 text-xs font-mono" style="color:${r.tool_selection_score > 0 ? 'var(--lime)' : 'var(--coral)'}">${_teEsc(actualTool)}</td>
         <td class="px-5 py-2 text-right text-xs font-mono text-zinc-500" title="${_teEsc(hopsTitle)}">${hops}</td>
         <td class="px-5 py-2 text-right text-xs font-mono font-bold" style="color:${color}">${overallPct}%</td>
       </tr>`);
@@ -9907,6 +9898,7 @@
         document.getElementById('teRunTitle').textContent = 'History: ' + (run.suite_name || 'Untitled');
         teRenderEvalModelGrid();
         _teResetRunView();
+        _teApplyDefaults();
 
         // Populate results
         teEvalResults = results;

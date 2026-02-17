@@ -2489,6 +2489,21 @@ async def run_single_eval(
             result["actual_tool"] = None
             result["actual_params"] = None
 
+        # Fallback: some models (especially local LLMs) return tool calls as
+        # JSON text in message.content instead of proper tool_calls format.
+        if not result.get("actual_tool") and message.content:
+            try:
+                content = message.content.strip()
+                start_idx = content.find('{')
+                end_idx = content.rfind('}')
+                if start_idx >= 0 and end_idx > start_idx:
+                    parsed = json.loads(content[start_idx:end_idx + 1])
+                    if "name" in parsed:
+                        result["actual_tool"] = parsed["name"]
+                        result["actual_params"] = parsed.get("arguments") or parsed.get("parameters") or {}
+            except Exception:
+                pass  # Best effort — leave actual_tool as None
+
         result["latency_ms"] = round(latency_ms)
 
         result["raw_response"] = _capture_raw_response(response)
@@ -4291,6 +4306,13 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
                 "judge_report_id": report_id,
             })
 
+            # Notify via WebSocket so the notification badge updates
+            await ws_manager.send_to_user(user["id"], {
+                "type": "job_started",
+                "job_type": "judge",
+                "job_id": report_id,
+            })
+
             # Group results by model for per-model reports
             model_results: dict[str, list[dict]] = {}
             for r in results:
@@ -4309,6 +4331,12 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
                                 verdicts_json=json.dumps(verdicts),
                                 status="error",
                             )
+                        # Notify via WebSocket on cancellation
+                        await ws_manager.send_to_user(user["id"], {
+                            "type": "job_cancelled",
+                            "job_type": "judge",
+                            "job_id": report_id or "",
+                        })
                         return
 
                     verdict = await _judge_single_verdict(
@@ -4354,6 +4382,13 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
 
             yield _sse({"type": "judge_complete", "judge_report_id": report_id})
 
+            # Notify via WebSocket so the notification badge updates
+            await ws_manager.send_to_user(user["id"], {
+                "type": "job_completed",
+                "job_type": "judge",
+                "job_id": report_id,
+            })
+
         except Exception as e:
             if report_id:
                 await db.update_judge_report(
@@ -4362,6 +4397,13 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
                     status="error",
                 )
             yield _sse({"type": "error", "message": sanitize_error(str(e))})
+            # Notify via WebSocket on failure
+            await ws_manager.send_to_user(user["id"], {
+                "type": "job_failed",
+                "job_type": "judge",
+                "job_id": report_id or "",
+                "error": sanitize_error(str(e)[:200]),
+            })
         finally:
             user_lock.release()
 
