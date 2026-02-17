@@ -2736,6 +2736,12 @@
           }
           break;
 
+        // Benchmark-specific streaming events — pass through to inline handler
+        case 'benchmark_init':
+        case 'benchmark_result':
+        case 'benchmark_progress':
+          break;
+
         default:
           console.log('[NotifWS] Unknown message type:', msg.type);
           return;
@@ -3354,11 +3360,12 @@
       };
       _lastBenchmarkBody = body;
 
-      // Initialize progress display (simplified: single overall progress)
+      // Initialize progress display
       document.getElementById('progressLabel').textContent = 'Submitting benchmark...';
       document.getElementById('progressCount').textContent = '0%';
-      // Clear per-provider panel (job system uses overall progress instead)
-      document.getElementById('providerProgressPanel').innerHTML = '';
+      // Initialize per-provider progress tracking
+      initProviderProgress(body);
+      renderProviderProgress();
 
       try {
         const res = await apiFetch('/api/benchmark', {
@@ -3412,12 +3419,35 @@
           document.getElementById('progressCount').textContent = (msg.progress_pct || 0) + '%';
           break;
 
+        // ── Live streaming events from backend ──
+
+        case 'benchmark_init':
+          // Re-initialize per-provider progress from backend-provided config
+          if (msg.data) {
+            initProviderProgress(msg.data);
+            renderProviderProgress();
+          }
+          break;
+
+        case 'benchmark_progress':
+          // Per-provider progress update (which model, which run)
+          // msg.data contains {type:'progress', provider, model, run, runs, context_tokens}
+          if (msg.data) handleSSE(msg.data);
+          break;
+
+        case 'benchmark_result':
+          // Individual model result — feed into live charts
+          // msg.data contains {type:'result', provider, model, tokens_per_second, ...}
+          if (msg.data) handleSSE(msg.data);
+          break;
+
         case 'job_completed':
-          document.getElementById('progressSection').classList.add('hidden');
+          // Mark all providers as done in per-provider progress
+          handleSSE({ type: 'complete' });
           _activeBenchmarkJobId = null;
           _resetRunBtn();
           showToast('Benchmark complete', 'success');
-          // Fetch and display results
+          // Fetch and display final results (safety net — replaces live data with saved data)
           _loadBenchmarkJobResults(msg.result_ref);
           break;
 
@@ -3480,7 +3510,7 @@
     }
 
     // -------------------------------------------------------------------
-    // Per-provider progress tracking (legacy — used by old SSE flow)
+    // Per-provider progress tracking
     // -------------------------------------------------------------------
     function initProviderProgress(body) {
       providerProgress = {};

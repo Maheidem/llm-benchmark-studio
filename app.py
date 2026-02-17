@@ -1572,6 +1572,23 @@ async def _benchmark_handler(job_id: str, params: dict, cancel_event, progress_c
 
     results_queue = asyncio.Queue()
 
+    # Helper to send WebSocket messages directly to the user
+    async def _ws_send(payload: dict):
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, payload)
+
+    # Send benchmark_init so frontend can set up per-provider progress tracking
+    await _ws_send({
+        "type": "benchmark_init",
+        "job_id": job_id,
+        "data": {
+            "models": [t.model_id for t in targets],
+            "runs": runs,
+            "context_tiers": context_tiers,
+            "max_tokens": max_tokens,
+        },
+    })
+
     async def run_provider(prov_targets):
         """Run all benchmarks for one provider sequentially."""
         for tier in context_tiers:
@@ -1592,6 +1609,22 @@ async def _benchmark_handler(job_id: str, params: dict, cancel_event, progress_c
                 for r in range(runs):
                     if cancel_event.is_set():
                         return
+
+                    # Notify frontend that this provider/model/run is starting
+                    await _ws_send({
+                        "type": "benchmark_progress",
+                        "job_id": job_id,
+                        "data": {
+                            "type": "progress",
+                            "provider": target.provider,
+                            "model": target.display_name,
+                            "model_id": target.model_id,
+                            "run": r + 1,
+                            "runs": runs,
+                            "context_tokens": tier,
+                        },
+                    })
+
                     result = await async_run_single(
                         target, prompt, max_tokens, temperature, tier,
                         provider_params=provider_params,
@@ -1646,6 +1679,13 @@ async def _benchmark_handler(job_id: str, params: dict, cancel_event, progress_c
             if item["context_tokens"] > 0:
                 detail += f", Context {item['context_tokens'] // 1000}K"
             await progress_cb(pct, detail)
+
+            # Send individual result data to frontend via WebSocket
+            await _ws_send({
+                "type": "benchmark_result",
+                "job_id": job_id,
+                "data": item,
+            })
 
     # Save results
     if all_results:
