@@ -680,10 +680,11 @@
     .notif-status-badge.interrupted { background: rgba(234,179,8,0.15); color: #EAB308; }
 
     .notif-ws-indicator {
-      width: 6px; height: 6px;
+      position: absolute; bottom: 10px; right: 5px;
+      width: 7px; height: 7px;
       border-radius: 50%;
-      display: inline-block;
-      margin-left: 4px;
+      border: 1.5px solid var(--bg);
+      pointer-events: none;
     }
     .notif-ws-indicator.connected { background: var(--lime); box-shadow: 0 0 4px rgba(191,255,0,0.4); }
     .notif-ws-indicator.disconnected { background: var(--coral); }
