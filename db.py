@@ -1086,6 +1086,21 @@ async def delete_judge_report(report_id: str, user_id: str) -> bool:
         return cursor.rowcount > 0
 
 
+async def cleanup_stale_judge_reports(minutes: int = 30) -> int:
+    """Mark any 'running' judge reports older than `minutes` as 'error'.
+
+    Returns number of rows updated. Called on startup to recover orphaned reports.
+    """
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        cursor = await conn.execute(
+            "UPDATE judge_reports SET status = 'error' "
+            "WHERE status = 'running' AND timestamp < datetime('now', ?)",
+            (f"-{minutes} minutes",),
+        )
+        await conn.commit()
+        return cursor.rowcount
+
+
 # --- Analytics Queries ---
 
 _PERIOD_MAP = {

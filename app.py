@@ -79,6 +79,10 @@ async def lifespan(app_instance):
                 hashed = auth.hash_password(admin_pass)
                 await db.create_user(admin_email, hashed, role="admin")
                 print(f"  Admin account created: {admin_email}")
+    # Clean up orphaned judge reports stuck in "running" from prior crashes
+    stale_count = await db.cleanup_stale_judge_reports(minutes=30)
+    if stale_count:
+        print(f"  Cleaned up {stale_count} stale judge report(s)")
     # Initialize job registry (startup recovery + watchdog)
     job_registry.set_ws_manager(ws_manager)
     await job_registry.startup()
@@ -3013,6 +3017,7 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
     async def generate():
         await user_lock.acquire()
         cancel_event.clear()
+        judge_report_id = None  # Track across try/finally for orphan cleanup
         try:
             total = len(targets) * len(cases)
             queue = asyncio.Queue()
@@ -3155,93 +3160,111 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
 
             # --- Post-eval judge mode ---
             if judge_enabled and judge_mode == "post_eval" and judge_target and all_results:
-                judge_report_id = await db.save_judge_report(
-                    user_id=user["id"],
-                    judge_model=judge_target.model_id,
-                    mode="post_eval",
-                    eval_run_id=eval_id,
-                )
-                yield _sse({
-                    "type": "judge_start",
-                    "mode": "post_eval",
-                    "judge_model": judge_target.display_name,
-                    "cases_to_review": len(all_results),
-                })
+                try:
+                    judge_report_id = await db.save_judge_report(
+                        user_id=user["id"],
+                        judge_model=judge_target.model_id,
+                        mode="post_eval",
+                        eval_run_id=eval_id,
+                    )
+                    yield _sse({
+                        "type": "judge_start",
+                        "mode": "post_eval",
+                        "judge_model": judge_target.display_name,
+                        "cases_to_review": len(all_results),
+                    })
 
-                model_results: dict[str, list[dict]] = {}
-                for r in all_results:
-                    mid = r.get("model_id", "unknown")
-                    model_results.setdefault(mid, []).append(r)
+                    model_results: dict[str, list[dict]] = {}
+                    for r in all_results:
+                        mid = r.get("model_id", "unknown")
+                        model_results.setdefault(mid, []).append(r)
 
-                pe_verdicts = []
-                pe_report_data = {}
-                for mid, mres in model_results.items():
-                    model_vds = []
-                    for r in mres:
-                        if cancel_event.is_set():
-                            break
-                        v = await _judge_single_verdict(judge_target, tool_defs_text, {}, r, custom_instructions=judge_custom_instructions)
-                        v["test_case_id"] = r.get("test_case_id", "?")
-                        v["model_id"] = mid
-                        pe_verdicts.append(v)
-                        model_vds.append(v)
-                        yield _sse({"type": "judge_verdict", **v})
+                    pe_verdicts = []
+                    pe_report_data = {}
+                    for mid, mres in model_results.items():
+                        model_vds = []
+                        for r in mres:
+                            if cancel_event.is_set():
+                                break
+                            v = await _judge_single_verdict(judge_target, tool_defs_text, {}, r, custom_instructions=judge_custom_instructions)
+                            v["test_case_id"] = r.get("test_case_id", "?")
+                            v["model_id"] = mid
+                            pe_verdicts.append(v)
+                            model_vds.append(v)
+                            yield _sse({"type": "judge_verdict", **v})
 
-                    tgt = target_map.get(mid)
-                    mname = tgt.display_name if tgt else mid
-                    pe_report_data = await _judge_crosscase(judge_target, mname, model_vds)
-                    pe_report_data["model_id"] = mid
-                    pe_report_data["model_name"] = mname
-                    yield _sse({"type": "judge_report", "eval_id": eval_id, "report": pe_report_data})
+                        tgt = target_map.get(mid)
+                        mname = tgt.display_name if tgt else mid
+                        pe_report_data = await _judge_crosscase(judge_target, mname, model_vds)
+                        pe_report_data["model_id"] = mid
+                        pe_report_data["model_name"] = mname
+                        yield _sse({"type": "judge_report", "eval_id": eval_id, "report": pe_report_data})
 
-                await db.update_judge_report(
-                    judge_report_id,
-                    verdicts_json=json.dumps(pe_verdicts),
-                    report_json=json.dumps(pe_report_data),
-                    overall_grade=pe_report_data.get("overall_grade", "?"),
-                    overall_score=pe_report_data.get("overall_score", 0),
-                    status="completed",
-                )
-                yield _sse({"type": "judge_complete", "judge_report_id": judge_report_id})
+                    await db.update_judge_report(
+                        judge_report_id,
+                        verdicts_json=json.dumps(pe_verdicts),
+                        report_json=json.dumps(pe_report_data),
+                        overall_grade=pe_report_data.get("overall_grade", "?"),
+                        overall_score=pe_report_data.get("overall_score", 0),
+                        status="completed",
+                    )
+                    yield _sse({"type": "judge_complete", "judge_report_id": judge_report_id})
+                except Exception as je:
+                    if judge_report_id:
+                        await db.update_judge_report(judge_report_id, status="error")
+                    yield _sse({"type": "error", "message": f"Judge error: {sanitize_error(str(je))}"})
 
             # --- Live inline judge: save report ---
             elif judge_enabled and judge_mode == "live_inline" and judge_verdicts:
-                judge_report_id = await db.save_judge_report(
-                    user_id=user["id"],
-                    judge_model=judge_target.model_id,
-                    mode="live_inline",
-                    eval_run_id=eval_id,
-                )
-                # Quick cross-case analysis from collected verdicts
-                model_results_j: dict[str, list[dict]] = {}
-                for v in judge_verdicts:
-                    mid = v.get("model_id", "unknown")
-                    model_results_j.setdefault(mid, []).append(v)
+                try:
+                    judge_report_id = await db.save_judge_report(
+                        user_id=user["id"],
+                        judge_model=judge_target.model_id,
+                        mode="live_inline",
+                        eval_run_id=eval_id,
+                    )
+                    # Quick cross-case analysis from collected verdicts
+                    model_results_j: dict[str, list[dict]] = {}
+                    for v in judge_verdicts:
+                        mid = v.get("model_id", "unknown")
+                        model_results_j.setdefault(mid, []).append(v)
 
-                li_report_data = {}
-                for mid, mvds in model_results_j.items():
-                    tgt = target_map.get(mid)
-                    mname = tgt.display_name if tgt else mid
-                    li_report_data = await _judge_crosscase(judge_target, mname, mvds)
-                    li_report_data["model_id"] = mid
-                    li_report_data["model_name"] = mname
-                    yield _sse({"type": "judge_report", "eval_id": eval_id, "report": li_report_data})
+                    li_report_data = {}
+                    for mid, mvds in model_results_j.items():
+                        tgt = target_map.get(mid)
+                        mname = tgt.display_name if tgt else mid
+                        li_report_data = await _judge_crosscase(judge_target, mname, mvds)
+                        li_report_data["model_id"] = mid
+                        li_report_data["model_name"] = mname
+                        yield _sse({"type": "judge_report", "eval_id": eval_id, "report": li_report_data})
 
-                await db.update_judge_report(
-                    judge_report_id,
-                    verdicts_json=json.dumps(judge_verdicts),
-                    report_json=json.dumps(li_report_data),
-                    overall_grade=li_report_data.get("overall_grade", "?"),
-                    overall_score=li_report_data.get("overall_score", 0),
-                    status="completed",
-                )
-                yield _sse({"type": "judge_complete", "judge_report_id": judge_report_id})
+                    await db.update_judge_report(
+                        judge_report_id,
+                        verdicts_json=json.dumps(judge_verdicts),
+                        report_json=json.dumps(li_report_data),
+                        overall_grade=li_report_data.get("overall_grade", "?"),
+                        overall_score=li_report_data.get("overall_score", 0),
+                        status="completed",
+                    )
+                    yield _sse({"type": "judge_complete", "judge_report_id": judge_report_id})
+                except Exception as je:
+                    if judge_report_id:
+                        await db.update_judge_report(judge_report_id, status="error")
+                    yield _sse({"type": "error", "message": f"Judge error: {sanitize_error(str(je))}"})
 
             yield _sse({"type": "complete", "eval_id": eval_id})
 
         except Exception as e:
             yield _sse({"type": "error", "message": sanitize_error(str(e))})
         finally:
+            # Safety net: mark orphaned inline judge report as error on disconnect
+            if judge_report_id:
+                try:
+                    rpt = await db.get_judge_report(judge_report_id, user["id"])
+                    if rpt and rpt.get("status") == "running":
+                        await db.update_judge_report(judge_report_id, status="error")
+                except Exception:
+                    pass
             user_lock.release()
 
     return StreamingResponse(
@@ -4553,6 +4576,16 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
                 "error": sanitize_error(str(e)[:200]),
             })
         finally:
+            # Safety net: if report was created but still "running" (e.g. client
+            # disconnected mid-stream causing CancelledError/GeneratorExit), mark
+            # it as error so it doesn't stay stuck forever.
+            if report_id:
+                try:
+                    rpt = await db.get_judge_report(report_id, user["id"])
+                    if rpt and rpt.get("status") == "running":
+                        await db.update_judge_report(report_id, status="error")
+                except Exception:
+                    pass
             user_lock.release()
 
     return StreamingResponse(
@@ -4779,6 +4812,14 @@ async def run_judge_compare(request: Request, user: dict = Depends(auth.get_curr
                 )
             yield _sse({"type": "error", "message": sanitize_error(str(e))})
         finally:
+            # Safety net: mark orphaned report as error on disconnect
+            if report_id:
+                try:
+                    rpt = await db.get_judge_report(report_id, user["id"])
+                    if rpt and rpt.get("status") == "running":
+                        await db.update_judge_report(report_id, status="error")
+                except Exception:
+                    pass
             user_lock.release()
 
     return StreamingResponse(
