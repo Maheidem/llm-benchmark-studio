@@ -1414,6 +1414,20 @@ async def update_job_status(
         await conn.commit()
 
 
+async def set_job_result_ref(job_id: str, result_ref: str):
+    """Set result_ref on a job without changing its status.
+
+    Used to store the tune_id (or other result reference) early, so the
+    frontend can discover it on reconnection before the job completes.
+    """
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        await conn.execute(
+            "UPDATE jobs SET result_ref = ? WHERE id = ?",
+            (result_ref, job_id),
+        )
+        await conn.commit()
+
+
 async def get_user_active_jobs(user_id: str) -> list[dict]:
     """Get jobs with status in ('pending', 'queued', 'running') for a user, oldest first."""
     async with aiosqlite.connect(str(DB_PATH)) as conn:

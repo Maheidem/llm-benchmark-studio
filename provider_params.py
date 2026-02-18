@@ -339,6 +339,7 @@ def clamp_temperature(value: float, provider: str, model_id: str) -> tuple[float
                 "param": "temperature",
                 "original": original,
                 "adjusted": 1.0,
+                "action": "clamp",
                 "reason": "GPT-5 locks temperature to 1.0",
             }
         return 1.0, None
@@ -350,6 +351,7 @@ def clamp_temperature(value: float, provider: str, model_id: str) -> tuple[float
                 "param": "temperature",
                 "original": original,
                 "adjusted": 1.0,
+                "action": "clamp",
                 "reason": "O-series models lock temperature to 1.0",
             }
         return 1.0, None
@@ -361,6 +363,7 @@ def clamp_temperature(value: float, provider: str, model_id: str) -> tuple[float
                 "param": "temperature",
                 "original": original,
                 "adjusted": 1.0,
+                "action": "clamp",
                 "reason": "Gemini 3 models degrade below temperature 1.0",
             }
 
@@ -371,6 +374,7 @@ def clamp_temperature(value: float, provider: str, model_id: str) -> tuple[float
             "param": "temperature",
             "original": original,
             "adjusted": clamped,
+            "action": "clamp",
             "reason": f"{reg['display_name']} temperature range is {low}-{high}",
         }
 
@@ -384,6 +388,20 @@ def clamp_temperature(value: float, provider: str, model_id: str) -> tuple[float
 def resolve_conflicts(params: dict, provider: str, model_id: str) -> tuple[dict, list[dict]]:
     """Detect and resolve parameter conflicts.
 
+    Philosophy: WARN, don't DROP.  All user-requested params pass through to
+    the provider.  If the API rejects them, the user sees the provider error
+    rather than a silent removal.  Only genuinely *transformative* changes
+    (e.g. renaming max_tokens → max_completion_tokens for O-series) alter the
+    resolved dict.
+
+    Each adjustment dict contains an ``"action"`` field:
+      - ``"drop"`` — param was removed from the request (hard conflict,
+        e.g. Anthropic temp+top_p mutual exclusion).
+      - ``"warn"`` — param is passed through unchanged; the user is warned
+        the provider *may* reject it.
+      - ``"rename"`` — param was renamed/remapped (value preserved).
+      - ``"clamp"`` — value was clamped to the provider's valid range.
+
     Returns (resolved_params, list_of_adjustments).
     """
     resolved = dict(params)
@@ -392,7 +410,8 @@ def resolve_conflicts(params: dict, provider: str, model_id: str) -> tuple[dict,
 
     # --- Anthropic conflicts ---
     if provider == "anthropic":
-        # Conflict 1: temperature + top_p on newer models -> drop top_p
+        # Hard conflict: temperature + top_p — Anthropic API rejects this combo.
+        # This is a genuine mutual exclusion, not just "unsupported". We drop top_p.
         if "temperature" in resolved and "top_p" in resolved:
             if resolved["temperature"] is not None and resolved["top_p"] is not None:
                 adj_val = resolved.pop("top_p")
@@ -400,23 +419,24 @@ def resolve_conflicts(params: dict, provider: str, model_id: str) -> tuple[dict,
                     "param": "top_p",
                     "original": adj_val,
                     "adjusted": None,
-                    "reason": "Anthropic newer models cannot use both temperature and top_p. Dropping top_p.",
+                    "action": "drop",
+                    "reason": "Anthropic cannot use both temperature and top_p. Dropping top_p.",
                 })
 
-        # Conflict 2: unsupported params
+        # Warn-only: params Anthropic doesn't natively support — pass through
         for unsupported in ("frequency_penalty", "presence_penalty", "seed"):
             if unsupported in resolved and resolved[unsupported] is not None:
-                adj_val = resolved.pop(unsupported)
                 adjustments.append({
                     "param": unsupported,
-                    "original": adj_val,
-                    "adjusted": None,
-                    "reason": f"Anthropic does not support {unsupported}",
+                    "original": resolved[unsupported],
+                    "adjusted": resolved[unsupported],
+                    "action": "warn",
+                    "reason": f"Anthropic may not support {unsupported} — passing through",
                 })
 
     # --- OpenAI conflicts ---
     if provider == "openai":
-        # max_tokens -> max_completion_tokens for o-series
+        # Rename: max_tokens -> max_completion_tokens for o-series (genuinely required)
         if _is_o_series(model_id) and "max_tokens" in resolved:
             val = resolved.pop("max_tokens")
             resolved["max_completion_tokens"] = val
@@ -424,17 +444,18 @@ def resolve_conflicts(params: dict, provider: str, model_id: str) -> tuple[dict,
                 "param": "max_tokens",
                 "original": val,
                 "adjusted": val,
+                "action": "rename",
                 "reason": "O-series uses max_completion_tokens instead of max_tokens",
             })
 
-        # top_k unsupported
+        # Warn-only: top_k — pass through
         if "top_k" in resolved and resolved["top_k"] is not None:
-            adj_val = resolved.pop("top_k")
             adjustments.append({
                 "param": "top_k",
-                "original": adj_val,
-                "adjusted": None,
-                "reason": "OpenAI does not support top_k",
+                "original": resolved["top_k"],
+                "adjusted": resolved["top_k"],
+                "action": "warn",
+                "reason": "OpenAI may not support top_k — passing through",
             })
 
     # --- Gemini conflicts ---
@@ -443,7 +464,7 @@ def resolve_conflicts(params: dict, provider: str, model_id: str) -> tuple[dict,
 
     # --- DeepSeek conflicts ---
     if provider == "deepseek":
-        # R1 model in thinking mode ignores sampling params
+        # R1 model in thinking mode ignores sampling params — warn only
         if "r1" in model_lower and resolved.get("reasoning_effort") not in (None, "none"):
             for p in ("temperature", "top_p", "frequency_penalty", "presence_penalty"):
                 if p in resolved and resolved[p] is not None:
@@ -451,47 +472,48 @@ def resolve_conflicts(params: dict, provider: str, model_id: str) -> tuple[dict,
                         "param": p,
                         "original": resolved[p],
                         "adjusted": resolved[p],
-                        "reason": "DeepSeek R1 ignores all sampling params in thinking mode (warning only)",
+                        "action": "warn",
+                        "reason": "DeepSeek R1 ignores all sampling params in thinking mode",
                     })
 
-        # top_k and seed unsupported
+        # Warn-only: top_k and seed — pass through
         for unsupported in ("top_k", "seed"):
             if unsupported in resolved and resolved[unsupported] is not None:
-                adj_val = resolved.pop(unsupported)
                 adjustments.append({
                     "param": unsupported,
-                    "original": adj_val,
-                    "adjusted": None,
-                    "reason": f"DeepSeek does not support {unsupported}",
+                    "original": resolved[unsupported],
+                    "adjusted": resolved[unsupported],
+                    "action": "warn",
+                    "reason": f"DeepSeek may not support {unsupported} — passing through",
                 })
 
     # --- xAI conflicts ---
     if provider == "xai":
-        # Reasoning models reject penalties and stop
+        # Reasoning models may reject penalties/stop — warn only
         if resolved.get("reasoning_effort") not in (None, "none"):
             for p in ("frequency_penalty", "presence_penalty", "stop"):
                 if p in resolved and resolved[p] is not None:
-                    adj_val = resolved.pop(p)
                     adjustments.append({
                         "param": p,
-                        "original": adj_val,
-                        "adjusted": None,
-                        "reason": "xAI reasoning models reject penalty params and stop sequences",
+                        "original": resolved[p],
+                        "adjusted": resolved[p],
+                        "action": "warn",
+                        "reason": "xAI reasoning models may reject penalty params and stop sequences",
                     })
 
-        # top_k unsupported
+        # Warn-only: top_k — pass through
         if "top_k" in resolved and resolved["top_k"] is not None:
-            adj_val = resolved.pop("top_k")
             adjustments.append({
                 "param": "top_k",
-                "original": adj_val,
-                "adjusted": None,
-                "reason": "xAI does not support top_k",
+                "original": resolved["top_k"],
+                "adjusted": resolved["top_k"],
+                "action": "warn",
+                "reason": "xAI may not support top_k — passing through",
             })
 
     # --- Cohere conflicts ---
     if provider == "cohere":
-        # Clamp penalty ranges to 0-1
+        # Clamp penalty ranges to 0-1 (hard API constraint)
         for p in ("frequency_penalty", "presence_penalty"):
             if p in resolved and resolved[p] is not None:
                 val = resolved[p]
@@ -502,10 +524,11 @@ def resolve_conflicts(params: dict, provider: str, model_id: str) -> tuple[dict,
                         "param": p,
                         "original": val,
                         "adjusted": clamped,
+                        "action": "clamp",
                         "reason": f"Cohere {p} range is 0-1 only",
                     })
 
-        # top_p max 0.99
+        # Clamp top_p max 0.99
         if "top_p" in resolved and resolved["top_p"] is not None:
             val = resolved["top_p"]
             if val > 0.99:
@@ -514,21 +537,23 @@ def resolve_conflicts(params: dict, provider: str, model_id: str) -> tuple[dict,
                     "param": "top_p",
                     "original": val,
                     "adjusted": 0.99,
+                    "action": "clamp",
                     "reason": "Cohere top_p maximum is 0.99",
                 })
 
     # --- Mistral conflicts ---
     if provider == "mistral":
-        # top_k is partial support
+        # top_k has limited support — warn only
         if "top_k" in resolved and resolved["top_k"] is not None:
             adjustments.append({
                 "param": "top_k",
                 "original": resolved["top_k"],
                 "adjusted": resolved["top_k"],
-                "reason": "Mistral has limited top_k support (warning only)",
+                "action": "warn",
+                "reason": "Mistral has limited top_k support",
             })
 
-    # --- Generic: drop unsupported params for any provider ---
+    # --- Generic: WARN (not drop) for unsupported tier2 params ---
     reg = PROVIDER_REGISTRY.get(provider, PROVIDER_REGISTRY["_unknown"])
     tier2 = reg.get("tier2", {})
     for param_name in list(resolved.keys()):
@@ -538,12 +563,12 @@ def resolve_conflicts(params: dict, provider: str, model_id: str) -> tuple[dict,
             if supported is False and resolved[param_name] is not None:
                 # Already handled above for specific providers, but catch stragglers
                 if not any(a["param"] == param_name for a in adjustments):
-                    adj_val = resolved.pop(param_name)
                     adjustments.append({
                         "param": param_name,
-                        "original": adj_val,
-                        "adjusted": None,
-                        "reason": spec.get("reason", f"{param_name} is not supported by {provider}"),
+                        "original": resolved[param_name],
+                        "adjusted": resolved[param_name],
+                        "action": "warn",
+                        "reason": spec.get("reason", f"{param_name} may not be supported by {provider} — passing through"),
                     })
 
     # --- Generic: clamp numeric tier2 params to their ranges ---
@@ -572,6 +597,7 @@ def resolve_conflicts(params: dict, provider: str, model_id: str) -> tuple[dict,
                             "param": param_name,
                             "original": val,
                             "adjusted": clamped,
+                            "action": "clamp",
                             "reason": f"{param_name} clamped to {provider} range [{p_min}, {p_max}]",
                         })
 
@@ -614,9 +640,14 @@ def validate_params(provider: str, model_id: str, params: dict) -> dict:
     # --- Remove None values from resolved ---
     resolved = {k: v for k, v in resolved.items() if v is not None}
 
-    valid = len(adjustments) == 0
+    # "valid" = no hard drops or clamps.  Warns are informational and don't
+    # invalidate the request.
+    has_drops = any(a.get("action") == "drop" for a in adjustments)
+    has_warns = any(a.get("action") == "warn" for a in adjustments)
+    valid = not has_drops and len(adjustments) == 0
     return {
         "valid": valid,
+        "has_warnings": has_warns,
         "adjustments": adjustments,
         "warnings": warnings,
         "resolved_params": resolved,

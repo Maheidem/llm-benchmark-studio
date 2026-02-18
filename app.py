@@ -483,6 +483,59 @@ async def _save_user_config(user_id: str, config: dict):
     await db.save_user_config(user_id, config)
 
 
+def _parse_target_selection(body: dict) -> tuple[list[str], set[tuple[str, str]] | None]:
+    """Parse model/target selection from request body.
+
+    Supports two formats:
+      1. New: ``targets: [{"provider_key": "...", "model_id": "..."}, ...]``
+         → Returns (model_ids, target_set) where target_set is a set of
+           (provider_key, model_id) tuples for precise matching.
+      2. Legacy: ``models: ["model_id_1", ...]``
+         → Returns (model_ids, None) for backward-compatible model_id-only matching.
+
+    Returns:
+        (model_ids, target_set):
+            model_ids: flat list of model_id strings (for logging / combo count).
+            target_set: set of (provider_key, model_id) or None for legacy mode.
+    """
+    targets_list = body.get("targets")
+    if targets_list and isinstance(targets_list, list):
+        target_set: set[tuple[str, str]] = set()
+        model_ids: list[str] = []
+        for entry in targets_list:
+            if isinstance(entry, dict) and "provider_key" in entry and "model_id" in entry:
+                target_set.add((entry["provider_key"], entry["model_id"]))
+                model_ids.append(entry["model_id"])
+        if target_set:
+            return model_ids, target_set
+    # Fallback to legacy flat list
+    model_ids = body.get("models", [])
+    return model_ids, None
+
+
+def _filter_targets(all_targets: list[Target], model_ids: list[str],
+                    target_set: set[tuple[str, str]] | None) -> list[Target]:
+    """Filter all_targets using precise (provider_key, model_id) or legacy model_id matching.
+
+    When target_set is provided (new format), matches on (provider_key, model_id).
+    Otherwise falls back to model_id-only matching (legacy).
+    """
+    if target_set:
+        return [t for t in all_targets if (t.provider_key, t.model_id) in target_set]
+    if model_ids:
+        return [t for t in all_targets if t.model_id in model_ids]
+    return all_targets
+
+
+def _target_key(target: Target) -> str:
+    """Return a unique key for a target: 'provider_key::model_id'.
+
+    Used wherever we need to index by target (e.g. validated_target_combos)
+    to avoid collisions when two providers share the same model_id.
+    """
+    return f"{target.provider_key or ''}::{target.model_id}"
+
+
 # Per-user concurrency guards
 _user_locks: dict[str, asyncio.Lock] = {}
 _user_cancel: dict[str, asyncio.Event] = {}
@@ -1827,6 +1880,8 @@ async def _benchmark_handler(job_id: str, params: dict, cancel_event, progress_c
     """
     user_id = params["user_id"]
     model_ids = params["models"]
+    _raw_ts = params.get("target_set")  # serialized as list-of-lists
+    target_set = {tuple(t) for t in _raw_ts} if _raw_ts else None
     runs = params.get("runs", 3)
     max_tokens = params.get("max_tokens", 512)
     temperature = params.get("temperature", 0.7)
@@ -1844,11 +1899,8 @@ async def _benchmark_handler(job_id: str, params: dict, cancel_event, progress_c
     defaults = config.get("defaults", {})
     all_targets = build_targets(config)
 
-    # Filter to requested models
-    if model_ids:
-        targets = [t for t in all_targets if t.model_id in model_ids]
-    else:
-        targets = all_targets
+    # Filter to requested models (precise provider_key+model_id or legacy model_id-only)
+    targets = _filter_targets(all_targets, model_ids, target_set)
 
     # Inject per-user API keys
     user_keys_cache = {}
@@ -2038,7 +2090,7 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
     job_created, job_started, job_progress, and job_completed events.
     """
     body = await request.json()
-    model_ids = body.get("models", [])
+    model_ids, target_set = _parse_target_selection(body)
     runs = body.get("runs", 3)
     max_tokens = body.get("max_tokens", 512)
     temperature = body.get("temperature", 0.7)
@@ -2101,6 +2153,7 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
         "user_id": user["id"],
         "user_email": user.get("email", ""),
         "models": model_ids,
+        "target_set": [list(t) for t in target_set] if target_set else None,
         "runs": runs,
         "max_tokens": max_tokens,
         "temperature": temperature,
@@ -3256,7 +3309,7 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
     """Run tool calling eval and stream results via SSE."""
     body = await request.json()
     suite_id = body.get("suite_id")
-    model_ids = body.get("models", [])
+    model_ids, target_set = _parse_target_selection(body)
     temperature = body.get("temperature", 0.0)
     tool_choice = body.get("tool_choice", "required")
     provider_params = body.get("provider_params")  # Optional: tier2 + passthrough
@@ -3302,7 +3355,7 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
     # Build targets from user config
     config = await _get_user_config(user["id"])
     all_targets = build_targets(config)
-    targets = [t for t in all_targets if t.model_id in model_ids]
+    targets = _filter_targets(all_targets, model_ids, target_set)
     if not targets:
         return JSONResponse({"error": "No matching models found in config"}, status_code=400)
 
@@ -3668,6 +3721,8 @@ async def _param_tune_handler(job_id: str, params: dict, cancel_event, progress_
     user_id = params["user_id"]
     suite_id = params["suite_id"]
     model_ids = params["models"]
+    _raw_ts = params.get("target_set")  # serialized as list-of-lists
+    target_set = {tuple(t) for t in _raw_ts} if _raw_ts else None
     search_space = params.get("search_space", {})
     per_model_search_spaces = params.get("per_model_search_spaces", {})
 
@@ -3684,7 +3739,7 @@ async def _param_tune_handler(job_id: str, params: dict, cancel_event, progress_
     # Build targets first (may differ from model_ids if duplicates exist)
     config = await _get_user_config(user_id)
     all_targets = build_targets(config)
-    targets = [t for t in all_targets if t.model_id in model_ids]
+    targets = _filter_targets(all_targets, model_ids, target_set)
 
     # Expand search spaces — use len(targets) not len(model_ids) for accurate count
     per_model_combos: dict[str, list[dict]] = {}
@@ -3702,6 +3757,7 @@ async def _param_tune_handler(job_id: str, params: dict, cancel_event, progress_
     # Each entry stores (original_combo, resolved_combo, adjustments).
     validated_target_combos: dict[str, list[tuple[dict, dict, list[dict]]]] = {}
     for t in targets:
+        tkey = _target_key(t)
         raw_combos = per_model_combos.get(t.model_id, combos)
         prov_key = identify_provider(t.model_id, getattr(t, "provider_key", None))
         seen: set[tuple] = set()
@@ -3720,9 +3776,9 @@ async def _param_tune_handler(job_id: str, params: dict, cancel_event, progress_
             if dedup_key not in seen:
                 seen.add(dedup_key)
                 unique.append((combo, resolved, adjustments))
-        validated_target_combos[t.model_id] = unique
+        validated_target_combos[tkey] = unique
 
-    total_combos = sum(len(validated_target_combos.get(t.model_id, [])) for t in targets)
+    total_combos = sum(len(validated_target_combos.get(_target_key(t), [])) for t in targets)
 
     # Inject per-user API keys
     user_keys_cache = {}
@@ -3742,6 +3798,9 @@ async def _param_tune_handler(job_id: str, params: dict, cancel_event, progress_
         search_space_json=json.dumps(per_model_search_spaces if per_model_combos else search_space),
         total_combos=total_combos,
     )
+
+    # Store result_ref early so the frontend can discover tune_id on reconnect
+    await db.set_job_result_ref(job_id, tune_id)
 
     # Helper to send WebSocket messages directly to the user
     async def _ws_send(payload: dict):
@@ -3771,7 +3830,7 @@ async def _param_tune_handler(job_id: str, params: dict, cancel_event, progress_
     async def run_provider(prov_targets):
         """Run all combos for all models in this provider group."""
         for target in prov_targets:
-            target_combos = validated_target_combos.get(target.model_id, [])
+            target_combos = validated_target_combos.get(_target_key(target), [])
             for combo_idx, (combo, resolved, combo_adjustments) in enumerate(target_combos):
                 if cancel_event.is_set():
                     return
@@ -3839,6 +3898,7 @@ async def _param_tune_handler(job_id: str, params: dict, cancel_event, progress_
                 combo_result = {
                     "combo_index": combo_idx,
                     "model_id": target.model_id,
+                    "provider_key": target.provider_key or "",
                     "model_name": target.display_name,
                     "config": combo,
                     "overall_score": round(sum(overall_scores) / len(overall_scores), 4) if overall_scores else 0.0,
@@ -3897,6 +3957,13 @@ async def _param_tune_handler(job_id: str, params: dict, cancel_event, progress_
             "data": item,
         })
 
+        # Incrementally save results to DB so reconnecting clients can fetch them
+        await db.update_param_tune_run(
+            tune_id, user_id,
+            results_json=json.dumps(all_results),
+            completed_combos=completed,
+        )
+
         # Update job progress
         pct = int((completed / total_combos) * 100) if total_combos > 0 else 0
         detail = f"{item['model_name']}, combo {completed}/{total_combos}"
@@ -3947,7 +4014,7 @@ async def run_param_tune(request: Request, user: dict = Depends(auth.get_current
     """
     body = await request.json()
     suite_id = body.get("suite_id")
-    model_ids = body.get("models", [])
+    model_ids, target_set = _parse_target_selection(body)
     search_space = body.get("search_space", {})
     per_model_search_spaces = body.get("per_model_search_spaces", {})
 
@@ -3989,12 +4056,12 @@ async def run_param_tune(request: Request, user: dict = Depends(auth.get_current
     # Build targets (validate models exist in config)
     config = await _get_user_config(user["id"])
     all_targets = build_targets(config)
-    targets = [t for t in all_targets if t.model_id in model_ids]
+    targets = _filter_targets(all_targets, model_ids, target_set)
     if not targets:
         return JSONResponse({"error": "No matching models found in config"}, status_code=400)
 
     # Build progress detail
-    model_count = len(model_ids)
+    model_count = len(targets)
     progress_detail = f"Param Tune: {model_count} model{'s' if model_count != 1 else ''}, {suite['name']}"
 
     # Submit to job registry
@@ -4003,6 +4070,7 @@ async def run_param_tune(request: Request, user: dict = Depends(auth.get_current
         "user_email": user.get("email", ""),
         "suite_id": suite_id,
         "models": model_ids,
+        "target_set": [list(t) for t in target_set] if target_set else None,
         "search_space": search_space,
         "per_model_search_spaces": per_model_search_spaces,
     }
@@ -4199,7 +4267,9 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
     """Run a prompt tuning session (Quick or Evolutionary mode) via SSE."""
     body = await request.json()
     suite_id = body.get("suite_id")
-    target_model_ids = body.get("target_models", [])
+    # Support precise target selection for eval targets
+    _target_models_body = {"targets": body.get("target_targets"), "models": body.get("target_models", [])}
+    target_model_ids, target_set_eval = _parse_target_selection(_target_models_body)
     meta_model_id = body.get("meta_model", "")
     mode = body.get("mode", "quick")
     base_prompt = body.get("base_prompt") or _DEFAULT_BASE_PROMPT
@@ -4263,8 +4333,8 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
     if not meta_targets:
         return JSONResponse({"error": f"Meta model '{meta_model_id}' not found in config"}, status_code=400)
 
-    # Find eval targets
-    eval_targets = [t for t in all_targets if t.model_id in target_model_ids]
+    # Find eval targets (precise provider_key+model_id or legacy model_id-only)
+    eval_targets = _filter_targets(all_targets, target_model_ids, target_set_eval)
     if not eval_targets:
         return JSONResponse({"error": "No matching target models found in config"}, status_code=400)
 

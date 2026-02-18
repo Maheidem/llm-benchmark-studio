@@ -230,24 +230,26 @@ class TestResolveConflicts:
         assert "temperature" in resolved
         assert any(a["param"] == "top_p" for a in adjustments)
 
-    def test_anthropic_unsupported_penalties(self):
-        """Anthropic: frequency_penalty and presence_penalty should be dropped."""
+    def test_anthropic_warns_unsupported_penalties(self):
+        """Anthropic: frequency_penalty and presence_penalty pass through with warnings."""
         resolved, adjustments = resolve_conflicts(
             {"frequency_penalty": 0.5, "presence_penalty": 0.3},
             "anthropic",
             "claude-sonnet-4-6",
         )
-        assert "frequency_penalty" not in resolved
-        assert "presence_penalty" not in resolved
+        # Params pass through (warn, not drop)
+        assert resolved["frequency_penalty"] == 0.5
+        assert resolved["presence_penalty"] == 0.3
         assert len(adjustments) == 2
+        assert all(a["action"] == "warn" for a in adjustments)
 
-    def test_anthropic_seed_dropped(self):
-        """Anthropic: seed should be dropped."""
+    def test_anthropic_seed_warned(self):
+        """Anthropic: seed passes through with a warning."""
         resolved, adjustments = resolve_conflicts(
             {"seed": 42}, "anthropic", "claude-sonnet-4-6"
         )
-        assert "seed" not in resolved
-        assert any(a["param"] == "seed" for a in adjustments)
+        assert resolved["seed"] == 42
+        assert any(a["param"] == "seed" and a["action"] == "warn" for a in adjustments)
 
     def test_openai_no_conflicts_basic(self):
         """OpenAI with standard params should have no conflicts."""
@@ -258,13 +260,13 @@ class TestResolveConflicts:
         assert resolved["top_p"] == 0.9
         assert len(adjustments) == 0
 
-    def test_openai_top_k_dropped(self):
-        """OpenAI does not support top_k — it should be dropped."""
+    def test_openai_top_k_warned(self):
+        """OpenAI top_k passes through with a warning (warn-not-drop)."""
         resolved, adjustments = resolve_conflicts(
             {"top_k": 20}, "openai", "gpt-4o"
         )
-        assert "top_k" not in resolved
-        assert any(a["param"] == "top_k" for a in adjustments)
+        assert resolved["top_k"] == 20
+        assert any(a["param"] == "top_k" and a["action"] == "warn" for a in adjustments)
 
     def test_openai_o_series_max_tokens_conversion(self):
         """O-series should convert max_tokens to max_completion_tokens."""

@@ -175,11 +175,12 @@ class TestProviderSpecificBehaviour:
         result = build_litellm_kwargs(target, temperature=0.5)
         assert result["temperature"] == 1.0
 
-    def test_openai_drops_top_k(self):
-        """OpenAI does not support top_k."""
+    def test_openai_warns_top_k(self):
+        """OpenAI top_k passes through with a warning (warn-not-drop)."""
         target = MockTarget(model_id="gpt-4o", provider_key="openai")
         result = build_litellm_kwargs(
             target,
             provider_params={"temperature": 0.7, "top_k": 20},
         )
-        assert "top_k" not in result
+        # top_k now passes through (warn, not drop)
+        assert result.get("top_k") == 20

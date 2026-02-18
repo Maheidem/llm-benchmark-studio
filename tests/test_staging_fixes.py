@@ -482,26 +482,29 @@ class TestComboDedupAlgorithm:
         # Both should have same dedup key
         assert len(unique) == 1
 
-    def test_anthropic_drops_unsupported_params(self):
-        """Anthropic drops frequency_penalty — combos differing only in that param should dedup."""
+    def test_anthropic_warns_unsupported_params(self):
+        """Anthropic warns but passes through frequency_penalty (warn-not-drop).
+        Combos differing in frequency_penalty remain distinct."""
         combos = [
             {"temperature": 0.7, "frequency_penalty": 0.0, "tool_choice": "auto"},
             {"temperature": 0.7, "frequency_penalty": 0.5, "tool_choice": "auto"},
             {"temperature": 0.7, "frequency_penalty": 1.0, "tool_choice": "auto"},
         ]
         unique = self._dedup_combos("anthropic/claude-sonnet-4-6", "anthropic", combos)
-        # frequency_penalty is dropped for Anthropic, so all three collapse
-        assert len(unique) == 1
+        # frequency_penalty passes through (warn, not drop) so all three stay distinct
+        assert len(unique) == 3
 
-    def test_openai_drops_top_k(self):
-        """OpenAI drops top_k — combos differing only in top_k should dedup."""
+    def test_openai_warns_top_k(self):
+        """OpenAI warns but passes through top_k (warn-not-drop).
+        Combos differing in top_k remain distinct."""
         combos = [
             {"temperature": 0.7, "top_k": 10, "tool_choice": "required"},
             {"temperature": 0.7, "top_k": 20, "tool_choice": "required"},
             {"temperature": 0.7, "top_k": 50, "tool_choice": "required"},
         ]
         unique = self._dedup_combos("gpt-4o", "openai", combos)
-        assert len(unique) == 1
+        # top_k passes through (warn, not drop) so all three stay distinct
+        assert len(unique) == 3
 
     def test_o_series_temp_lock_plus_max_tokens_conversion(self):
         """O-series models lock temp to 1.0 AND convert max_tokens.
@@ -694,8 +697,9 @@ class TestExpandAndDedup:
         # All temps -> 1.0, but two tool_choices remain distinct
         assert len(unique) == 2
 
-    def test_openai_top_k_dropped_causes_collapse(self):
-        """OpenAI drops top_k. If combos differ only in top_k, they collapse."""
+    def test_openai_top_k_warned_stays_distinct(self):
+        """OpenAI warns top_k but passes it through (warn-not-drop).
+        Combos with different top_k values remain distinct."""
         space = {
             "temperature": [0.7],
             "top_k": [10, 20, 50],
@@ -703,4 +707,4 @@ class TestExpandAndDedup:
         }
         raw, unique = self._expand_and_dedup(space, "gpt-4o", "openai")
         assert len(raw) == 3  # 1 * 3 * 1
-        assert len(unique) == 1  # top_k dropped, all identical
+        assert len(unique) == 3  # top_k passes through, all distinct

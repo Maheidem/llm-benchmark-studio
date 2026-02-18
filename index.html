@@ -2470,7 +2470,7 @@
     // State
     // -------------------------------------------------------------------
     let config = null;
-    let selectedModels = new Set();
+    let selectedModels = new Set(); // stores "provider_key::model_id" compound keys
     let currentResults = [];
     let toksChart = null;
     let ttftChart = null;
@@ -2669,6 +2669,13 @@
           // Restore param tuner tracking if there's an active param_tune job
           if (job.job_type === 'param_tune' && (job.status === 'running' || job.status === 'pending' || job.status === 'queued')) {
             _activeParamTuneJobId = job.id;
+            // Restore tune_id from result_ref (set early by backend) or sessionStorage
+            if (job.result_ref) {
+              _activeParamTuneRunId = job.result_ref;
+              try { sessionStorage.setItem('_ptRunId', job.result_ref); } catch {}
+            } else if (!_activeParamTuneRunId) {
+              try { _activeParamTuneRunId = sessionStorage.getItem('_ptRunId'); } catch {}
+            }
           }
         }
         for (const job of (msg.recent_jobs || [])) { _jobStore[job.id] = job; }
@@ -2779,6 +2786,16 @@
         // Merge into store (API is source of truth on load)
         for (const job of (Array.isArray(jobs) ? jobs : jobs.jobs || [])) {
           _jobStore[job.id] = job;
+          // Restore param tuner tracking from hydrated jobs
+          if (job.job_type === 'param_tune' && ACTIVE_STATUSES.has(job.status)) {
+            _activeParamTuneJobId = job.id;
+            if (job.result_ref) {
+              _activeParamTuneRunId = job.result_ref;
+              try { sessionStorage.setItem('_ptRunId', job.result_ref); } catch {}
+            } else if (!_activeParamTuneRunId) {
+              try { _activeParamTuneRunId = sessionStorage.getItem('_ptRunId'); } catch {}
+            }
+          }
         }
         notifRender();
       } catch (e) {
@@ -2936,12 +2953,27 @@
           break;
         case 'param_tune':
           showTab('tool-eval');
-          // Reconnect to the running tune
-          if (_activeParamTuneRunId) {
-            ptViewHistoryRun(_activeParamTuneRunId);
-          } else {
-            // No tune_id yet — show history (it may be just queued/starting)
-            showToolEvalView('pt-history');
+          // Reconnect to the running tune — try multiple sources for tune_id
+          {
+            let tuneId = _activeParamTuneRunId;
+            if (!tuneId && _activeParamTuneJobId) {
+              tuneId = _jobStore[_activeParamTuneJobId]?.result_ref;
+            }
+            if (!tuneId) {
+              // Scan _jobStore for any running param_tune with result_ref
+              const ptJob = Object.values(_jobStore).find(
+                j => j.job_type === 'param_tune' && ACTIVE_STATUSES.has(j.status) && j.result_ref
+              );
+              if (ptJob) tuneId = ptJob.result_ref;
+            }
+            if (!tuneId) {
+              try { tuneId = sessionStorage.getItem('_ptRunId'); } catch {}
+            }
+            if (tuneId) {
+              ptViewHistoryRun(tuneId);
+            } else {
+              showToolEvalView('pt-history');
+            }
           }
           break;
         case 'tool_eval':
@@ -3039,6 +3071,8 @@
       notifWsDisconnect();
       _jobStore = {};
       _activeBenchmarkJobId = null;
+      try { _activeParamTuneJobId = null; _activeParamTuneRunId = null; } catch {}
+      try { sessionStorage.removeItem('_ptRunId'); } catch {}
       document.getElementById('notifWidget').style.display = 'none';
       const badge = document.getElementById('notifBadge');
       badge.dataset.count = '0';
@@ -3223,7 +3257,7 @@
       for (const [provider, provData] of Object.entries(config.providers)) {
         const models = getProviderModels(provData);
         for (const m of models) {
-          if (!selectedModels.has(m.model_id)) continue;
+          if (!selectedModels.has(_bmCompoundKey(provider, m.model_id))) continue;
           if (m.context_window && maxTier > m.context_window) {
             warnings.push(`<div class="text-[10px] font-body" style="color:#FBBF24;">${m.display_name}: ${formatCtxSize(maxTier).replace(' ctx','')} &gt; ${formatCtxSize(m.context_window)}</div>`);
           }
@@ -3268,6 +3302,13 @@
       return Array.isArray(provData) ? provData : (provData.models || []);
     }
 
+    // Helper: build compound key for selectedModels (benchmark)
+    function _bmCompoundKey(providerKey, modelId) { return providerKey + '::' + modelId; }
+    function _bmParseCompoundKey(key) {
+      const i = key.indexOf('::');
+      return { provider_key: key.substring(0, i), model_id: key.substring(i + 2) };
+    }
+
     function renderModels() {
       const grid = document.getElementById('modelGrid');
       grid.innerHTML = '';
@@ -3294,8 +3335,9 @@
           const cards = group.querySelectorAll('.model-card');
           const allSelected = [...cards].every(c => c.classList.contains('selected'));
           cards.forEach(c => {
-            if (allSelected) { selectedModels.delete(c.dataset.modelId); c.classList.remove('selected'); }
-            else { selectedModels.add(c.dataset.modelId); c.classList.add('selected'); }
+            const ck = c.dataset.compoundKey;
+            if (allSelected) { selectedModels.delete(ck); c.classList.remove('selected'); }
+            else { selectedModels.add(ck); c.classList.add('selected'); }
           });
         };
         group.appendChild(header);
@@ -3304,11 +3346,14 @@
         const subgrid = document.createElement('div');
         subgrid.className = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pl-3';
         for (const m of models) {
-          selectedModels.add(m.model_id);
+          const ck = _bmCompoundKey(provider, m.model_id);
+          selectedModels.add(ck);
           const card = document.createElement('div');
           card.className = 'model-card selected rounded-sm px-4 py-3 flex items-center gap-3';
           card.dataset.modelId = m.model_id;
-          card.onclick = (e) => { e.stopPropagation(); toggleModel(m.model_id, card); };
+          card.dataset.compoundKey = ck;
+          card.dataset.providerKey = provider;
+          card.onclick = (e) => { e.stopPropagation(); toggleModel(ck, card); };
           card.innerHTML = `
             <div class="check-dot flex-shrink-0"></div>
             <div class="flex-1 min-w-0">
@@ -3325,19 +3370,19 @@
       }
     }
 
-    function toggleModel(modelId, card) {
-      if (selectedModels.has(modelId)) {
-        selectedModels.delete(modelId);
+    function toggleModel(compoundKey, card) {
+      if (selectedModels.has(compoundKey)) {
+        selectedModels.delete(compoundKey);
         card.classList.remove('selected');
       } else {
-        selectedModels.add(modelId);
+        selectedModels.add(compoundKey);
         card.classList.add('selected');
       }
     }
 
     function selectAll() {
       document.querySelectorAll('#modelGrid .model-card').forEach(card => {
-        selectedModels.add(card.dataset.modelId);
+        selectedModels.add(card.dataset.compoundKey);
         card.classList.add('selected');
       });
     }
@@ -3401,7 +3446,7 @@
       document.getElementById('resultsSection').classList.add('hidden');
 
       const body = overrideBody || {
-        models: Array.from(selectedModels),
+        targets: Array.from(selectedModels).map(k => _bmParseCompoundKey(k)),
         runs: parseInt(document.getElementById('runs').value),
         max_tokens: parseInt(document.getElementById('maxTokens').value),
         temperature: parseFloat(document.getElementById('temperature').value),
@@ -3568,14 +3613,22 @@
       providerProgress = {};
       if (!config || !config.providers) return;
 
-      const selectedSet = new Set(body.models || []);
+      // Build a set of compound keys from targets (new) or model_ids (legacy)
+      let selectedSet;
+      if (body.targets && Array.isArray(body.targets)) {
+        selectedSet = new Set(body.targets.map(t => t.provider_key + '::' + t.model_id));
+      } else {
+        selectedSet = new Set((body.models || []).map(m => typeof m === 'string' ? m : ''));
+      }
       const runs = body.runs || 1;
       const tiers = body.context_tiers || [0];
       const maxTokens = body.max_tokens || 4096;
 
       for (const [provider, provData] of Object.entries(config.providers)) {
         const models = getProviderModels(provData);
-        const selectedInProvider = models.filter(m => selectedSet.has(m.model_id));
+        const selectedInProvider = body.targets
+          ? models.filter(m => selectedSet.has(provider + '::' + m.model_id))
+          : models.filter(m => selectedSet.has(m.model_id));
         if (selectedInProvider.length === 0) continue;
 
         // Count steps: for each model, for each tier, count runs (skip tiers that exceed context window)
@@ -6684,7 +6737,7 @@
       const provs = new Map(); // registryKey -> {configKey, displayName, models[]}
       for (const [ck, pd] of Object.entries(config.providers)) {
         const models = getProviderModels(pd);
-        const selected = models.filter(m => sel.has(m.model_id));
+        const selected = models.filter(m => sel.has(ck + '::' + m.model_id));
         if (!selected.length) continue;
         const rk = ppResolveProvider(ck);
         const displayName = pd.display_name || ppRegistry[rk]?.display_name || ck;
@@ -7151,7 +7204,7 @@
     let teCurrentSuite = null;       // full suite object when editing
     let teEditingToolIndex = -1;     // -1 = adding new, >=0 = editing existing
     let teEditingCaseId = null;      // null = adding new, string = editing existing
-    let teSelectedModels = new Set();
+    let teSelectedModels = new Set(); // stores "provider_key::model_id" compound keys
     let teEvalResults = [];          // live results from SSE
     let teEvalSummaries = [];        // model summaries from SSE
     let teSummarySortKey = 'overall_pct';
@@ -7182,7 +7235,7 @@
     // -------------------------------------------------------------------
     // Parameter Tuner (pt prefix)
     // -------------------------------------------------------------------
-    let ptSelectedModels = new Set();
+    let ptSelectedModels = new Set(); // stores "provider_key::model_id" compound keys
     let ptResults = [];        // live results from SSE
     let ptBestConfig = null;
     let ptBestScore = 0;
@@ -7387,14 +7440,15 @@
       const ps = _p10Settings?.param_support;
       const useParamSupport = ps && ps.provider_defaults && Object.keys(ps.provider_defaults).length > 0;
 
-      // Build model→registryKey mapping
-      const modelProvMap = new Map(); // modelId → registryKey
+      // Build model→registryKey mapping using compound keys
+      const modelProvMap = new Map(); // compoundKey → registryKey
       for (const [ck, pd] of Object.entries(config.providers)) {
         const rk = ptGetRegistryKey(ck, pd);
         const models = getProviderModels(pd);
         for (const m of models) {
-          if (ptSelectedModels.has(m.model_id)) {
-            modelProvMap.set(m.model_id, rk);
+          const compound = _ptCompoundKey(ck, m.model_id);
+          if (ptSelectedModels.has(compound)) {
+            modelProvMap.set(compound, rk);
           }
         }
       }
@@ -7405,7 +7459,8 @@
       // Collect all params across selected providers
       const paramMap = new Map(); // paramName → merged def
 
-      for (const [modelId, rk] of modelProvMap) {
+      for (const [compoundKey, rk] of modelProvMap) {
+        const { model_id: modelId } = _ptParseCompoundKey(compoundKey);
         // Source params: prefer param_support config, fallback to registry
         let allParams, modelOverrides;
         if (useParamSupport && ps.provider_defaults[rk]) {
@@ -7676,7 +7731,7 @@
         const provReg = reg[rk] || reg._unknown;
         if (!provReg?.tier3_examples) continue;
         const models = getProviderModels(pd);
-        const hasSelected = models.some(m => ptSelectedModels.has(m.model_id));
+        const hasSelected = models.some(m => ptSelectedModels.has(_ptCompoundKey(ck, m.model_id)));
         if (!hasSelected) continue;
         for (const [pname, pdef] of Object.entries(provReg.tier3_examples)) {
           if (!seen.has(pname)) {
@@ -7904,13 +7959,13 @@
 
       // Build per-model param info
       const reg = _ptGetRegistry();
-      const models = []; // [{id, shortName, rk}]
+      const models = []; // [{id, shortName, rk, providerKey}]
       for (const [ck, pd] of Object.entries(config.providers)) {
         const rk = ptGetRegistryKey(ck, pd);
         for (const m of getProviderModels(pd)) {
-          if (ptSelectedModels.has(m.model_id)) {
+          if (ptSelectedModels.has(_ptCompoundKey(ck, m.model_id))) {
             const shortName = m.display_name || m.model_id.split('/').pop();
-            models.push({ id: m.model_id, shortName, rk });
+            models.push({ id: m.model_id, shortName, rk, providerKey: ck });
           }
         }
       }
@@ -7926,13 +7981,13 @@
       }
 
       // For each model + param, determine support status
-      // Returns: { status: 'supported'|'locked'|'unsupported', range?, lockedValue? }
+      // Returns: { status: 'supported'|'locked'|'passthrough', range?, lockedValue? }
+      // Per user decision: NEVER block params — at worst warn (passthrough).
       function getParamStatus(model, pname, globalVal) {
         if (hasPS) {
           const provPS = ps.provider_defaults[model.rk];
-          if (!provPS) return { status: 'supported', range: globalVal }; // No config = pass-through
+          if (!provPS) return { status: 'passthrough', range: globalVal }; // No config = pass-through
           const pspec = provPS.params?.[pname];
-          if (!pspec || pspec.enabled === false) return { status: 'unsupported' };
 
           // Check model overrides
           const modelOverrides = ps.model_overrides?.[model.rk] || {};
@@ -7942,8 +7997,12 @@
               if (overrides[pname]) override = overrides[pname];
             }
           }
-          if (override?.supported === false) return { status: 'unsupported' };
           if (override?.locked === true) return { status: 'locked', lockedValue: override.value };
+
+          // If not in param_support config at all, treat as passthrough (warn, not drop)
+          if (!pspec || pspec.enabled === false) {
+            return { status: 'passthrough', range: globalVal };
+          }
 
           // Supported - compute clamped range
           if (typeof globalVal === 'object' && !Array.isArray(globalVal) && globalVal.min !== undefined) {
@@ -7958,19 +8017,21 @@
         } else {
           // No param_support - check registry
           const provReg = reg?.[model.rk] || reg?._unknown;
-          if (!provReg) return { status: 'supported', range: globalVal };
+          if (!provReg) return { status: 'passthrough', range: globalVal };
           const allParams = { ...(provReg.tier1 || {}), ...(provReg.tier2 || {}) };
           const pdef = allParams[pname];
-          if (!pdef) return { status: 'unsupported' };
-          if (pdef.supported === false) return { status: 'unsupported' };
           // Check model overrides for locked
           const modelOverrides = provReg.model_overrides || {};
           for (const [pattern, overrides] of Object.entries(modelOverrides)) {
             if (_ptMatchesGlob(model.id.split('/').pop(), pattern)) {
               const ov = overrides[pname];
               if (ov?.locked === true) return { status: 'locked', lockedValue: ov.value };
-              if (ov?.supported === false) return { status: 'unsupported' };
             }
+          }
+          // If not in tier1/tier2, check tier3_examples or treat as passthrough
+          if (!pdef || pdef.supported === false) {
+            const inTier3 = provReg.tier3_examples?.[pname];
+            return { status: 'passthrough', range: globalVal, tier3: !!inTier3 };
           }
           return { status: 'supported', range: globalVal };
         }
@@ -7987,7 +8048,7 @@
           const status = getParamStatus(models[mi], pname, globalVal);
           row.cells.push(status);
           // Count values for combo calculation
-          if (status.status === 'supported') {
+          if (status.status === 'supported' || status.status === 'passthrough') {
             const r = status.range;
             if (typeof r === 'object' && !Array.isArray(r) && r.min !== undefined) {
               perModelCombos[mi].push(ptGenerateValues(r.min, r.max, r.step).length || 1);
@@ -7999,7 +8060,6 @@
           } else if (status.status === 'locked') {
             perModelCombos[mi].push(1);
           }
-          // unsupported = param dropped, doesn't contribute to combos
         }
         matrix.push(row);
       }
@@ -8008,10 +8068,10 @@
       const comboCounts = perModelCombos.map(arr => arr.length ? arr.reduce((a, b) => a * b, 1) : 0);
 
       // Count adjustments summary
-      let totalUnsupported = 0, totalClamped = 0, totalLocked = 0;
+      let totalPassthrough = 0, totalClamped = 0, totalLocked = 0;
       for (const row of matrix) {
         for (const cell of row.cells) {
-          if (cell.status === 'unsupported') totalUnsupported++;
+          if (cell.status === 'passthrough') totalPassthrough++;
           if (cell.status === 'locked') totalLocked++;
           if (cell.clamped) totalClamped++;
         }
@@ -8022,8 +8082,10 @@
 
       // Helper to render cell content
       function renderCell(cell) {
-        if (cell.status === 'unsupported') {
-          return `<span class="text-zinc-600" title="Not supported by this model">--</span>`;
+        if (cell.status === 'passthrough') {
+          const tip = cell.tier3 ? 'Known passthrough param — will be sent as-is' : 'Unknown param — will attempt to send (may error)';
+          const label = cell.tier3 ? 'pass' : '?send';
+          return `<span class="text-yellow-500" title="${tip}" style="font-size:10px;">${label}</span>`;
         }
         if (cell.status === 'locked') {
           return `<span class="text-amber-500" title="Locked to fixed value" style="font-size:10px;">locked=${esc(cell.lockedValue)}</span>`;
@@ -8074,10 +8136,10 @@
       html += `</tbody></table>`;
 
       // Adjustments summary below table
-      const hasAdj = totalUnsupported > 0 || totalClamped > 0 || totalLocked > 0;
+      const hasAdj = totalPassthrough > 0 || totalClamped > 0 || totalLocked > 0;
       if (hasAdj) {
         const parts = [];
-        if (totalUnsupported) parts.push(`<span class="text-zinc-500">${totalUnsupported} dropped</span>`);
+        if (totalPassthrough) parts.push(`<span class="text-yellow-500">${totalPassthrough} passthrough</span>`);
         if (totalClamped) parts.push(`<span class="text-sky-400">${totalClamped} clamped</span>`);
         if (totalLocked) parts.push(`<span class="text-amber-500">${totalLocked} locked</span>`);
         html += `<div class="mt-2 text-[10px] font-body text-zinc-500">Runtime adjustments: ${parts.join(' &middot; ')}</div>`;
@@ -8142,16 +8204,11 @@
       }
 
       const perModel = {};
-      for (const modelId of ptSelectedModels) {
-        // Resolve provider key for this model
-        let rk = '_unknown';
-        for (const [ck, pd] of Object.entries(config.providers)) {
-          const models = getProviderModels(pd);
-          if (models.some(m => m.model_id === modelId)) {
-            rk = ptGetRegistryKey(ck, pd);
-            break;
-          }
-        }
+      for (const compoundKey of ptSelectedModels) {
+        const { provider_key: pk, model_id: modelId } = _ptParseCompoundKey(compoundKey);
+        // Resolve registry key from provider config
+        const pd = config.providers[pk];
+        const rk = pd ? ptGetRegistryKey(pk, pd) : '_unknown';
 
         const provPS = ps.provider_defaults[rk];
         if (!provPS) {
@@ -8214,9 +8271,22 @@
       sel.innerHTML = '<option value="">-- Select a tool eval suite --</option>';
       if (teSuites && teSuites.length) {
         for (const s of teSuites) {
-          sel.innerHTML += `<option value="${s.id}" ${s.id === existing ? 'selected' : ''}>${_teEsc(s.name)} (${s.case_count || 0} cases)</option>`;
+          sel.innerHTML += `<option value="${s.id}" ${s.id === existing ? 'selected' : ''}>${_teEsc(s.name)} (${s.test_case_count || 0} cases)</option>`;
         }
       }
+    }
+
+    // Helper: build compound key for ptSelectedModels
+    function _ptCompoundKey(providerKey, modelId) { return providerKey + '::' + modelId; }
+    // Helper: parse compound key back into {provider_key, model_id}
+    function _ptParseCompoundKey(key) {
+      const i = key.indexOf('::');
+      return { provider_key: key.substring(0, i), model_id: key.substring(i + 2) };
+    }
+    // Helper: check if a model_id is selected (any provider)
+    function _ptIsModelSelected(modelId) {
+      for (const k of ptSelectedModels) { if (k.endsWith('::' + modelId)) return true; }
+      return false;
     }
 
     function ptRenderModelGrid() {
@@ -8245,8 +8315,9 @@
           const cards = group.querySelectorAll('.model-card');
           const allSel = [...cards].every(c => c.classList.contains('selected'));
           cards.forEach(c => {
-            if (allSel) { ptSelectedModels.delete(c.dataset.modelId); c.classList.remove('selected'); }
-            else { ptSelectedModels.add(c.dataset.modelId); c.classList.add('selected'); }
+            const ck = c.dataset.compoundKey;
+            if (allSel) { ptSelectedModels.delete(ck); c.classList.remove('selected'); }
+            else { ptSelectedModels.add(ck); c.classList.add('selected'); }
           });
           ptOnModelsChanged();
         };
@@ -8255,13 +8326,16 @@
         const subgrid = document.createElement('div');
         subgrid.className = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pl-3';
         for (const m of models) {
+          const ck = _ptCompoundKey(provider, m.model_id);
           const card = document.createElement('div');
           card.className = 'model-card rounded-sm px-4 py-3 flex items-center gap-3';
           card.dataset.modelId = m.model_id;
+          card.dataset.compoundKey = ck;
+          card.dataset.providerKey = provider;
           card.onclick = (e) => {
             e.stopPropagation();
-            if (ptSelectedModels.has(m.model_id)) { ptSelectedModels.delete(m.model_id); card.classList.remove('selected'); }
-            else { ptSelectedModels.add(m.model_id); card.classList.add('selected'); }
+            if (ptSelectedModels.has(ck)) { ptSelectedModels.delete(ck); card.classList.remove('selected'); }
+            else { ptSelectedModels.add(ck); card.classList.add('selected'); }
             ptOnModelsChanged();
           };
           card.innerHTML = `<div class="check-dot flex-shrink-0"></div><div class="flex-1 min-w-0"><div class="text-[13px] font-medium text-zinc-200 truncate font-body">${m.display_name}</div></div>`;
@@ -8297,10 +8371,11 @@
       const detail = job.progress_detail || 'Running...';
       banner.innerHTML = `<div class="flex items-center justify-between"><span>Tuning in progress (${pct}%) — ${detail}</span><span class="text-[10px] font-display tracking-wider uppercase">Click to view</span></div>`;
       banner.onclick = () => {
-        if (_activeParamTuneRunId) {
-          ptViewHistoryRun(_activeParamTuneRunId);
+        let tuneId = _activeParamTuneRunId || job.result_ref;
+        if (!tuneId) { try { tuneId = sessionStorage.getItem('_ptRunId'); } catch {} }
+        if (tuneId) {
+          ptViewHistoryRun(tuneId);
         } else {
-          // Try to find tune_id from job result_ref or load history
           showToolEvalView('pt-history');
         }
       };
@@ -8337,13 +8412,16 @@
       document.getElementById('ptProgressCount').textContent = '0/0';
       _ptClearETA();
       _activeParamTuneRunId = null;
+      try { sessionStorage.removeItem('_ptRunId'); } catch {}
       _ptSeenCombos = new Set();
 
       // Build per-model search spaces if param_support config is available
       const perModelSpaces = ptBuildPerModelSearchSpaces();
+      // Send targets as [{provider_key, model_id}] for precise provider matching
+      const targets = Array.from(ptSelectedModels).map(k => _ptParseCompoundKey(k));
       const body = {
         suite_id: suiteId,
-        models: Array.from(ptSelectedModels),
+        targets: targets,
         search_space: searchSpace,
       };
       if (perModelSpaces) {
@@ -8387,16 +8465,29 @@
       return s > 0 ? `~${m}m ${s}s remaining` : `~${m}m remaining`;
     }
 
+    // Format elapsed seconds into human-readable string
+    function _ptFormatElapsed(seconds) {
+      if (!isFinite(seconds) || seconds < 0) return '0s';
+      if (seconds < 60) return `${Math.round(seconds)}s`;
+      const m = Math.floor(seconds / 60);
+      const s = Math.round(seconds % 60);
+      return s > 0 ? `${m}m ${s}s` : `${m}m`;
+    }
+
     // Update ETA display based on current progress
     function _ptUpdateETA() {
       const etaEl = document.getElementById('ptETA');
       if (!etaEl) return;
       const completed = ptResults.length - _ptEtaBaseCount;
-      if (!_ptTuneStartTime || completed < 3) {
-        etaEl.textContent = completed > 0 ? 'Estimating...' : '';
+      if (!_ptTuneStartTime || completed === 0) {
+        etaEl.textContent = '';
         return;
       }
       const elapsed = (Date.now() - _ptTuneStartTime) / 1000;
+      if (completed < 3) {
+        etaEl.textContent = 'Elapsed: ' + _ptFormatElapsed(elapsed);
+        return;
+      }
       const rate = completed / elapsed;
       if (rate <= 0) { etaEl.textContent = 'Estimating...'; return; }
       const remaining = (ptTotalCombos - ptResults.length) / rate;
@@ -8413,7 +8504,14 @@
 
     // WebSocket event bridge for inline param tuner progress
     function _onParamTuneJobEvent(msg) {
-      if (!_activeParamTuneJobId || msg.job_id !== _activeParamTuneJobId) return;
+      // Accept events from the known active job, or from any param_tune job when
+      // we're in reconnection mode (tuneId set but jobId not yet known from WS sync)
+      if (_activeParamTuneJobId && msg.job_id !== _activeParamTuneJobId) return;
+      if (!_activeParamTuneJobId) {
+        if (!_activeParamTuneRunId) return; // Not in reconnection mode
+        // Auto-associate this job as the active one
+        _activeParamTuneJobId = msg.job_id;
+      }
 
       switch (msg.type) {
         case 'job_started':
@@ -8430,6 +8528,9 @@
         case 'tune_start':
           ptTotalCombos = msg.total_combos || 0;
           _activeParamTuneRunId = msg.tune_id || null;
+          if (_activeParamTuneRunId) {
+            try { sessionStorage.setItem('_ptRunId', _activeParamTuneRunId); } catch {}
+          }
           _ptSeenCombos = new Set();
           _ptTuneStartTime = Date.now();
           _ptEtaBaseCount = 0;
@@ -8464,6 +8565,7 @@
           ptRenderResultsTable();
           _activeParamTuneJobId = null;
           _activeParamTuneRunId = null;
+          try { sessionStorage.removeItem('_ptRunId'); } catch {}
           _ptSeenCombos = new Set();
           _ptClearETA();
           _ptResetStartBtn();
@@ -8478,6 +8580,7 @@
             ptRenderResultsTable();
             _activeParamTuneJobId = null;
             _activeParamTuneRunId = null;
+            try { sessionStorage.removeItem('_ptRunId'); } catch {}
             _ptSeenCombos = new Set();
             _ptClearETA();
             _ptResetStartBtn();
@@ -8489,6 +8592,7 @@
           document.getElementById('ptProgressSection').classList.add('hidden');
           _activeParamTuneJobId = null;
           _activeParamTuneRunId = null;
+          try { sessionStorage.removeItem('_ptRunId'); } catch {}
           _ptSeenCombos = new Set();
           _ptClearETA();
           _ptResetStartBtn();
@@ -8499,6 +8603,7 @@
           document.getElementById('ptProgressSection').classList.add('hidden');
           _activeParamTuneJobId = null;
           _activeParamTuneRunId = null;
+          try { sessionStorage.removeItem('_ptRunId'); } catch {}
           _ptSeenCombos = new Set();
           _ptClearETA();
           _ptResetStartBtn();
@@ -8837,32 +8942,32 @@
 
         // Check if this tune is still running — reconnect to live progress
         const isRunning = run.status === 'running';
-        let reconnectedJobId = null;
         if (isRunning) {
           // Find the matching job in _jobStore (or use _activeParamTuneJobId)
-          if (_activeParamTuneJobId) {
-            reconnectedJobId = _activeParamTuneJobId;
-          } else {
+          let reconnectedJobId = _activeParamTuneJobId;
+          if (!reconnectedJobId) {
             // Scan _jobStore for a running param_tune job
             const ptJobs = Object.values(_jobStore).filter(
               j => j.job_type === 'param_tune' && (j.status === 'running' || j.status === 'pending' || j.status === 'queued')
             );
             if (ptJobs.length === 1) reconnectedJobId = ptJobs[0].id;
           }
+          if (reconnectedJobId) _activeParamTuneJobId = reconnectedJobId;
         }
 
         showToolEvalView('pt-run');
 
-        if (isRunning && reconnectedJobId) {
+        if (isRunning) {
           // --- RECONNECTION MODE ---
-          // Backfill dedup set from existing results
+          // Always enter reconnection mode when DB says running,
+          // even if we don't have the jobId yet (WS sync will arrive shortly)
           _ptSeenCombos = new Set();
           for (const r of ptResults) {
             _ptSeenCombos.add(`${r.model_id || ''}:${r.combo_index ?? ''}`);
           }
-          // Reconnect the WS bridge
-          _activeParamTuneJobId = reconnectedJobId;
+          // Set the tune ID for WS event bridge
           _activeParamTuneRunId = tuneId;
+          try { sessionStorage.setItem('_ptRunId', tuneId); } catch {}
 
           // Show progress section with backfilled state
           document.getElementById('ptProgressSection').classList.remove('hidden');
@@ -11190,8 +11295,9 @@
           const cards = group.querySelectorAll('.model-card');
           const allSel = [...cards].every(c => c.classList.contains('selected'));
           cards.forEach(c => {
-            if (allSel) { teSelectedModels.delete(c.dataset.modelId); c.classList.remove('selected'); }
-            else { teSelectedModels.add(c.dataset.modelId); c.classList.add('selected'); }
+            const ck = c.dataset.compoundKey;
+            if (allSel) { teSelectedModels.delete(ck); c.classList.remove('selected'); }
+            else { teSelectedModels.add(ck); c.classList.add('selected'); }
           });
           ppOnModelSelectionChange('tooleval');
         };
@@ -11200,16 +11306,19 @@
         const subgrid = document.createElement('div');
         subgrid.className = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pl-3';
         for (const m of models) {
+          const ck = provider + '::' + m.model_id;
           const card = document.createElement('div');
           card.className = 'model-card rounded-sm px-4 py-3 flex items-center gap-3';
           card.dataset.modelId = m.model_id;
+          card.dataset.compoundKey = ck;
+          card.dataset.providerKey = provider;
           card.onclick = (e) => {
             e.stopPropagation();
-            if (teSelectedModels.has(m.model_id)) {
-              teSelectedModels.delete(m.model_id);
+            if (teSelectedModels.has(ck)) {
+              teSelectedModels.delete(ck);
               card.classList.remove('selected');
             } else {
-              teSelectedModels.add(m.model_id);
+              teSelectedModels.add(ck);
               card.classList.add('selected');
             }
             ppOnModelSelectionChange('tooleval');
@@ -11229,7 +11338,7 @@
 
     function teSelectAllModels() {
       document.querySelectorAll('#teModelGrid .model-card').forEach(c => {
-        teSelectedModels.add(c.dataset.modelId);
+        teSelectedModels.add(c.dataset.compoundKey);
         c.classList.add('selected');
       });
       ppOnModelSelectionChange('tooleval');
@@ -11284,7 +11393,7 @@
       const teJudgeConfig = jgGetConfig();
       const body = {
         suite_id: teRunSuiteId,
-        models: Array.from(teSelectedModels),
+        targets: Array.from(teSelectedModels).map(k => { const i = k.indexOf('::'); return { provider_key: k.substring(0, i), model_id: k.substring(i + 2) }; }),
         temperature: parseFloat(document.getElementById('teTemperature').value) || 0.0,
         tool_choice: document.getElementById('teToolChoice').value,
         ...(tePpParams ? { provider_params: tePpParams } : {}),
