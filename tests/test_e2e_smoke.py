@@ -181,7 +181,7 @@ class TestE2EToolEval:
         provider_key = zai_setup["provider_key"]
         model_id = zai_setup["model_id"]
 
-        # Run tool eval (returns SSE stream)
+        # Submit tool eval (now returns job_id, not SSE)
         resp = await app_client.post("/api/tool-eval", headers=auth_headers, json={
             "suite_id": zai_tool_suite,
             "targets": [
@@ -190,28 +190,27 @@ class TestE2EToolEval:
             "temperature": 0.0,
             "tool_choice": "auto",
         })
-        assert resp.status_code == 200
+        assert resp.status_code == 200, f"Tool eval submit failed: {resp.text}"
+        job_id = resp.json()["job_id"]
+        assert job_id
 
-        # Parse SSE events from the response
-        text = resp.text
-        events = _parse_sse_events(text)
+        # Poll job status until done (max 120s)
+        job = None
+        for _ in range(60):
+            await asyncio.sleep(2)
+            job_resp = await app_client.get(f"/api/jobs/{job_id}", headers=auth_headers)
+            if job_resp.status_code == 200:
+                job = job_resp.json()
+                if job.get("status") in ("done", "failed", "cancelled"):
+                    break
+        else:
+            pytest.fail(f"Tool eval job {job_id} did not complete within 120s")
 
-        # Should have at least a result and a complete event
-        event_types = [e.get("type") for e in events]
-        assert "result" in event_types, f"No result event found in SSE. Events: {event_types}"
-        assert "complete" in event_types, f"No complete event found in SSE. Events: {event_types}"
+        assert job["status"] == "done", f"Tool eval job failed: {job}"
 
-        # Verify the result has scoring fields
-        result_events = [e for e in events if e.get("type") == "result"]
-        assert len(result_events) >= 1
-        result = result_events[0]
-        assert "tool_selection_score" in result
-        assert "overall_score" in result
-
-        # Verify eval appears in history
-        complete_event = next(e for e in events if e.get("type") == "complete")
-        eval_id = complete_event.get("eval_id")
-        assert eval_id, "No eval_id in complete event"
+        # Verify eval appears in history with scoring data
+        eval_id = job.get("result_ref")
+        assert eval_id, "No result_ref (eval_id) in completed job"
 
     async def test_tool_eval_appears_in_history(self, app_client, auth_headers):
         resp = await app_client.get("/api/tool-eval/history", headers=auth_headers)

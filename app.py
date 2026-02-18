@@ -3345,73 +3345,54 @@ def _compute_eval_summaries(results: list[dict], targets: list[Target]) -> list[
     return summaries
 
 
-# --- Eval Engine: SSE Endpoint ---
+# --- Eval Engine: Job Registry Handler ---
 
-@app.post("/api/tool-eval")
-async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_user)):
-    """Run tool calling eval and stream results via SSE."""
-    body = await request.json()
-    suite_id = body.get("suite_id")
-    model_ids, target_set = _parse_target_selection(body)
-    temperature = body.get("temperature", 0.0)
-    tool_choice = body.get("tool_choice", "required")
-    provider_params = body.get("provider_params")  # Optional: tier2 + passthrough
-    judge_config = body.get("judge")  # Optional: {"enabled": true, "mode": "...", "judge_model": "..."}
 
-    # --- Validation ---
-    if not suite_id:
-        return JSONResponse({"error": "suite_id is required"}, status_code=400)
-    if not isinstance(model_ids, list) or len(model_ids) == 0:
-        return JSONResponse({"error": "models must be a non-empty list"}, status_code=400)
-    if not isinstance(temperature, (int, float)) or float(temperature) < 0.0 or float(temperature) > 2.0:
-        return JSONResponse({"error": "temperature must be between 0.0 and 2.0"}, status_code=400)
-    temperature = float(temperature)
-    if tool_choice not in ("auto", "required", "none"):
-        return JSONResponse({"error": "tool_choice must be 'auto', 'required', or 'none'"}, status_code=400)
+async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb) -> str | None:
+    """Job registry handler for tool eval execution.
+
+    Extracts the core tool eval logic from the old SSE generator.
+    Returns the eval_id on success, or None.
+    """
+    user_id = params["user_id"]
+    suite_id = params["suite_id"]
+    model_ids = params["models"]
+    _raw_ts = params.get("target_set")
+    target_set = {tuple(t) for t in _raw_ts} if _raw_ts else None
+    temperature = float(params.get("temperature", 0.0))
+    tool_choice = params.get("tool_choice", "required")
+    provider_params = params.get("provider_params")
+    judge_config = params.get("judge")
+    judge_concurrency = int(params.get("judge_concurrency", 4))
+
+    logger.info(
+        "Tool eval started: job_id=%s user_id=%s models=%d",
+        job_id, user_id, len(model_ids) if model_ids else 0,
+    )
 
     # Load suite + test cases
-    suite = await db.get_tool_suite(suite_id, user["id"])
-    if not suite:
-        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    suite = await db.get_tool_suite(suite_id, user_id)
     cases = await db.get_test_cases(suite_id)
-    if not cases:
-        return JSONResponse({"error": "Suite has no test cases"}, status_code=400)
     tools = json.loads(suite["tools_json"])
 
-    # Rate limit check
-    allowed, remaining = _check_rate_limit(user["id"])
-    if not allowed:
-        return JSONResponse(
-            {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} per hour."},
-            status_code=429,
-        )
-    _record_rate_limit(user["id"])
-
-    # Concurrent guard (shared with benchmarks)
-    user_lock = _get_user_lock(user["id"])
-    if user_lock.locked():
-        return JSONResponse(
-            {"error": "A benchmark or eval is already running"},
-            status_code=409,
-        )
-
-    # Build targets from user config
-    config = await _get_user_config(user["id"])
+    # Build targets
+    config = await _get_user_config(user_id)
     all_targets = build_targets(config)
     targets = _filter_targets(all_targets, model_ids, target_set)
-    if not targets:
-        return JSONResponse({"error": "No matching models found in config"}, status_code=400)
 
     # Inject per-user API keys
     user_keys_cache = {}
     for t in targets:
         if t.provider_key and t.provider_key not in user_keys_cache:
-            encrypted = await db.get_user_key_for_provider(user["id"], t.provider_key)
+            encrypted = await db.get_user_key_for_provider(user_id, t.provider_key)
             if encrypted:
                 user_keys_cache[t.provider_key] = encrypted
     targets = inject_user_keys(targets, user_keys_cache)
 
-    # --- Judge setup (opt-in) ---
+    if not targets:
+        return None
+
+    # Judge setup (opt-in)
     judge_enabled = False
     judge_mode = "none"
     judge_target = None
@@ -3426,282 +3407,406 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
             if jt_list:
                 judge_target = jt_list[0]
                 if judge_target.provider_key:
-                    enc = await db.get_user_key_for_provider(user["id"], judge_target.provider_key)
+                    enc = await db.get_user_key_for_provider(user_id, judge_target.provider_key)
                     if enc:
                         judge_target = inject_user_keys([judge_target], {judge_target.provider_key: enc})[0]
             else:
-                judge_enabled = False  # model not found, silently disable
+                judge_enabled = False
 
-    cancel_event = _get_user_cancel(user["id"])
+    total = len(targets) * len(cases)
+    results_queue = asyncio.Queue()
 
-    async def generate():
-        await user_lock.acquire()
-        cancel_event.clear()
-        judge_report_id = None  # Track across try/finally for orphan cleanup
-        try:
-            total = len(targets) * len(cases)
-            queue = asyncio.Queue()
+    # Helper to send WebSocket messages directly to the user
+    async def _ws_send(payload: dict):
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, payload)
 
-            # Group targets by provider
-            provider_groups: dict[str, list[Target]] = {}
-            for target in targets:
-                provider_groups.setdefault(target.provider, []).append(target)
+    # Send init event so frontend can set up tracking
+    await _ws_send({
+        "type": "tool_eval_init",
+        "job_id": job_id,
+        "data": {
+            "targets": [{"provider_key": t.provider_key, "model_id": t.model_id, "display_name": t.display_name} for t in targets],
+            "total_cases": len(cases),
+            "suite_name": suite["name"],
+            "judge_enabled": judge_enabled,
+            "judge_mode": judge_mode,
+        },
+    })
 
-            async def run_provider(prov_targets):
-                """Run all test cases for models in this provider."""
-                for target in prov_targets:
-                    for case in cases:
-                        if cancel_event.is_set():
-                            return
-                        # Check if this is a multi-turn test case
-                        mt_config = None
-                        if case.get("multi_turn_config"):
-                            try:
-                                mt_config = json.loads(case["multi_turn_config"]) if isinstance(case["multi_turn_config"], str) else case["multi_turn_config"]
-                            except (json.JSONDecodeError, TypeError):
-                                logger.debug("Failed to parse multi_turn_config in SSE stream")
-                                mt_config = None
+    # Group targets by provider
+    provider_groups: dict[str, list[Target]] = {}
+    for target in targets:
+        provider_groups.setdefault(target.provider, []).append(target)
 
-                        if mt_config and mt_config.get("multi_turn"):
-                            # Inject parsed config into case for the engine
-                            case_with_mt = {**case, "_mt_config": mt_config}
-                            result = await run_multi_turn_eval(target, tools, case_with_mt, temperature, tool_choice, provider_params=provider_params)
-                        else:
-                            result = await run_single_eval(target, tools, case, temperature, tool_choice, provider_params=provider_params)
-                        await queue.put(result)
-
-            # Launch provider groups in parallel
-            tasks = [asyncio.create_task(run_provider(g))
-                     for g in provider_groups.values()]
-
-            async def sentinel():
-                await asyncio.gather(*tasks, return_exceptions=True)
-                await queue.put(None)
-
-            asyncio.create_task(sentinel())
-
-            # Consume and emit SSE events
-            current = 0
-            all_results = []
-            judge_verdicts = []
-            judge_queue = asyncio.Queue() if (judge_enabled and judge_mode == "live_inline" and judge_target) else None
-            judge_tasks = []
-            tool_defs_text = _build_tool_definitions_text(tools) if judge_enabled else ""
-
-            while True:
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=15)
-                except asyncio.TimeoutError:
-                    # Check for completed judge verdicts (live inline)
-                    if judge_queue:
-                        while not judge_queue.empty():
-                            verdict = judge_queue.get_nowait()
-                            judge_verdicts.append(verdict)
-                            yield _sse({"type": "judge_verdict", **verdict})
-                    yield _sse({"type": "heartbeat"})
-                    continue
-                if item is None:
-                    break
+    async def run_provider(prov_targets):
+        """Run all test cases for models in this provider."""
+        for target in prov_targets:
+            for case in cases:
                 if cancel_event.is_set():
-                    for t in tasks:
-                        t.cancel()
-                    yield _sse({"type": "cancelled"})
                     return
+                mt_config = None
+                if case.get("multi_turn_config"):
+                    try:
+                        mt_config = json.loads(case["multi_turn_config"]) if isinstance(case["multi_turn_config"], str) else case["multi_turn_config"]
+                    except (json.JSONDecodeError, TypeError):
+                        logger.debug("Failed to parse multi_turn_config in tool eval handler")
+                        mt_config = None
 
-                current += 1
-                # Find target display name
-                target_map = {t.model_id: t for t in targets}
-                t = target_map.get(item["model_id"])
-                model_display = t.display_name if t else item["model_id"]
-                item["model_name"] = model_display
+                if mt_config and mt_config.get("multi_turn"):
+                    case_with_mt = {**case, "_mt_config": mt_config}
+                    result = await run_multi_turn_eval(target, tools, case_with_mt, temperature, tool_choice, provider_params=provider_params)
+                else:
+                    result = await run_single_eval(target, tools, case, temperature, tool_choice, provider_params=provider_params)
+                await results_queue.put(result)
 
-                yield _sse({
-                    "type": "progress",
-                    "current": current,
-                    "total": total,
-                    "model": model_display,
-                    "test_case": item["test_case_id"],
-                })
-                yield _sse({"type": "result", **item})
-                all_results.append(item)
+    # Launch provider groups in parallel
+    tasks = [asyncio.create_task(run_provider(g)) for g in provider_groups.values()]
 
-                # Live inline judge: fire concurrent judge task per result (AD-2)
-                if judge_queue and judge_target:
-                    async def _judge_async(jt, td, res, jq, ci=judge_custom_instructions):
-                        try:
-                            v = await _judge_single_verdict(jt, td, {}, res, custom_instructions=ci)
-                            v["test_case_id"] = res.get("test_case_id", "?")
-                            v["model_id"] = res.get("model_id", "?")
-                            await jq.put(v)
-                        except Exception:
-                            logger.exception("Inline judge failed for case=%s model=%s", res.get("test_case_id", "?"), res.get("model_id", "?"))
-                            await jq.put({
-                                "test_case_id": res.get("test_case_id", "?"),
-                                "model_id": res.get("model_id", "?"),
-                                "quality_score": 0,
-                                "verdict": "error",
-                                "summary": "Judge error",
-                                "reasoning": "Judge model call failed",
-                                "tool_selection_assessment": "unknown",
-                                "param_assessment": "unknown",
-                            })
-                    judge_tasks.append(asyncio.create_task(
-                        _judge_async(judge_target, tool_defs_text, item, judge_queue)
-                    ))
+    async def sentinel():
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await results_queue.put(None)
 
-                # Drain any ready judge verdicts
-                if judge_queue:
-                    while not judge_queue.empty():
-                        verdict = judge_queue.get_nowait()
-                        judge_verdicts.append(verdict)
-                        yield _sse({"type": "judge_verdict", **verdict})
+    asyncio.create_task(sentinel())
 
-            # Wait for remaining live inline judge tasks
-            if judge_tasks:
-                await asyncio.gather(*judge_tasks, return_exceptions=True)
+    # Consume results and report progress
+    current = 0
+    all_results = []
+    judge_verdicts = []
+    judge_sem = asyncio.Semaphore(judge_concurrency)
+    judge_queue = asyncio.Queue() if (judge_enabled and judge_mode == "live_inline" and judge_target) else None
+    judge_tasks = []
+    tool_defs_text = _build_tool_definitions_text(tools) if judge_enabled else ""
+    target_map = {t.model_id: t for t in targets}
+
+    while True:
+        try:
+            item = await asyncio.wait_for(results_queue.get(), timeout=15)
+        except asyncio.TimeoutError:
+            # Drain any ready judge verdicts
+            if judge_queue:
                 while not judge_queue.empty():
                     verdict = judge_queue.get_nowait()
                     judge_verdicts.append(verdict)
-                    yield _sse({"type": "judge_verdict", **verdict})
+                    await _ws_send({"type": "judge_verdict", "job_id": job_id, **verdict})
+            continue
+        if item is None:
+            break
+        if cancel_event.is_set():
+            for t in tasks:
+                t.cancel()
+            return None
 
-            # Compute per-model summaries
-            summaries = _compute_eval_summaries(all_results, targets)
-            for s in summaries:
-                yield _sse({"type": "model_summary", **s})
+        current += 1
+        t = target_map.get(item["model_id"])
+        model_display = t.display_name if t else item["model_id"]
+        item["model_name"] = model_display
 
-            # Save to DB
-            eval_id = await db.save_tool_eval_run(
-                user_id=user["id"],
-                suite_id=suite["id"],
-                suite_name=suite["name"],
-                models_json=json.dumps(model_ids),
-                results_json=json.dumps(all_results),
-                summary_json=json.dumps(summaries),
-                temperature=temperature,
-            )
+        # Report progress
+        pct = int((current / total) * 100) if total > 0 else 0
+        detail = f"{model_display}: {item.get('test_case_id', '?')}"
+        await progress_cb(pct, detail)
 
-            # --- Post-eval judge mode ---
-            if judge_enabled and judge_mode == "post_eval" and judge_target and all_results:
-                try:
-                    judge_report_id = await db.save_judge_report(
-                        user_id=user["id"],
-                        judge_model=judge_target.model_id,
-                        mode="post_eval",
-                        eval_run_id=eval_id,
-                    )
-                    yield _sse({
-                        "type": "judge_start",
-                        "mode": "post_eval",
-                        "judge_model": judge_target.display_name,
-                        "cases_to_review": len(all_results),
-                    })
+        # Send progress + result via WebSocket
+        await _ws_send({
+            "type": "tool_eval_progress",
+            "job_id": job_id,
+            "data": {
+                "current": current,
+                "total": total,
+                "model": model_display,
+                "test_case": item.get("test_case_id", "?"),
+            },
+        })
+        await _ws_send({
+            "type": "tool_eval_result",
+            "job_id": job_id,
+            "data": item,
+        })
+        all_results.append(item)
 
-                    model_results: dict[str, list[dict]] = {}
-                    for r in all_results:
-                        mid = r.get("model_id", "unknown")
-                        model_results.setdefault(mid, []).append(r)
+        # Live inline judge: fire concurrent judge task per result (with semaphore)
+        if judge_queue and judge_target:
+            async def _judge_async(jt, td, res, jq, sem, ci=judge_custom_instructions):
+                async with sem:
+                    try:
+                        v = await _judge_single_verdict(jt, td, {}, res, custom_instructions=ci)
+                        v["test_case_id"] = res.get("test_case_id", "?")
+                        v["model_id"] = res.get("model_id", "?")
+                        await jq.put(v)
+                    except Exception:
+                        logger.exception("Inline judge failed for case=%s model=%s", res.get("test_case_id", "?"), res.get("model_id", "?"))
+                        await jq.put({
+                            "test_case_id": res.get("test_case_id", "?"),
+                            "model_id": res.get("model_id", "?"),
+                            "quality_score": 0,
+                            "verdict": "error",
+                            "summary": "Judge error",
+                            "reasoning": "Judge model call failed",
+                            "tool_selection_assessment": "unknown",
+                            "param_assessment": "unknown",
+                        })
+            judge_tasks.append(asyncio.create_task(
+                _judge_async(judge_target, tool_defs_text, item, judge_queue, judge_sem)
+            ))
 
-                    pe_verdicts = []
-                    pe_report_data = {}
-                    for mid, mres in model_results.items():
-                        model_vds = []
-                        for r in mres:
-                            if cancel_event.is_set():
-                                break
-                            v = await _judge_single_verdict(judge_target, tool_defs_text, {}, r, custom_instructions=judge_custom_instructions)
-                            v["test_case_id"] = r.get("test_case_id", "?")
-                            v["model_id"] = mid
-                            pe_verdicts.append(v)
-                            model_vds.append(v)
-                            yield _sse({"type": "judge_verdict", **v})
+        # Drain any ready judge verdicts
+        if judge_queue:
+            while not judge_queue.empty():
+                verdict = judge_queue.get_nowait()
+                judge_verdicts.append(verdict)
+                await _ws_send({"type": "judge_verdict", "job_id": job_id, **verdict})
 
-                        tgt = target_map.get(mid)
-                        mname = tgt.display_name if tgt else mid
-                        pe_report_data = await _judge_crosscase(judge_target, mname, model_vds)
-                        pe_report_data["model_id"] = mid
-                        pe_report_data["model_name"] = mname
-                        yield _sse({"type": "judge_report", "eval_id": eval_id, "report": pe_report_data})
+    # Wait for remaining live inline judge tasks
+    if judge_tasks:
+        await asyncio.gather(*judge_tasks, return_exceptions=True)
+        while not judge_queue.empty():
+            verdict = judge_queue.get_nowait()
+            judge_verdicts.append(verdict)
+            await _ws_send({"type": "judge_verdict", "job_id": job_id, **verdict})
 
-                    await db.update_judge_report(
-                        judge_report_id,
-                        verdicts_json=json.dumps(pe_verdicts),
-                        report_json=json.dumps(pe_report_data),
-                        overall_grade=pe_report_data.get("overall_grade", "?"),
-                        overall_score=pe_report_data.get("overall_score", 0),
-                        status="completed",
-                    )
-                    yield _sse({"type": "judge_complete", "judge_report_id": judge_report_id})
-                except Exception as je:
-                    if judge_report_id:
-                        await db.update_judge_report(judge_report_id, status="error")
-                    yield _sse({"type": "error", "message": f"Judge error: {sanitize_error(str(je))}"})
+    # Compute per-model summaries
+    summaries = _compute_eval_summaries(all_results, targets)
+    for s in summaries:
+        await _ws_send({"type": "tool_eval_summary", "job_id": job_id, "data": s})
 
-            # --- Live inline judge: save report ---
-            elif judge_enabled and judge_mode == "live_inline" and judge_verdicts:
-                try:
-                    judge_report_id = await db.save_judge_report(
-                        user_id=user["id"],
-                        judge_model=judge_target.model_id,
-                        mode="live_inline",
-                        eval_run_id=eval_id,
-                    )
-                    # Quick cross-case analysis from collected verdicts
-                    model_results_j: dict[str, list[dict]] = {}
-                    for v in judge_verdicts:
-                        mid = v.get("model_id", "unknown")
-                        model_results_j.setdefault(mid, []).append(v)
-
-                    li_report_data = {}
-                    for mid, mvds in model_results_j.items():
-                        tgt = target_map.get(mid)
-                        mname = tgt.display_name if tgt else mid
-                        li_report_data = await _judge_crosscase(judge_target, mname, mvds)
-                        li_report_data["model_id"] = mid
-                        li_report_data["model_name"] = mname
-                        yield _sse({"type": "judge_report", "eval_id": eval_id, "report": li_report_data})
-
-                    await db.update_judge_report(
-                        judge_report_id,
-                        verdicts_json=json.dumps(judge_verdicts),
-                        report_json=json.dumps(li_report_data),
-                        overall_grade=li_report_data.get("overall_grade", "?"),
-                        overall_score=li_report_data.get("overall_score", 0),
-                        status="completed",
-                    )
-                    yield _sse({"type": "judge_complete", "judge_report_id": judge_report_id})
-                except Exception as je:
-                    if judge_report_id:
-                        await db.update_judge_report(judge_report_id, status="error")
-                    yield _sse({"type": "error", "message": f"Judge error: {sanitize_error(str(je))}"})
-
-            yield _sse({"type": "complete", "eval_id": eval_id})
-
-        except Exception as e:
-            yield _sse({"type": "error", "message": sanitize_error(str(e))})
-        finally:
-            # Safety net: mark orphaned inline judge report as error on disconnect
-            if judge_report_id:
-                try:
-                    rpt = await db.get_judge_report(judge_report_id, user["id"])
-                    if rpt and rpt.get("status") == "running":
-                        await db.update_judge_report(judge_report_id, status="error")
-                except Exception:
-                    logger.exception("Failed to clean up orphaned judge report %s", judge_report_id)
-            user_lock.release()
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "X-Accel-Buffering": "no",
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-        },
+    # Save to DB
+    eval_id = await db.save_tool_eval_run(
+        user_id=user_id,
+        suite_id=suite["id"],
+        suite_name=suite["name"],
+        models_json=json.dumps(model_ids),
+        results_json=json.dumps(all_results),
+        summary_json=json.dumps(summaries),
+        temperature=temperature,
     )
+
+    # Store result_ref so frontend can discover eval_id on reconnect
+    await db.set_job_result_ref(job_id, eval_id)
+
+    # --- Post-eval judge mode ---
+    judge_report_id = None
+    if judge_enabled and judge_mode == "post_eval" and judge_target and all_results:
+        try:
+            judge_report_id = await db.save_judge_report(
+                user_id=user_id,
+                judge_model=judge_target.model_id,
+                mode="post_eval",
+                eval_run_id=eval_id,
+            )
+            await _ws_send({
+                "type": "judge_start",
+                "job_id": job_id,
+                "mode": "post_eval",
+                "judge_model": judge_target.display_name,
+                "cases_to_review": len(all_results),
+            })
+
+            model_results: dict[str, list[dict]] = {}
+            for r in all_results:
+                mid = r.get("model_id", "unknown")
+                model_results.setdefault(mid, []).append(r)
+
+            pe_verdicts = []
+            pe_report_data = {}
+            judge_completed = 0
+            judge_total = len(all_results)
+            for mid, mres in model_results.items():
+                model_vds = []
+                # Use semaphore for concurrent judge calls
+                sem = asyncio.Semaphore(judge_concurrency)
+
+                async def _judge_one(r, _mid=mid):
+                    async with sem:
+                        v = await _judge_single_verdict(judge_target, tool_defs_text, {}, r, custom_instructions=judge_custom_instructions)
+                        v["test_case_id"] = r.get("test_case_id", "?")
+                        v["model_id"] = _mid
+                        return v
+
+                judge_batch = [asyncio.create_task(_judge_one(r)) for r in mres]
+                for coro in asyncio.as_completed(judge_batch):
+                    if cancel_event.is_set():
+                        for bt in judge_batch:
+                            bt.cancel()
+                        break
+                    v = await coro
+                    pe_verdicts.append(v)
+                    model_vds.append(v)
+                    judge_completed += 1
+                    await _ws_send({"type": "judge_verdict", "job_id": job_id, **v})
+                    # Update progress for judge phase
+                    j_pct = int((judge_completed / judge_total) * 100) if judge_total > 0 else 0
+                    await progress_cb(j_pct, f"Judge: {judge_completed}/{judge_total}")
+
+                if cancel_event.is_set():
+                    break
+
+                tgt = target_map.get(mid)
+                mname = tgt.display_name if tgt else mid
+                pe_report_data = await _judge_crosscase(judge_target, mname, model_vds)
+                pe_report_data["model_id"] = mid
+                pe_report_data["model_name"] = mname
+                await _ws_send({"type": "judge_report", "job_id": job_id, "eval_id": eval_id, "report": pe_report_data})
+
+            await db.update_judge_report(
+                judge_report_id,
+                verdicts_json=json.dumps(pe_verdicts),
+                report_json=json.dumps(pe_report_data),
+                overall_grade=pe_report_data.get("overall_grade", "?"),
+                overall_score=pe_report_data.get("overall_score", 0),
+                status="completed",
+            )
+            await _ws_send({"type": "judge_complete", "job_id": job_id, "judge_report_id": judge_report_id})
+        except Exception as je:
+            logger.exception("Post-eval judge failed: job_id=%s", job_id)
+            if judge_report_id:
+                await db.update_judge_report(judge_report_id, status="error")
+
+    # --- Live inline judge: save report ---
+    elif judge_enabled and judge_mode == "live_inline" and judge_verdicts:
+        try:
+            judge_report_id = await db.save_judge_report(
+                user_id=user_id,
+                judge_model=judge_target.model_id,
+                mode="live_inline",
+                eval_run_id=eval_id,
+            )
+            model_results_j: dict[str, list[dict]] = {}
+            for v in judge_verdicts:
+                mid = v.get("model_id", "unknown")
+                model_results_j.setdefault(mid, []).append(v)
+
+            li_report_data = {}
+            for mid, mvds in model_results_j.items():
+                tgt = target_map.get(mid)
+                mname = tgt.display_name if tgt else mid
+                li_report_data = await _judge_crosscase(judge_target, mname, mvds)
+                li_report_data["model_id"] = mid
+                li_report_data["model_name"] = mname
+                await _ws_send({"type": "judge_report", "job_id": job_id, "eval_id": eval_id, "report": li_report_data})
+
+            await db.update_judge_report(
+                judge_report_id,
+                verdicts_json=json.dumps(judge_verdicts),
+                report_json=json.dumps(li_report_data),
+                overall_grade=li_report_data.get("overall_grade", "?"),
+                overall_score=li_report_data.get("overall_score", 0),
+                status="completed",
+            )
+            await _ws_send({"type": "judge_complete", "job_id": job_id, "judge_report_id": judge_report_id})
+        except Exception as je:
+            logger.exception("Live inline judge report failed: job_id=%s", job_id)
+            if judge_report_id:
+                await db.update_judge_report(judge_report_id, status="error")
+
+    # Send completion event
+    await _ws_send({
+        "type": "tool_eval_complete",
+        "job_id": job_id,
+        "eval_id": eval_id,
+        "judge_report_id": judge_report_id,
+    })
+
+    logger.info(
+        "Tool eval completed: job_id=%s user_id=%s results=%d eval_id=%s",
+        job_id, user_id, len(all_results), eval_id,
+    )
+
+    return eval_id
+
+
+# Register the tool eval handler with the job registry
+job_registry.register_handler("tool_eval", _tool_eval_handler)
+
+
+@app.post("/api/tool-eval")
+async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Run tool calling eval via job registry. Returns job_id immediately.
+
+    Progress is delivered via WebSocket (tool_eval_result, tool_eval_progress, tool_eval_complete events).
+    """
+    body = await request.json()
+    suite_id = body.get("suite_id")
+    model_ids, target_set = _parse_target_selection(body)
+    temperature = body.get("temperature", 0.0)
+    tool_choice = body.get("tool_choice", "required")
+    provider_params = body.get("provider_params")
+    judge_config = body.get("judge")
+
+    # --- Validation ---
+    if not suite_id:
+        return JSONResponse({"error": "suite_id is required"}, status_code=400)
+    if not isinstance(model_ids, list) or len(model_ids) == 0:
+        return JSONResponse({"error": "models must be a non-empty list"}, status_code=400)
+    if not isinstance(temperature, (int, float)) or float(temperature) < 0.0 or float(temperature) > 2.0:
+        return JSONResponse({"error": "temperature must be between 0.0 and 2.0"}, status_code=400)
+    temperature = float(temperature)
+    if tool_choice not in ("auto", "required", "none"):
+        return JSONResponse({"error": "tool_choice must be 'auto', 'required', or 'none'"}, status_code=400)
+
+    # Load suite + test cases (validate before submitting job)
+    suite = await db.get_tool_suite(suite_id, user["id"])
+    if not suite:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    cases = await db.get_test_cases(suite_id)
+    if not cases:
+        return JSONResponse({"error": "Suite has no test cases"}, status_code=400)
+
+    # Rate limit check
+    allowed, remaining = _check_rate_limit(user["id"])
+    if not allowed:
+        return JSONResponse(
+            {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} per hour."},
+            status_code=429,
+        )
+    _record_rate_limit(user["id"])
+
+    # Build targets (validate models exist in config)
+    config = await _get_user_config(user["id"])
+    all_targets = build_targets(config)
+    targets = _filter_targets(all_targets, model_ids, target_set)
+    if not targets:
+        return JSONResponse({"error": "No matching models found in config"}, status_code=400)
+
+    # Build progress detail
+    model_count = len(targets)
+    progress_detail = f"Tool Eval: {model_count} model{'s' if model_count != 1 else ''}, {suite['name']}"
+
+    # Submit to job registry
+    job_params = {
+        "user_id": user["id"],
+        "user_email": user.get("email", ""),
+        "suite_id": suite_id,
+        "models": model_ids,
+        "target_set": [list(t) for t in target_set] if target_set else None,
+        "temperature": temperature,
+        "tool_choice": tool_choice,
+        "provider_params": provider_params,
+        "judge": judge_config,
+        "judge_concurrency": body.get("judge_concurrency", 4),
+    }
+
+    job_id = await job_registry.submit(
+        job_type="tool_eval",
+        user_id=user["id"],
+        params=job_params,
+        progress_detail=progress_detail,
+    )
+
+    return {"job_id": job_id, "status": "submitted"}
 
 
 @app.post("/api/tool-eval/cancel")
-async def cancel_tool_eval(user: dict = Depends(auth.get_current_user)):
-    """Cancel a running tool eval."""
+async def cancel_tool_eval(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Cancel a running tool eval via job registry."""
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    job_id = body.get("job_id")
+    if job_id:
+        cancelled = await job_registry.cancel(job_id, user["id"])
+        if cancelled:
+            return {"status": "ok", "message": "Cancellation requested"}
+        return JSONResponse({"error": "Job not found or not cancellable"}, status_code=404)
+    # Fallback: cancel via legacy user-level event (for backward compatibility)
     _get_user_cancel(user["id"]).set()
     return {"status": "ok", "message": "Cancellation requested"}
 
@@ -4973,272 +5078,213 @@ async def _judge_crosscase(
     return report
 
 
-@app.post("/api/tool-eval/judge")
-async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_current_user)):
-    """Run post-eval judge on a previously completed eval run. Returns SSE stream."""
-    body = await request.json()
-    eval_run_id = body.get("eval_run_id")
-    judge_model_id = body.get("judge_model")
-    custom_instructions = body.get("custom_instructions", "")
+# --- Judge: Job Registry Handlers ---
 
-    if not eval_run_id:
-        return JSONResponse({"error": "eval_run_id is required"}, status_code=400)
-    if not judge_model_id:
-        return JSONResponse({"error": "judge_model is required"}, status_code=400)
+
+async def _judge_handler(job_id: str, params: dict, cancel_event, progress_cb) -> str | None:
+    """Job registry handler for post-eval judge execution.
+
+    Runs judge verdicts with configurable concurrency via asyncio.Semaphore.
+    Returns the judge_report_id on success, or None.
+    """
+    user_id = params["user_id"]
+    eval_run_id = params["eval_run_id"]
+    judge_model_id = params["judge_model"]
+    custom_instructions = params.get("custom_instructions", "")
+    concurrency = int(params.get("concurrency", 4))
+
+    logger.info(
+        "Judge started: job_id=%s user_id=%s eval_run_id=%s concurrency=%d",
+        job_id, user_id, eval_run_id, concurrency,
+    )
 
     # Load eval run
-    eval_run = await db.get_tool_eval_run(eval_run_id, user["id"])
-    if not eval_run:
-        return JSONResponse({"error": "Eval run not found"}, status_code=404)
-
+    eval_run = await db.get_tool_eval_run(eval_run_id, user_id)
     results = json.loads(eval_run.get("results_json", "[]"))
-    if not results:
-        return JSONResponse({"error": "Eval run has no results"}, status_code=400)
 
     # Load suite for tool definitions
-    suite = await db.get_tool_suite(eval_run["suite_id"], user["id"])
+    suite = await db.get_tool_suite(eval_run["suite_id"], user_id)
     tools = json.loads(suite["tools_json"]) if suite else []
-
-    # Rate limit
-    allowed, _ = _check_rate_limit(user["id"])
-    if not allowed:
-        return JSONResponse(
-            {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} per hour."},
-            status_code=429,
-        )
-    _record_rate_limit(user["id"])
-
-    # Concurrent guard
-    user_lock = _get_user_lock(user["id"])
-    if user_lock.locked():
-        return JSONResponse(
-            {"error": "A benchmark or eval is already running"},
-            status_code=409,
-        )
+    tool_defs_text = _build_tool_definitions_text(tools)
 
     # Build judge target
-    config = await _get_user_config(user["id"])
+    config = await _get_user_config(user_id)
     all_targets = build_targets(config)
     judge_targets = [t for t in all_targets if t.model_id == judge_model_id]
     if not judge_targets:
-        return JSONResponse({"error": f"Judge model '{judge_model_id}' not found in config"}, status_code=400)
+        return None
     judge_target = judge_targets[0]
 
     # Inject user API key
     if judge_target.provider_key:
-        encrypted = await db.get_user_key_for_provider(user["id"], judge_target.provider_key)
+        encrypted = await db.get_user_key_for_provider(user_id, judge_target.provider_key)
         if encrypted:
             judge_target = inject_user_keys([judge_target], {judge_target.provider_key: encrypted})[0]
 
-    cancel_event = _get_user_cancel(user["id"])
-    tool_defs_text = _build_tool_definitions_text(tools)
+    # Helper to send WebSocket messages
+    async def _ws_send(payload: dict):
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, payload)
 
-    async def generate():
-        await user_lock.acquire()
-        cancel_event.clear()
-        report_id = None
-        verdicts = []
-        try:
-            report_id = await db.save_judge_report(
-                user_id=user["id"],
-                judge_model=judge_model_id,
-                mode="post_eval",
-                eval_run_id=eval_run_id,
-            )
-
-            yield _sse({
-                "type": "judge_start",
-                "mode": "post_eval",
-                "judge_model": judge_target.display_name,
-                "cases_to_review": len(results),
-                "judge_report_id": report_id,
-            })
-
-            # Notify via WebSocket so the notification badge updates
-            await ws_manager.send_to_user(user["id"], {
-                "type": "job_started",
-                "job_type": "judge",
-                "job_id": report_id,
-            })
-
-            # Group results by model for per-model reports
-            model_results: dict[str, list[dict]] = {}
-            for r in results:
-                mid = r.get("model_id", "unknown")
-                model_results.setdefault(mid, []).append(r)
-
-            all_model_reports = []
-            for model_id, model_res in model_results.items():
-                model_verdicts = []
-                for r in model_res:
-                    if cancel_event.is_set():
-                        yield _sse({"type": "cancelled"})
-                        if report_id:
-                            await db.update_judge_report(
-                                report_id,
-                                verdicts_json=json.dumps(verdicts),
-                                status="error",
-                            )
-                        # Notify via WebSocket on cancellation
-                        await ws_manager.send_to_user(user["id"], {
-                            "type": "job_cancelled",
-                            "job_type": "judge",
-                            "job_id": report_id or "",
-                        })
-                        return
-
-                    verdict = await _judge_single_verdict(
-                        judge_target, tool_defs_text, {}, r,
-                        custom_instructions=custom_instructions,
-                    )
-                    verdict["test_case_id"] = r.get("test_case_id", "?")
-                    verdict["model_id"] = model_id
-                    verdicts.append(verdict)
-                    model_verdicts.append(verdict)
-
-                    yield _sse({"type": "judge_verdict", **verdict})
-
-                # Cross-case analysis per model
-                target_map = {t.model_id: t for t in all_targets}
-                t = target_map.get(model_id)
-                model_name = t.display_name if t else model_id
-
-                report_data = await _judge_crosscase(judge_target, model_name, model_verdicts)
-                report_data["model_id"] = model_id
-                report_data["model_name"] = model_name
-                all_model_reports.append(report_data)
-
-                yield _sse({"type": "judge_report", "eval_id": eval_run_id, "report": report_data})
-
-            # Save completed report — store all model reports, use best score as overall
-            if all_model_reports:
-                best_report = max(all_model_reports, key=lambda r: r.get("overall_score", 0))
-                final_grade = best_report.get("overall_grade", "?")
-                final_score = best_report.get("overall_score", 0)
-            else:
-                final_grade = "?"
-                final_score = 0
-
-            await db.update_judge_report(
-                report_id,
-                verdicts_json=json.dumps(verdicts),
-                report_json=json.dumps(all_model_reports),
-                overall_grade=final_grade,
-                overall_score=final_score,
-                status="completed",
-            )
-
-            yield _sse({"type": "judge_complete", "judge_report_id": report_id})
-
-            # Notify via WebSocket so the notification badge updates
-            await ws_manager.send_to_user(user["id"], {
-                "type": "job_completed",
-                "job_type": "judge",
-                "job_id": report_id,
-            })
-
-        except Exception as e:
-            if report_id:
-                await db.update_judge_report(
-                    report_id,
-                    verdicts_json=json.dumps(verdicts),
-                    status="error",
-                )
-            yield _sse({"type": "error", "message": sanitize_error(str(e))})
-            # Notify via WebSocket on failure
-            await ws_manager.send_to_user(user["id"], {
-                "type": "job_failed",
-                "job_type": "judge",
-                "job_id": report_id or "",
-                "error": sanitize_error(str(e)[:200]),
-            })
-        finally:
-            # Safety net: if report was created but still "running" (e.g. client
-            # disconnected mid-stream causing CancelledError/GeneratorExit), mark
-            # it as error so it doesn't stay stuck forever.
-            if report_id:
-                try:
-                    rpt = await db.get_judge_report(report_id, user["id"])
-                    if rpt and rpt.get("status") == "running":
-                        await db.update_judge_report(report_id, status="error")
-                except Exception:
-                    logger.exception("Failed to clean up judge report %s in finally block", report_id)
-            user_lock.release()
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "X-Accel-Buffering": "no",
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-        },
+    # Create judge report in DB
+    report_id = await db.save_judge_report(
+        user_id=user_id,
+        judge_model=judge_model_id,
+        mode="post_eval",
+        eval_run_id=eval_run_id,
     )
 
+    # Store result_ref early
+    await db.set_job_result_ref(job_id, report_id)
 
-@app.post("/api/tool-eval/judge/compare")
-async def run_judge_compare(request: Request, user: dict = Depends(auth.get_current_user)):
-    """Run comparative judge between two eval runs. Returns SSE stream."""
-    body = await request.json()
-    eval_run_id_a = body.get("eval_run_id_a")
-    eval_run_id_b = body.get("eval_run_id_b")
-    judge_model_id = body.get("judge_model")
+    await _ws_send({
+        "type": "judge_start",
+        "job_id": job_id,
+        "mode": "post_eval",
+        "judge_model": judge_target.display_name,
+        "cases_to_review": len(results),
+        "judge_report_id": report_id,
+    })
 
-    if not eval_run_id_a or not eval_run_id_b:
-        return JSONResponse({"error": "eval_run_id_a and eval_run_id_b are required"}, status_code=400)
-    if not judge_model_id:
-        return JSONResponse({"error": "judge_model is required"}, status_code=400)
+    # Group results by model for per-model reports
+    model_results: dict[str, list[dict]] = {}
+    for r in results:
+        mid = r.get("model_id", "unknown")
+        model_results.setdefault(mid, []).append(r)
+
+    target_map = {t.model_id: t for t in all_targets}
+    all_verdicts = []
+    all_model_reports = []
+    completed = 0
+    total_verdicts = len(results)
+    sem = asyncio.Semaphore(concurrency)
+
+    for model_id, model_res in model_results.items():
+        if cancel_event.is_set():
+            break
+
+        model_verdicts = []
+
+        async def _judge_one(r, _mid=model_id):
+            async with sem:
+                v = await _judge_single_verdict(
+                    judge_target, tool_defs_text, {}, r,
+                    custom_instructions=custom_instructions,
+                )
+                v["test_case_id"] = r.get("test_case_id", "?")
+                v["model_id"] = _mid
+                return v
+
+        judge_batch = [asyncio.create_task(_judge_one(r)) for r in model_res]
+        for coro in asyncio.as_completed(judge_batch):
+            if cancel_event.is_set():
+                for bt in judge_batch:
+                    bt.cancel()
+                break
+            v = await coro
+            all_verdicts.append(v)
+            model_verdicts.append(v)
+            completed += 1
+            await _ws_send({"type": "judge_verdict", "job_id": job_id, **v})
+            # Progress tracking
+            j_pct = int((completed / total_verdicts) * 100) if total_verdicts > 0 else 0
+            tgt = target_map.get(model_id)
+            mname = tgt.display_name if tgt else model_id
+            await progress_cb(j_pct, f"Judge {mname}: {completed}/{total_verdicts}")
+
+        if cancel_event.is_set():
+            if report_id:
+                await db.update_judge_report(report_id, verdicts_json=json.dumps(all_verdicts), status="error")
+            return None
+
+        # Cross-case analysis per model
+        tgt = target_map.get(model_id)
+        mname = tgt.display_name if tgt else model_id
+        report_data = await _judge_crosscase(judge_target, mname, model_verdicts)
+        report_data["model_id"] = model_id
+        report_data["model_name"] = mname
+        all_model_reports.append(report_data)
+        await _ws_send({"type": "judge_report", "job_id": job_id, "eval_id": eval_run_id, "report": report_data})
+
+    # Save completed report
+    if all_model_reports:
+        best_report = max(all_model_reports, key=lambda r: r.get("overall_score", 0))
+        final_grade = best_report.get("overall_grade", "?")
+        final_score = best_report.get("overall_score", 0)
+    else:
+        final_grade = "?"
+        final_score = 0
+
+    await db.update_judge_report(
+        report_id,
+        verdicts_json=json.dumps(all_verdicts),
+        report_json=json.dumps(all_model_reports),
+        overall_grade=final_grade,
+        overall_score=final_score,
+        status="completed",
+    )
+
+    await _ws_send({"type": "judge_complete", "job_id": job_id, "judge_report_id": report_id})
+
+    logger.info(
+        "Judge completed: job_id=%s user_id=%s report_id=%s verdicts=%d",
+        job_id, user_id, report_id, len(all_verdicts),
+    )
+
+    return report_id
+
+
+# Register the judge handler with the job registry
+job_registry.register_handler("judge", _judge_handler)
+
+
+async def _judge_compare_handler(job_id: str, params: dict, cancel_event, progress_cb) -> str | None:
+    """Job registry handler for comparative judge execution.
+
+    Compares two eval runs with configurable concurrency.
+    Returns the judge_report_id on success, or None.
+    """
+    user_id = params["user_id"]
+    eval_run_id_a = params["eval_run_id_a"]
+    eval_run_id_b = params["eval_run_id_b"]
+    judge_model_id = params["judge_model"]
+    concurrency = int(params.get("concurrency", 4))
+
+    logger.info(
+        "Judge compare started: job_id=%s user_id=%s run_a=%s run_b=%s",
+        job_id, user_id, eval_run_id_a, eval_run_id_b,
+    )
 
     # Load both runs
-    run_a = await db.get_tool_eval_run(eval_run_id_a, user["id"])
-    run_b = await db.get_tool_eval_run(eval_run_id_b, user["id"])
-    if not run_a:
-        return JSONResponse({"error": "Eval run A not found"}, status_code=404)
-    if not run_b:
-        return JSONResponse({"error": "Eval run B not found"}, status_code=404)
-
+    run_a = await db.get_tool_eval_run(eval_run_id_a, user_id)
+    run_b = await db.get_tool_eval_run(eval_run_id_b, user_id)
     results_a = json.loads(run_a.get("results_json", "[]"))
     results_b = json.loads(run_b.get("results_json", "[]"))
-    if not results_a or not results_b:
-        return JSONResponse({"error": "Both eval runs must have results"}, status_code=400)
 
-    # Load suite for tool definitions (use run A's suite)
-    suite = await db.get_tool_suite(run_a["suite_id"], user["id"])
+    # Load suite for tool definitions
+    suite = await db.get_tool_suite(run_a["suite_id"], user_id)
     tools = json.loads(suite["tools_json"]) if suite else []
-
-    # Rate limit
-    allowed, _ = _check_rate_limit(user["id"])
-    if not allowed:
-        return JSONResponse(
-            {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} per hour."},
-            status_code=429,
-        )
-    _record_rate_limit(user["id"])
-
-    # Concurrent guard
-    user_lock = _get_user_lock(user["id"])
-    if user_lock.locked():
-        return JSONResponse(
-            {"error": "A benchmark or eval is already running"},
-            status_code=409,
-        )
+    tool_defs_text = _build_tool_definitions_text(tools)
 
     # Build judge target
-    config = await _get_user_config(user["id"])
+    config = await _get_user_config(user_id)
     all_targets = build_targets(config)
     judge_targets = [t for t in all_targets if t.model_id == judge_model_id]
     if not judge_targets:
-        return JSONResponse({"error": f"Judge model '{judge_model_id}' not found in config"}, status_code=400)
+        return None
     judge_target = judge_targets[0]
 
     if judge_target.provider_key:
-        encrypted = await db.get_user_key_for_provider(user["id"], judge_target.provider_key)
+        encrypted = await db.get_user_key_for_provider(user_id, judge_target.provider_key)
         if encrypted:
             judge_target = inject_user_keys([judge_target], {judge_target.provider_key: encrypted})[0]
 
-    cancel_event = _get_user_cancel(user["id"])
-    tool_defs_text = _build_tool_definitions_text(tools)
+    # Helper to send WebSocket messages
+    async def _ws_send(payload: dict):
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, payload)
 
-    # Determine model names from run results
+    # Determine model names
     models_a = json.loads(run_a.get("models_json", "[]"))
     models_b = json.loads(run_b.get("models_json", "[]"))
     model_a_name = models_a[0] if models_a else "Model A"
@@ -5257,161 +5303,295 @@ async def run_judge_compare(request: Request, user: dict = Depends(auth.get_curr
     common_tcs = sorted(set(a_by_tc.keys()) & set(b_by_tc.keys()))
 
     if not common_tcs:
+        return None
+
+    # Create report in DB
+    report_id = await db.save_judge_report(
+        user_id=user_id,
+        judge_model=judge_model_id,
+        mode="comparative",
+        eval_run_id=eval_run_id_a,
+        eval_run_id_b=eval_run_id_b,
+    )
+
+    # Store result_ref early
+    await db.set_job_result_ref(job_id, report_id)
+
+    await _ws_send({
+        "type": "compare_start",
+        "job_id": job_id,
+        "model_a": model_a_name,
+        "model_b": model_b_name,
+        "cases": len(common_tcs),
+        "judge_report_id": report_id,
+    })
+
+    case_comparisons = []
+    completed = 0
+    total_cases = len(common_tcs)
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _compare_one(idx, tc_id):
+        async with sem:
+            ra = a_by_tc[tc_id]
+            rb = b_by_tc[tc_id]
+            prompt = _JUDGE_COMPARE_PROMPT.format(
+                tool_definitions=tool_defs_text,
+                case_num=idx + 1,
+                total_cases=total_cases,
+                test_prompt=ra.get("prompt", ""),
+                expected_tool=ra.get("expected_tool", "?"),
+                expected_params=json.dumps(ra.get("expected_params", {})),
+                model_a_name=model_a_name,
+                a_tool=ra.get("actual_tool", "none"),
+                a_params=json.dumps(ra.get("actual_params", {})),
+                a_score=ra.get("overall_score", 0),
+                model_b_name=model_b_name,
+                b_tool=rb.get("actual_tool", "none"),
+                b_params=json.dumps(rb.get("actual_params", {})),
+                b_score=rb.get("overall_score", 0),
+            )
+            comparison = await _call_judge_model(judge_target, prompt)
+            if not comparison:
+                comparison = {"winner": "tie", "confidence": 0, "reasoning": "Judge error"}
+            comparison.setdefault("winner", "tie")
+            comparison.setdefault("confidence", 0)
+            comparison.setdefault("reasoning", "")
+            comparison["test_case_id"] = tc_id
+            return comparison
+
+    compare_tasks = [asyncio.create_task(_compare_one(idx, tc_id)) for idx, tc_id in enumerate(common_tcs)]
+    for coro in asyncio.as_completed(compare_tasks):
+        if cancel_event.is_set():
+            for ct in compare_tasks:
+                ct.cancel()
+            if report_id:
+                await db.update_judge_report(report_id, verdicts_json=json.dumps(case_comparisons), status="error")
+            return None
+        comparison = await coro
+        case_comparisons.append(comparison)
+        completed += 1
+        await _ws_send({"type": "compare_case", "job_id": job_id, **comparison})
+        c_pct = int((completed / total_cases) * 100) if total_cases > 0 else 0
+        await progress_cb(c_pct, f"Compare: {completed}/{total_cases}")
+
+    # Generate overall summary
+    case_results_text = []
+    for c in case_comparisons:
+        case_results_text.append(
+            f"- Case {c['test_case_id']}: winner={c['winner']}, "
+            f"confidence={c.get('confidence', 0)}, reason: {c.get('reasoning', '')[:100]}"
+        )
+
+    summary_prompt = _JUDGE_COMPARE_SUMMARY_PROMPT.format(
+        model_a_name=model_a_name,
+        model_b_name=model_b_name,
+        n=len(case_comparisons),
+        case_results="\n".join(case_results_text),
+    )
+    summary = await _call_judge_model(judge_target, summary_prompt)
+    if not summary:
+        a_wins = sum(1 for c in case_comparisons if c.get("winner") == "model_a")
+        b_wins = sum(1 for c in case_comparisons if c.get("winner") == "model_b")
+        ties = len(case_comparisons) - a_wins - b_wins
+        winner = "model_a" if a_wins > b_wins else ("model_b" if b_wins > a_wins else "tie")
+        summary = {
+            "overall_winner": winner,
+            "score_a": round(a_wins / len(case_comparisons) * 100) if case_comparisons else 0,
+            "score_b": round(b_wins / len(case_comparisons) * 100) if case_comparisons else 0,
+            "summary": f"{model_a_name} won {a_wins}, {model_b_name} won {b_wins}, {ties} ties.",
+            "tie_cases": ties,
+        }
+
+    summary.setdefault("overall_winner", "tie")
+    summary.setdefault("score_a", 0)
+    summary.setdefault("score_b", 0)
+    summary.setdefault("summary", "")
+    summary.setdefault("tie_cases", 0)
+    summary["judge_report_id"] = report_id
+
+    # Save report
+    overall_grade = summary.get("overall_winner", "tie")
+    overall_score = max(summary.get("score_a", 0), summary.get("score_b", 0))
+
+    full_report = {
+        "model_a": model_a_name,
+        "model_b": model_b_name,
+        "case_comparisons": case_comparisons,
+        **summary,
+    }
+
+    await db.update_judge_report(
+        report_id,
+        verdicts_json=json.dumps(case_comparisons),
+        report_json=json.dumps(full_report),
+        overall_grade=overall_grade,
+        overall_score=overall_score,
+        status="completed",
+    )
+
+    await _ws_send({"type": "compare_complete", "job_id": job_id, **summary})
+
+    logger.info(
+        "Judge compare completed: job_id=%s user_id=%s report_id=%s cases=%d",
+        job_id, user_id, report_id, len(case_comparisons),
+    )
+
+    return report_id
+
+
+# Register the judge compare handler with the job registry
+job_registry.register_handler("judge_compare", _judge_compare_handler)
+
+
+@app.post("/api/tool-eval/judge")
+async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Run post-eval judge via job registry. Returns job_id immediately.
+
+    Progress is delivered via WebSocket (judge_verdict, judge_report, judge_complete events).
+    """
+    body = await request.json()
+    eval_run_id = body.get("eval_run_id")
+    judge_model_id = body.get("judge_model")
+    custom_instructions = body.get("custom_instructions", "")
+    concurrency = body.get("concurrency", 4)
+
+    if not eval_run_id:
+        return JSONResponse({"error": "eval_run_id is required"}, status_code=400)
+    if not judge_model_id:
+        return JSONResponse({"error": "judge_model is required"}, status_code=400)
+
+    # Load eval run (validate before submitting job)
+    eval_run = await db.get_tool_eval_run(eval_run_id, user["id"])
+    if not eval_run:
+        return JSONResponse({"error": "Eval run not found"}, status_code=404)
+
+    results = json.loads(eval_run.get("results_json", "[]"))
+    if not results:
+        return JSONResponse({"error": "Eval run has no results"}, status_code=400)
+
+    # Rate limit
+    allowed, _ = _check_rate_limit(user["id"])
+    if not allowed:
+        return JSONResponse(
+            {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} per hour."},
+            status_code=429,
+        )
+    _record_rate_limit(user["id"])
+
+    # Validate judge model exists
+    config = await _get_user_config(user["id"])
+    all_targets = build_targets(config)
+    judge_targets = [t for t in all_targets if t.model_id == judge_model_id]
+    if not judge_targets:
+        return JSONResponse({"error": f"Judge model '{judge_model_id}' not found in config"}, status_code=400)
+
+    progress_detail = f"Judge: {len(results)} verdicts, {judge_targets[0].display_name}"
+
+    job_params = {
+        "user_id": user["id"],
+        "user_email": user.get("email", ""),
+        "eval_run_id": eval_run_id,
+        "judge_model": judge_model_id,
+        "custom_instructions": custom_instructions,
+        "concurrency": concurrency,
+    }
+
+    job_id = await job_registry.submit(
+        job_type="judge",
+        user_id=user["id"],
+        params=job_params,
+        progress_detail=progress_detail,
+    )
+
+    return {"job_id": job_id, "status": "submitted"}
+
+
+@app.post("/api/tool-eval/judge/compare")
+async def run_judge_compare(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Run comparative judge via job registry. Returns job_id immediately.
+
+    Progress is delivered via WebSocket (compare_case, compare_complete events).
+    """
+    body = await request.json()
+    eval_run_id_a = body.get("eval_run_id_a")
+    eval_run_id_b = body.get("eval_run_id_b")
+    judge_model_id = body.get("judge_model")
+    concurrency = body.get("concurrency", 4)
+
+    if not eval_run_id_a or not eval_run_id_b:
+        return JSONResponse({"error": "eval_run_id_a and eval_run_id_b are required"}, status_code=400)
+    if not judge_model_id:
+        return JSONResponse({"error": "judge_model is required"}, status_code=400)
+
+    # Load both runs (validate before submitting job)
+    run_a = await db.get_tool_eval_run(eval_run_id_a, user["id"])
+    run_b = await db.get_tool_eval_run(eval_run_id_b, user["id"])
+    if not run_a:
+        return JSONResponse({"error": "Eval run A not found"}, status_code=404)
+    if not run_b:
+        return JSONResponse({"error": "Eval run B not found"}, status_code=404)
+
+    results_a = json.loads(run_a.get("results_json", "[]"))
+    results_b = json.loads(run_b.get("results_json", "[]"))
+    if not results_a or not results_b:
+        return JSONResponse({"error": "Both eval runs must have results"}, status_code=400)
+
+    # Index and check for common test cases
+    a_by_tc = {r["test_case_id"]: r for r in results_a if "test_case_id" in r}
+    b_by_tc = {r["test_case_id"]: r for r in results_b if "test_case_id" in r}
+    common_tcs = sorted(set(a_by_tc.keys()) & set(b_by_tc.keys()))
+    if not common_tcs:
         return JSONResponse({"error": "No common test cases between the two runs"}, status_code=400)
 
-    async def generate():
-        await user_lock.acquire()
-        cancel_event.clear()
-        report_id = None
-        case_comparisons = []
-        try:
-            report_id = await db.save_judge_report(
-                user_id=user["id"],
-                judge_model=judge_model_id,
-                mode="comparative",
-                eval_run_id=eval_run_id_a,
-                eval_run_id_b=eval_run_id_b,
-            )
+    # Rate limit
+    allowed, _ = _check_rate_limit(user["id"])
+    if not allowed:
+        return JSONResponse(
+            {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} per hour."},
+            status_code=429,
+        )
+    _record_rate_limit(user["id"])
 
-            yield _sse({
-                "type": "compare_start",
-                "model_a": model_a_name,
-                "model_b": model_b_name,
-                "cases": len(common_tcs),
-                "judge_report_id": report_id,
-            })
+    # Validate judge model exists
+    config = await _get_user_config(user["id"])
+    all_targets = build_targets(config)
+    judge_targets = [t for t in all_targets if t.model_id == judge_model_id]
+    if not judge_targets:
+        return JSONResponse({"error": f"Judge model '{judge_model_id}' not found in config"}, status_code=400)
 
-            for idx, tc_id in enumerate(common_tcs):
-                if cancel_event.is_set():
-                    yield _sse({"type": "cancelled"})
-                    if report_id:
-                        await db.update_judge_report(
-                            report_id,
-                            verdicts_json=json.dumps(case_comparisons),
-                            status="error",
-                        )
-                    return
+    progress_detail = f"Compare: {len(common_tcs)} cases, {judge_targets[0].display_name}"
 
-                ra = a_by_tc[tc_id]
-                rb = b_by_tc[tc_id]
+    job_params = {
+        "user_id": user["id"],
+        "user_email": user.get("email", ""),
+        "eval_run_id_a": eval_run_id_a,
+        "eval_run_id_b": eval_run_id_b,
+        "judge_model": judge_model_id,
+        "concurrency": concurrency,
+    }
 
-                prompt = _JUDGE_COMPARE_PROMPT.format(
-                    tool_definitions=tool_defs_text,
-                    case_num=idx + 1,
-                    total_cases=len(common_tcs),
-                    test_prompt=ra.get("prompt", ""),
-                    expected_tool=ra.get("expected_tool", "?"),
-                    expected_params=json.dumps(ra.get("expected_params", {})),
-                    model_a_name=model_a_name,
-                    a_tool=ra.get("actual_tool", "none"),
-                    a_params=json.dumps(ra.get("actual_params", {})),
-                    a_score=ra.get("overall_score", 0),
-                    model_b_name=model_b_name,
-                    b_tool=rb.get("actual_tool", "none"),
-                    b_params=json.dumps(rb.get("actual_params", {})),
-                    b_score=rb.get("overall_score", 0),
-                )
-                comparison = await _call_judge_model(judge_target, prompt)
-                if not comparison:
-                    comparison = {"winner": "tie", "confidence": 0, "reasoning": "Judge error"}
-                comparison.setdefault("winner", "tie")
-                comparison.setdefault("confidence", 0)
-                comparison.setdefault("reasoning", "")
-                comparison["test_case_id"] = tc_id
-                case_comparisons.append(comparison)
-
-                yield _sse({"type": "compare_case", **comparison})
-
-            # Generate overall summary
-            case_results_text = []
-            for c in case_comparisons:
-                case_results_text.append(
-                    f"- Case {c['test_case_id']}: winner={c['winner']}, "
-                    f"confidence={c.get('confidence', 0)}, reason: {c.get('reasoning', '')[:100]}"
-                )
-
-            summary_prompt = _JUDGE_COMPARE_SUMMARY_PROMPT.format(
-                model_a_name=model_a_name,
-                model_b_name=model_b_name,
-                n=len(case_comparisons),
-                case_results="\n".join(case_results_text),
-            )
-            summary = await _call_judge_model(judge_target, summary_prompt)
-            if not summary:
-                # Fallback: compute from case comparisons
-                a_wins = sum(1 for c in case_comparisons if c.get("winner") == "model_a")
-                b_wins = sum(1 for c in case_comparisons if c.get("winner") == "model_b")
-                ties = len(case_comparisons) - a_wins - b_wins
-                winner = "model_a" if a_wins > b_wins else ("model_b" if b_wins > a_wins else "tie")
-                summary = {
-                    "overall_winner": winner,
-                    "score_a": round(a_wins / len(case_comparisons) * 100) if case_comparisons else 0,
-                    "score_b": round(b_wins / len(case_comparisons) * 100) if case_comparisons else 0,
-                    "summary": f"{model_a_name} won {a_wins}, {model_b_name} won {b_wins}, {ties} ties.",
-                    "tie_cases": ties,
-                }
-
-            summary.setdefault("overall_winner", "tie")
-            summary.setdefault("score_a", 0)
-            summary.setdefault("score_b", 0)
-            summary.setdefault("summary", "")
-            summary.setdefault("tie_cases", 0)
-            summary["judge_report_id"] = report_id
-
-            # Save report
-            overall_grade = summary.get("overall_winner", "tie")
-            overall_score = max(summary.get("score_a", 0), summary.get("score_b", 0))
-
-            full_report = {
-                "model_a": model_a_name,
-                "model_b": model_b_name,
-                "case_comparisons": case_comparisons,
-                **summary,
-            }
-
-            await db.update_judge_report(
-                report_id,
-                verdicts_json=json.dumps(case_comparisons),
-                report_json=json.dumps(full_report),
-                overall_grade=overall_grade,
-                overall_score=overall_score,
-                status="completed",
-            )
-
-            yield _sse({"type": "compare_complete", **summary})
-
-        except Exception as e:
-            if report_id:
-                await db.update_judge_report(
-                    report_id,
-                    verdicts_json=json.dumps(case_comparisons),
-                    status="error",
-                )
-            yield _sse({"type": "error", "message": sanitize_error(str(e))})
-        finally:
-            # Safety net: mark orphaned report as error on disconnect
-            if report_id:
-                try:
-                    rpt = await db.get_judge_report(report_id, user["id"])
-                    if rpt and rpt.get("status") == "running":
-                        await db.update_judge_report(report_id, status="error")
-                except Exception:
-                    logger.exception("Failed to clean up comparison judge report %s", report_id)
-            user_lock.release()
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "X-Accel-Buffering": "no",
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-        },
+    job_id = await job_registry.submit(
+        job_type="judge_compare",
+        user_id=user["id"],
+        params=job_params,
+        progress_detail=progress_detail,
     )
+
+    return {"job_id": job_id, "status": "submitted"}
 
 
 @app.post("/api/tool-eval/judge/cancel")
-async def cancel_judge(user: dict = Depends(auth.get_current_user)):
-    """Cancel a running judge operation."""
+async def cancel_judge(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Cancel a running judge operation via job registry."""
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    job_id = body.get("job_id")
+    if job_id:
+        cancelled = await job_registry.cancel(job_id, user["id"])
+        if cancelled:
+            return {"status": "ok", "message": "Cancellation requested"}
+        return JSONResponse({"error": "Job not found or not cancellable"}, status_code=404)
+    # Fallback: cancel via legacy user-level event
     _get_user_cancel(user["id"]).set()
     return {"status": "ok", "message": "Cancellation requested"}
 

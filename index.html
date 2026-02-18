@@ -1790,6 +1790,25 @@
           </div>
         </div>
 
+        <!-- Judge Progress Section -->
+        <div id="jgProgressSection" class="hidden mb-4 fade-in">
+          <div class="card rounded-md p-4">
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-2">
+                <div class="pulse-dot" style="background:#F59E0B"></div>
+                <span class="text-xs font-display tracking-wider uppercase text-zinc-500">Judge Progress</span>
+              </div>
+              <div class="flex items-center gap-3">
+                <span id="jgProgressCount" class="text-xs font-mono text-zinc-600">0/0</span>
+                <span id="jgProgressETA" class="text-[10px] font-mono text-zinc-700"></span>
+              </div>
+            </div>
+            <div class="progress-track rounded-full overflow-hidden">
+              <div id="jgProgressBar" class="progress-fill" style="width:0%;background:#F59E0B"></div>
+            </div>
+          </div>
+        </div>
+
         <!-- Summary Section -->
         <div id="teSummarySection" class="hidden mb-6 fade-in">
           <div class="card rounded-md overflow-hidden">
@@ -2666,6 +2685,14 @@
             _activeBenchmarkJobId = job.id;
             _restoreBenchmarkInlineProgress(job);
           }
+          // Restore tool eval tracking if there's an active tool_eval job
+          if (job.job_type === 'tool_eval' && (job.status === 'running' || job.status === 'pending' || job.status === 'queued')) {
+            _activeToolEvalJobId = job.id;
+          }
+          // Restore judge tracking if there's an active judge/judge_compare job
+          if ((job.job_type === 'judge' || job.job_type === 'judge_compare') && (job.status === 'running' || job.status === 'pending' || job.status === 'queued')) {
+            _activeJudgeJobId = job.id;
+          }
           // Restore param tuner tracking if there's an active param_tune job
           if (job.job_type === 'param_tune' && (job.status === 'running' || job.status === 'pending' || job.status === 'queued')) {
             _activeParamTuneJobId = job.id;
@@ -2761,6 +2788,22 @@
         case 'tune_complete':
           break;
 
+        // Tool eval-specific streaming events — pass through to inline handler
+        case 'tool_eval_init':
+        case 'tool_eval_result':
+        case 'tool_eval_progress':
+        case 'tool_eval_summary':
+        case 'tool_eval_complete':
+        case 'judge_verdict':
+        case 'judge_report':
+        case 'judge_complete':
+        case 'judge_start':
+        case 'judge_progress':
+        case 'compare_case':
+        case 'compare_start':
+        case 'compare_complete':
+          break;
+
         default:
           console.log('[NotifWS] Unknown message type:', msg.type);
           return;
@@ -2776,6 +2819,10 @@
       if (typeof _onParamTuneJobEvent === 'function') {
         _onParamTuneJobEvent(msg);
       }
+      // Bridge: forward job events to inline tool eval and judge progress
+      if (typeof _onToolEvalJobEvent === 'function') {
+        _onToolEvalJobEvent(msg);
+      }
     }
 
     // ── Hydrate from REST API ──
@@ -2787,6 +2834,13 @@
         // Merge into store (API is source of truth on load)
         for (const job of (Array.isArray(jobs) ? jobs : jobs.jobs || [])) {
           _jobStore[job.id] = job;
+          // Restore tool eval tracking from hydrated jobs
+          if (job.job_type === 'tool_eval' && ACTIVE_STATUSES.has(job.status)) {
+            _activeToolEvalJobId = job.id;
+          }
+          if ((job.job_type === 'judge' || job.job_type === 'judge_compare') && ACTIVE_STATUSES.has(job.status)) {
+            _activeJudgeJobId = job.id;
+          }
           // Restore param tuner tracking from hydrated jobs
           if (job.job_type === 'param_tune' && ACTIVE_STATUSES.has(job.status)) {
             _activeParamTuneJobId = job.id;
@@ -2991,6 +3045,12 @@
           break;
         case 'tool_eval':
           showTab('tool-eval');
+          // showTab already handles active tool eval job restoration via _teRestoreRunningEval
+          break;
+        case 'judge':
+        case 'judge_compare':
+          showTab('tool-eval');
+          showToolEvalView('jg-history');
           break;
         default:
           showTab('tool-eval');
@@ -3010,12 +3070,16 @@
           break;
         case 'tool_eval':
           showTab('tool-eval');
-          // TODO: navigate to specific run in history sub-tab
+          if (resultRef) {
+            teViewHistoryRun(resultRef);
+          } else {
+            showToolEvalView('history');
+          }
           break;
         case 'judge':
         case 'judge_compare':
           showTab('tool-eval');
-          // TODO: navigate to judge reports sub-tab
+          showToolEvalView('jg-history');
           break;
         case 'param_tune':
           showTab('tool-eval');
@@ -4363,7 +4427,15 @@
       document.getElementById('tab-admin').classList.toggle('tab-active', tab === 'admin');
       if (tab === 'history') loadHistory();
       if (tab === 'settings') { renderSettings(); showSettingsTab(_currentSettingsTab); }
-      if (tab === 'tool-eval') { showToolEvalView('suites'); teLoadSuites(); teLoadHistory(); }
+      if (tab === 'tool-eval') {
+        teLoadSuites(); teLoadHistory();
+        // If a tool eval job is running, restore the run view instead of suites
+        if (_activeToolEvalJobId && _jobStore[_activeToolEvalJobId] && ACTIVE_STATUSES.has(_jobStore[_activeToolEvalJobId].status)) {
+          _teRestoreRunningEval();
+        } else {
+          showToolEvalView('suites');
+        }
+      }
       if (tab === 'analytics') { analyticsShowLeaderboard(); }
       if (tab === 'schedules') loadSchedules();
       if (tab === 'admin') loadAdminDashboard();
@@ -7227,6 +7299,11 @@
     let teEvalHistory = [];
     let _teSSETimeout = null;
     let teRunSuiteId = null;         // suite_id for current run view
+    let _activeToolEvalJobId = null; // job_id for active tool eval (WS tracking)
+    let _activeJudgeJobId = null;    // job_id for active judge run (WS tracking)
+    let _ptConfigApplied = false;    // flag: param tuner config applied, skip _teApplyDefaults
+    let _teEvalStartTime = null;     // timestamp for ETA calculation
+    let _teEvalTotalCases = 0;       // total test cases for progress tracking
 
     function showToolEvalView(view) {
       const views = ['te-suites-view','te-editor-view','te-run-view',
@@ -8849,16 +8926,32 @@
 
     function ptApplyBest() {
       if (!ptBestConfig) return;
+      const appliedParts = [];
       // Apply best config values to the main tool eval temperature
       if (ptBestConfig.temperature !== undefined) {
         const teTemp = document.getElementById('teTemperature');
-        if (teTemp) teTemp.value = ptBestConfig.temperature;
+        if (teTemp) { teTemp.value = ptBestConfig.temperature; appliedParts.push('temp=' + ptBestConfig.temperature); }
       }
       if (ptBestConfig.tool_choice) {
         const teTc = document.getElementById('teToolChoice');
-        if (teTc) teTc.value = ptBestConfig.tool_choice;
+        if (teTc) { teTc.value = ptBestConfig.tool_choice; appliedParts.push('tool_choice=' + ptBestConfig.tool_choice); }
       }
-      showToast('Best config applied to Tool Eval settings', 'success');
+      // Apply provider_params (tier2 + passthrough) from best config
+      const skipKeys = new Set(['temperature', 'tool_choice', 'model_name', 'model_id']);
+      const providers = ppGetSelectedProviders('tooleval');
+      if (providers.length) {
+        for (const [k, v] of Object.entries(ptBestConfig)) {
+          if (skipKeys.has(k) || v === undefined || v === null) continue;
+          // Apply to all selected providers (tuner ran on these)
+          for (const prov of providers) {
+            ppSetValue('tooleval', prov.registryKey, k, v);
+          }
+          appliedParts.push(k + '=' + v);
+        }
+        ppRenderPanel('tooleval');
+      }
+      _ptConfigApplied = true; // Prevent _teApplyDefaults from overwriting
+      showToast('Applied: ' + (appliedParts.length ? appliedParts.join(', ') : 'best config'), 'success');
     }
 
     function ptExportCSV() {
@@ -10155,11 +10248,20 @@
 
     // --- Post-eval judge on existing run ---
     async function jgCancelJudge() {
-      try {
-        await apiFetch('/api/tool-eval/judge/cancel', { method: 'POST' });
-        showToast('Cancelling judge...', 'success');
-      } catch (e) {
-        showToast('Failed to cancel judge', 'error');
+      if (_activeJudgeJobId) {
+        await notifCancelJob(_activeJudgeJobId);
+        const job = _jobStore[_activeJudgeJobId];
+        if (job && !ACTIVE_STATUSES.has(job.status)) {
+          _activeJudgeJobId = null;
+        }
+      } else {
+        // Legacy fallback
+        try {
+          await apiFetch('/api/tool-eval/judge/cancel', { method: 'POST' });
+          showToast('Cancelling judge...', 'success');
+        } catch (e) {
+          showToast('Failed to cancel judge', 'error');
+        }
       }
     }
 
@@ -10183,12 +10285,13 @@
       document.getElementById('jgReportSection').classList.remove('hidden');
       document.getElementById('jgReportStatus').textContent = 'Starting judge...';
       document.getElementById('jgGradeBadge').textContent = '...';
+      document.getElementById('jgProgressSection')?.classList.remove('hidden');
 
       try {
         const res = await apiFetch('/api/tool-eval/judge', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ eval_run_id: evalRunId, judge_model: judgeModel, custom_instructions: _p10Settings?.judge?.custom_instructions || '' })
+          body: JSON.stringify({ eval_run_id: evalRunId, judge_model: judgeModel, custom_instructions: _p10Settings?.judge?.custom_instructions || '', concurrency: _p10Settings?.judge?.concurrency || 4 })
         });
 
         if (res.status === 409) { showToast('Another operation is running', 'error'); return; }
@@ -10198,22 +10301,12 @@
           return;
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+        // New job-based response: {job_id}
+        const data = await res.json();
+        _activeJudgeJobId = data.job_id;
+        showToast('Judge submitted', 'success');
+        // Progress updates arrive via WebSocket (handled by _onToolEvalJobEvent)
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try { jgHandleSSE(JSON.parse(line.slice(6))); } catch (e) {}
-            }
-          }
-        }
       } catch (e) {
         showToast('Judge error: ' + (e.message || 'unknown'), 'error');
       }
@@ -10254,7 +10347,8 @@
           body: JSON.stringify({
             eval_run_id_a: evalRunIdA,
             eval_run_id_b: evalRunIdB,
-            judge_model: document.getElementById('jgJudgeModel')?.value || ''
+            judge_model: document.getElementById('jgJudgeModel')?.value || '',
+            concurrency: _p10Settings?.judge?.concurrency || 4
           })
         });
 
@@ -10265,22 +10359,12 @@
           return;
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+        // New job-based response: {job_id}
+        const data = await res.json();
+        _activeJudgeJobId = data.job_id;
+        showToast('Comparison submitted', 'success');
+        // Progress updates arrive via WebSocket (handled by _onToolEvalJobEvent)
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try { jgHandleSSE(JSON.parse(line.slice(6))); } catch (e) {}
-            }
-          }
-        }
       } catch (e) {
         showToast('Compare error: ' + (e.message || 'unknown'), 'error');
       }
@@ -11241,6 +11325,8 @@
     }
 
     function _teApplyDefaults() {
+      // Skip if param tuner best config was applied (don't overwrite tuner results)
+      if (_ptConfigApplied) return;
       // Apply saved Phase 10 settings as defaults for this run
       if (!_p10Settings) return;
       const j = _p10Settings.judge || {};
@@ -11380,11 +11466,13 @@
     function _teResetRunView() {
       teEvalResults = [];
       teEvalSummaries = [];
+      _activeToolEvalJobId = null;
       document.getElementById('teProgressSection').classList.add('hidden');
       document.getElementById('teSummarySection').classList.add('hidden');
       document.getElementById('teDetailSection').classList.add('hidden');
       document.getElementById('teLiveSection').classList.add('hidden');
       document.getElementById('teSSEBanner').classList.add('hidden');
+      document.getElementById('jgProgressSection')?.classList.add('hidden');
       document.getElementById('teLiveBody').innerHTML = '';
       document.getElementById('teSummaryBody').innerHTML = '';
       document.getElementById('teStartBtn').disabled = false;
@@ -11400,11 +11488,12 @@
 
       const btn = document.getElementById('teStartBtn');
       btn.disabled = true;
-      btn.innerHTML = '<svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Running...';
+      btn.innerHTML = '<svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Submitting...';
       document.getElementById('teCancelEvalBtn').classList.remove('hidden');
 
       teEvalResults = [];
       teEvalSummaries = [];
+      _teEvalStartTime = Date.now();
       document.getElementById('teLiveBody').innerHTML = '';
       document.getElementById('teSummaryBody').innerHTML = '';
       document.getElementById('teProgressSection').classList.remove('hidden');
@@ -11412,17 +11501,20 @@
       document.getElementById('teSummarySection').classList.add('hidden');
       document.getElementById('teDetailSection').classList.add('hidden');
       document.getElementById('teSSEBanner').classList.add('hidden');
+      document.getElementById('jgProgressSection')?.classList.add('hidden');
       document.getElementById('teProgressBar').style.width = '0%';
       document.getElementById('teProgressLabel').textContent = 'Initializing...';
       document.getElementById('teProgressCount').textContent = '0/0';
 
       const tePpParams = ppCollectParams('tooleval');
       const teJudgeConfig = jgGetConfig();
+      const judgeConcurrency = _p10Settings?.judge?.concurrency || 4;
       const body = {
         suite_id: teRunSuiteId,
         targets: Array.from(teSelectedModels).map(k => { const i = k.indexOf('::'); return { provider_key: k.substring(0, i), model_id: k.substring(i + 2) }; }),
         temperature: parseFloat(document.getElementById('teTemperature').value) || 0.0,
         tool_choice: document.getElementById('teToolChoice').value,
+        judge_concurrency: judgeConcurrency,
         ...(tePpParams ? { provider_params: tePpParams } : {}),
         ...(teJudgeConfig ? { judge: teJudgeConfig } : {}),
       };
@@ -11455,41 +11547,26 @@
           return;
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+        // New job-based response: {job_id, status}
+        const data = await res.json();
+        _activeToolEvalJobId = data.job_id;
 
-        const resetTimeout = () => {
-          if (_teSSETimeout) clearTimeout(_teSSETimeout);
-          _teSSETimeout = setTimeout(() => {
-            _teShowSSEError('Connection lost - no data received for 30 seconds');
-            _teResetStartBtn();
-          }, 30000);
-        };
-        resetTimeout();
+        // Store in sessionStorage for reconnection
+        try { sessionStorage.setItem('_teJobId', data.job_id); } catch {}
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          resetTimeout();
-          buffer += decoder.decode(value, { stream: true });
+        // Update UI to show job is submitted
+        btn.innerHTML = '<svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Running...';
+        document.getElementById('teProgressLabel').textContent = data.status === 'submitted' ? 'Eval queued...' : 'Eval starting...';
+        showToast('Eval submitted', 'success');
 
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
+        // Progress updates now arrive via WebSocket (handled by _onToolEvalJobEvent)
+        // User can navigate away - the notification widget tracks progress independently
 
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try { _teHandleSSE(JSON.parse(line.slice(6))); } catch (e) {}
-            }
-          }
-        }
-        if (_teSSETimeout) clearTimeout(_teSSETimeout);
       } catch (e) {
         console.error('Eval error:', e);
         _teShowSSEError('Connection error: ' + (e.message || 'Network failure'));
+        _teResetStartBtn();
       }
-
-      _teResetStartBtn();
     }
 
     function _teResetStartBtn() {
@@ -11506,10 +11583,20 @@
     }
 
     async function teCancelEval() {
-      try {
-        await apiFetch('/api/tool-eval/cancel', { method: 'POST' });
-        showToast('Cancellation requested...', '');
-      } catch { showToast('Failed to cancel', 'error'); }
+      if (_activeToolEvalJobId) {
+        await notifCancelJob(_activeToolEvalJobId);
+        const job = _jobStore[_activeToolEvalJobId];
+        if (job && !ACTIVE_STATUSES.has(job.status)) {
+          _activeToolEvalJobId = null;
+          try { sessionStorage.removeItem('_teJobId'); } catch {}
+        }
+      } else {
+        // Legacy fallback
+        try {
+          await apiFetch('/api/tool-eval/cancel', { method: 'POST' });
+          showToast('Cancellation requested...', '');
+        } catch { showToast('Failed to cancel', 'error'); }
+      }
     }
 
     function _teHandleSSE(data) {
@@ -11562,6 +11649,258 @@
       }
 
       // heartbeat: just resets timeout (handled in resetTimeout)
+    }
+
+    // ── WebSocket event bridge for inline tool eval + judge progress ──
+    // Called by _notifHandleWsMessage for any tool_eval, judge, or judge_compare job events
+    function _onToolEvalJobEvent(msg) {
+      const isToolEval = _activeToolEvalJobId && msg.job_id === _activeToolEvalJobId;
+      const isJudge = _activeJudgeJobId && msg.job_id === _activeJudgeJobId;
+      if (!isToolEval && !isJudge) return;
+
+      switch (msg.type) {
+        case 'job_started':
+          if (isToolEval) {
+            document.getElementById('teProgressLabel').textContent = 'Eval running...';
+            _teEvalStartTime = Date.now();
+          }
+          if (isJudge) {
+            document.getElementById('jgReportStatus').textContent = 'Judge running...';
+          }
+          break;
+
+        case 'tool_eval_init': {
+          const data = msg.data || msg;
+          _teEvalTotalCases = (data.targets ? data.targets.length : 0) * (data.total_cases || 0);
+          document.getElementById('teProgressCount').textContent = `0/${_teEvalTotalCases}`;
+          document.getElementById('teProgressLabel').textContent = `Evaluating ${data.suite_name || ''}...`;
+          break;
+        }
+
+        case 'job_progress': {
+          if (isToolEval) {
+            const pct = msg.progress_pct || 0;
+            document.getElementById('teProgressBar').style.width = pct + '%';
+            document.getElementById('teProgressLabel').textContent = msg.progress_detail || 'Running...';
+          }
+          if (isJudge) {
+            const pct = msg.progress_pct || 0;
+            const jgBar = document.getElementById('jgProgressBar');
+            const jgCount = document.getElementById('jgProgressCount');
+            if (jgBar) jgBar.style.width = pct + '%';
+            if (jgCount) jgCount.textContent = msg.progress_detail || (pct + '%');
+            // ETA calculation for judge
+            const etaEl = document.getElementById('jgProgressETA');
+            if (etaEl && pct > 0 && pct < 100) {
+              const elapsed = (Date.now() - (_jgStartTime || Date.now())) / 1000;
+              const remaining = (elapsed / pct) * (100 - pct);
+              etaEl.textContent = remaining > 60 ? Math.ceil(remaining / 60) + 'm left' : Math.ceil(remaining) + 's left';
+            }
+          }
+          break;
+        }
+
+        // Tool eval streaming events
+        case 'tool_eval_result': {
+          const data = msg.data || msg;
+          teEvalResults.push(data);
+          _teAddLiveRow(data);
+          // Update progress count
+          if (_teEvalTotalCases > 0) {
+            const pct = Math.round((teEvalResults.length / _teEvalTotalCases) * 100);
+            document.getElementById('teProgressBar').style.width = pct + '%';
+            document.getElementById('teProgressCount').textContent = `${teEvalResults.length}/${_teEvalTotalCases}`;
+          }
+          break;
+        }
+
+        case 'tool_eval_progress': {
+          const data = msg.data || msg;
+          _teEvalTotalCases = data.total || _teEvalTotalCases;
+          const pct = data.total > 0 ? Math.round((data.current / data.total) * 100) : 0;
+          document.getElementById('teProgressBar').style.width = pct + '%';
+          document.getElementById('teProgressCount').textContent = `${data.current}/${data.total}`;
+          document.getElementById('teProgressLabel').textContent = `Testing ${data.model || ''}...`;
+          // ETA for eval
+          if (_teEvalStartTime && pct > 0 && pct < 100) {
+            const elapsed = (Date.now() - _teEvalStartTime) / 1000;
+            const remaining = (elapsed / pct) * (100 - pct);
+            const etaText = remaining > 60 ? Math.ceil(remaining / 60) + 'm left' : Math.ceil(remaining) + 's left';
+            document.getElementById('teProgressLabel').textContent += ' \u2014 ' + etaText;
+          }
+          break;
+        }
+
+        case 'tool_eval_summary': {
+          const data = msg.data || msg;
+          teEvalSummaries.push(data);
+          teRenderSummaryTable();
+          document.getElementById('teSummarySection').classList.remove('hidden');
+          break;
+        }
+
+        case 'tool_eval_complete': {
+          const data = msg.data || msg;
+          document.getElementById('teProgressLabel').textContent = 'Complete!';
+          document.getElementById('teProgressBar').style.width = '100%';
+          const total = teEvalResults.length;
+          const models = teEvalSummaries.length;
+          document.getElementById('teSummaryInfo').textContent = `${total} evaluations across ${models} model${models > 1 ? 's' : ''}`;
+          if (data.eval_id) {
+            window.teLastEvalId = data.eval_id;
+            document.getElementById('teExportBtn').classList.remove('hidden');
+          }
+          showToast('Eval complete!', 'success');
+          teLoadHistory();
+          _teResetStartBtn();
+          _activeToolEvalJobId = null;
+          _teEvalStartTime = null;
+          try { sessionStorage.removeItem('_teJobId'); } catch {}
+          break;
+        }
+
+        // Judge streaming events (both inline and standalone)
+        case 'judge_start': {
+          const data = msg.data || msg;
+          _jgStartTime = Date.now();
+          document.getElementById('jgProgressSection')?.classList.remove('hidden');
+          jgHandleSSE({ type: 'judge_start', ...(data || {}) });
+          break;
+        }
+
+        case 'judge_verdict': {
+          const data = msg.data || msg;
+          jgHandleSSE({ type: 'judge_verdict', ...(data || {}) });
+          // Update judge progress bar
+          const jgBar = document.getElementById('jgProgressBar');
+          const jgCount = document.getElementById('jgProgressCount');
+          if (jgBar && data.current && data.total) {
+            const pct = Math.round((data.current / data.total) * 100);
+            jgBar.style.width = pct + '%';
+            if (jgCount) jgCount.textContent = `${data.current}/${data.total}`;
+          }
+          break;
+        }
+
+        case 'judge_progress': {
+          const data = msg.data || msg;
+          const jgBar = document.getElementById('jgProgressBar');
+          const jgCount = document.getElementById('jgProgressCount');
+          if (jgBar && data.current !== undefined && data.total) {
+            const pct = Math.round((data.current / data.total) * 100);
+            jgBar.style.width = pct + '%';
+            if (jgCount) jgCount.textContent = `${data.current}/${data.total}`;
+          }
+          break;
+        }
+
+        case 'judge_report': {
+          const data = msg.data || msg;
+          jgHandleSSE({ type: 'judge_report', report: data.report || data });
+          break;
+        }
+
+        case 'judge_complete': {
+          const data = msg.data || msg;
+          jgHandleSSE({ type: 'judge_complete', ...(data || {}) });
+          document.getElementById('jgProgressSection')?.classList.add('hidden');
+          if (isJudge) {
+            _activeJudgeJobId = null;
+          }
+          break;
+        }
+
+        // Comparative judge events
+        case 'compare_start': {
+          const data = msg.data || msg;
+          jgHandleSSE({ type: 'compare_start', ...(data || {}) });
+          break;
+        }
+
+        case 'compare_case': {
+          const data = msg.data || msg;
+          jgHandleSSE({ type: 'compare_case', ...(data || {}) });
+          break;
+        }
+
+        case 'compare_complete': {
+          const data = msg.data || msg;
+          jgHandleSSE({ type: 'compare_complete', ...(data || {}) });
+          if (isJudge) _activeJudgeJobId = null;
+          break;
+        }
+
+        case 'job_completed':
+          if (isToolEval) {
+            // Handled by tool_eval_complete; this is the generic job completion
+            _teResetStartBtn();
+            _activeToolEvalJobId = null;
+            _teEvalStartTime = null;
+            try { sessionStorage.removeItem('_teJobId'); } catch {}
+            teLoadHistory();
+          }
+          if (isJudge) {
+            _activeJudgeJobId = null;
+            document.getElementById('jgProgressSection')?.classList.add('hidden');
+          }
+          break;
+
+        case 'job_failed':
+          if (isToolEval) {
+            _teShowSSEError(msg.error || msg.error_msg || 'Eval failed');
+            _teResetStartBtn();
+            _activeToolEvalJobId = null;
+            _teEvalStartTime = null;
+            try { sessionStorage.removeItem('_teJobId'); } catch {}
+          }
+          if (isJudge) {
+            showToast('Judge failed: ' + (msg.error || msg.error_msg || 'Unknown error'), 'error');
+            document.getElementById('jgReportStatus').textContent = 'Failed';
+            document.getElementById('jgProgressSection')?.classList.add('hidden');
+            _activeJudgeJobId = null;
+          }
+          break;
+
+        case 'job_cancelled':
+          if (isToolEval) {
+            document.getElementById('teProgressLabel').textContent = 'Cancelled';
+            showToast('Eval cancelled', '');
+            _teResetStartBtn();
+            _activeToolEvalJobId = null;
+            _teEvalStartTime = null;
+            try { sessionStorage.removeItem('_teJobId'); } catch {}
+          }
+          if (isJudge) {
+            showToast('Judge cancelled', '');
+            document.getElementById('jgReportStatus').textContent = 'Cancelled';
+            document.getElementById('jgProgressSection')?.classList.add('hidden');
+            _activeJudgeJobId = null;
+          }
+          break;
+      }
+    }
+
+    // Judge ETA tracking
+    let _jgStartTime = null;
+
+    // Restore running eval view after page navigation or reconnect
+    function _teRestoreRunningEval() {
+      showToolEvalView('run');
+      const job = _jobStore[_activeToolEvalJobId];
+      if (!job) return;
+
+      // Show progress section with current state from job store
+      document.getElementById('teProgressSection').classList.remove('hidden');
+      document.getElementById('teLiveSection').classList.remove('hidden');
+      const pct = job.progress_pct || 0;
+      document.getElementById('teProgressBar').style.width = pct + '%';
+      document.getElementById('teProgressLabel').textContent = job.progress_detail || 'Eval running...';
+
+      // Set button to running state
+      const btn = document.getElementById('teStartBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Running...';
+      document.getElementById('teCancelEvalBtn').classList.remove('hidden');
     }
 
     function _teScoreColor(pct) {
