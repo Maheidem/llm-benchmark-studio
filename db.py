@@ -5,10 +5,13 @@ All tables are created on first startup via init_db().
 """
 
 import json
+import logging
 import aiosqlite
 import uuid
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "benchmark_studio.db"
 
@@ -25,6 +28,7 @@ async def get_db() -> aiosqlite.Connection:
 
 async def init_db():
     """Create all tables if they don't exist. Called once at app startup."""
+    logger.info("Initializing database at %s", DB_PATH)
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute("PRAGMA journal_mode=WAL")
@@ -198,14 +202,14 @@ async def init_db():
             await db.execute("ALTER TABLE users ADD COLUMN onboarding_completed INTEGER DEFAULT 0")
             await db.commit()
         except Exception:
-            pass  # Column already exists
+            logger.debug("Column onboarding_completed already exists")
 
         # Multi-turn tool eval support
         try:
             await db.execute("ALTER TABLE tool_test_cases ADD COLUMN multi_turn_config TEXT")
             await db.commit()
         except Exception:
-            pass  # Column already exists
+            logger.debug("Column multi_turn_config already exists")
 
         # --- Parameter Tuner ---
 
@@ -611,7 +615,7 @@ async def log_audit(
             )
             await conn.commit()
     except Exception:
-        pass  # Audit logging must never break the app
+        logger.exception("Audit logging failed (action=%s, user_id=%s)", action, user_id)
 
 
 # --- Tool Suites CRUD ---
@@ -1168,7 +1172,7 @@ async def cleanup_audit_log(retention_days: int = 90):
             )
             await conn.commit()
     except Exception:
-        pass
+        logger.exception("Failed to clean up audit log entries")
 
 
 # --- Schedules CRUD ---

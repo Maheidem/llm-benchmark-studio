@@ -6,7 +6,10 @@ Used by the JobRegistry to broadcast real-time job status updates.
 
 import asyncio
 import json
+import logging
 from fastapi import WebSocket
+
+logger = logging.getLogger(__name__)
 
 
 MAX_CONNECTIONS_PER_USER = 5
@@ -31,6 +34,7 @@ class ConnectionManager:
         async with self._lock:
             existing = self._connections.get(user_id, set())
             if len(existing) >= MAX_CONNECTIONS_PER_USER:
+                logger.warning("WebSocket connection rejected: user_id=%s has %d connections (max %d)", user_id, len(existing), MAX_CONNECTIONS_PER_USER)
                 await ws.close(code=4008, reason="Too many connections")
                 return False
 
@@ -40,17 +44,22 @@ class ConnectionManager:
                 self._connections[user_id] = set()
             self._connections[user_id].add(ws)
             self._user_roles[user_id] = role
+            tab_count = len(self._connections[user_id])
+        logger.info("WebSocket connected: user_id=%s tabs=%d", user_id, tab_count)
         return True
 
     async def disconnect(self, user_id: str, ws: WebSocket):
         """Remove a WebSocket connection for a user."""
+        remaining = 0
         async with self._lock:
             conns = self._connections.get(user_id)
             if conns:
                 conns.discard(ws)
+                remaining = len(conns)
                 if not conns:
                     del self._connections[user_id]
                     self._user_roles.pop(user_id, None)
+        logger.info("WebSocket disconnected: user_id=%s remaining_tabs=%d", user_id, remaining)
 
     async def send_to_user(self, user_id: str, message: dict):
         """Send a JSON message to ALL tabs of a specific user."""
@@ -60,6 +69,7 @@ class ConnectionManager:
             try:
                 await ws.send_json(message)
             except Exception:
+                logger.warning("WebSocket send failed for user, marking connection as dead")
                 dead.append(ws)
         for ws in dead:
             await self.disconnect(user_id, ws)

@@ -12,8 +12,11 @@ Three-Tier Architecture:
 from __future__ import annotations
 
 import fnmatch
+import logging
 import re
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Provider Registry
@@ -558,6 +561,7 @@ def resolve_conflicts(params: dict, provider: str, model_id: str) -> tuple[dict,
                 try:
                     val = float(val)
                 except (TypeError, ValueError):
+                    logger.debug("Cannot convert param %s value to float, skipping clamp", param_name)
                     continue
                 clamped = max(p_min, min(val, p_max))
                 if clamped != val:

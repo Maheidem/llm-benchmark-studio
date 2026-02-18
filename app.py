@@ -8,12 +8,16 @@ Usage:
 
 import argparse
 import asyncio
+import collections
 import csv
 import io
 import json
+import logging
+import logging.handlers
 import os
 import re
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -58,9 +62,85 @@ from job_registry import registry as job_registry
 
 from contextlib import asynccontextmanager
 
+
+# ---------------------------------------------------------------------------
+# Logging configuration
+# ---------------------------------------------------------------------------
+
+class _JSONFormatter(logging.Formatter):
+    """JSON log formatter for Docker stdout (machine-parseable)."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_entry = {
+            "time": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info and record.exc_info[0] is not None:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        # Merge any extra fields passed via extra={...}
+        for key in ("user_id", "job_id", "method", "path", "status", "duration_ms",
+                     "provider", "model", "action", "ip", "detail"):
+            val = getattr(record, key, None)
+            if val is not None:
+                log_entry[key] = val
+        return json.dumps(log_entry, default=str)
+
+
+def configure_logging() -> None:
+    """Set up application-wide logging.
+
+    Reads LOG_LEVEL from env (default: 'warning').
+    Uses JSON format for Docker stdout compatibility.
+    """
+    level_name = os.environ.get("LOG_LEVEL", "warning").upper()
+    level = getattr(logging, level_name, logging.WARNING)
+
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # Remove any existing handlers to avoid duplicates on reload
+    root.handlers.clear()
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(_JSONFormatter())
+    root.addHandler(handler)
+
+    # Align uvicorn loggers with our level
+    for uv_logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        uv_logger = logging.getLogger(uv_logger_name)
+        uv_logger.setLevel(level)
+
+    # In-memory ring buffer for /api/admin/logs endpoint
+    global _log_buffer
+    buf_handler = logging.Handler()
+    buf_handler.setFormatter(_JSONFormatter())
+    buf_handler.emit = lambda record: _log_buffer.append(buf_handler.format(record))
+    root.addHandler(buf_handler)
+
+    # Quiet noisy third-party loggers unless explicitly debugging
+    if level > logging.DEBUG:
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("litellm").setLevel(logging.WARNING)
+
+
+_log_buffer: collections.deque = collections.deque(maxlen=2000)
+
+# Configure logging BEFORE anything else runs (import-time side effects)
+configure_logging()
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Lifespan
+# ---------------------------------------------------------------------------
+
 @asynccontextmanager
 async def lifespan(app_instance):
     """Initialize database on startup."""
+    logger.info("LLM Benchmark Studio starting (version=%s)", APP_VERSION)
     await db.init_db()
     # Clean up old audit log entries
     await db.cleanup_audit_log(retention_days=90)
@@ -72,17 +152,17 @@ async def lifespan(app_instance):
             async with await db.get_db() as conn:
                 await conn.execute("UPDATE users SET role='admin' WHERE id=?", (existing["id"],))
                 await conn.commit()
-            print(f"  Promoted to admin: {admin_email}")
+            logger.info("Promoted existing user to admin: %s", admin_email)
         elif not existing:
             admin_pass = os.environ.get("ADMIN_PASSWORD")
             if admin_pass:
                 hashed = auth.hash_password(admin_pass)
                 await db.create_user(admin_email, hashed, role="admin")
-                print(f"  Admin account created: {admin_email}")
+                logger.info("Admin account created: %s", admin_email)
     # Clean up orphaned judge reports stuck in "running" from prior crashes
     stale_count = await db.cleanup_stale_judge_reports(minutes=30)
     if stale_count:
-        print(f"  Cleaned up {stale_count} stale judge report(s)")
+        logger.info("Cleaned up %d stale judge report(s)", stale_count)
     # Initialize job registry (startup recovery + watchdog)
     job_registry.set_ws_manager(ws_manager)
     await job_registry.startup()
@@ -93,7 +173,7 @@ async def lifespan(app_instance):
     try:
         await scheduler_task
     except asyncio.CancelledError:
-        pass
+        logger.debug("Scheduler task cancelled during shutdown")
     await job_registry.shutdown()
 
 async def _run_scheduled_benchmark(schedule: dict):
@@ -163,10 +243,11 @@ async def _run_scheduler():
             await asyncio.sleep(60)
             due = await db.get_due_schedules()
             for schedule in due:
+                logger.info("Scheduled benchmark triggered: schedule_id=%s name=%s", schedule["id"], schedule.get("name", ""))
                 try:
                     await _run_scheduled_benchmark(schedule)
                 except Exception as exc:
-                    print(f"  [scheduler] Error running schedule {schedule['id']}: {exc}")
+                    logger.exception("Scheduler error running schedule %s", schedule["id"])
                 # Update timestamps regardless of success
                 now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
                 interval = schedule["interval_hours"]
@@ -174,8 +255,8 @@ async def _run_scheduler():
                 await db.update_schedule_after_run(schedule["id"], now, next_run)
         except asyncio.CancelledError:
             break
-        except Exception as exc:
-            print(f"  [scheduler] Unexpected error: {exc}")
+        except Exception:
+            logger.exception("Scheduler unexpected error")
 
 
 app = FastAPI(title="LLM Benchmark Studio", lifespan=lifespan)
@@ -227,6 +308,75 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+
+
+# ---------------------------------------------------------------------------
+# Request Logging Middleware
+# ---------------------------------------------------------------------------
+
+# Paths to skip logging (noisy/health endpoints)
+_SKIP_LOG_PATHS = frozenset({"/healthz", "/favicon.ico"})
+
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """Log HTTP requests with method, path, status, duration, and user_id."""
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+
+        # Skip noisy endpoints
+        if path in _SKIP_LOG_PATHS or path.startswith("/static"):
+            return await call_next(request)
+
+        request_id = uuid.uuid4().hex[:12]
+        request.state.request_id = request_id
+
+        # Try to extract user_id from JWT (best-effort, no DB call)
+        user_id = None
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            try:
+                from jose import jwt as _jwt
+                payload = _jwt.decode(
+                    auth_header[7:],
+                    auth.JWT_SECRET,
+                    algorithms=[auth.JWT_ALGORITHM],
+                    options={"verify_exp": False},
+                )
+                user_id = payload.get("sub")
+            except Exception:
+                pass
+
+        method = request.method
+        logger.info(
+            "REQ %s %s %s",
+            request_id, method, path,
+            extra={"method": method, "path": path, "user_id": user_id},
+        )
+
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration_ms = round((time.perf_counter() - start) * 1000)
+
+        status = response.status_code
+        log_level = logging.INFO
+        if 400 <= status < 500:
+            log_level = logging.WARNING
+        elif status >= 500:
+            log_level = logging.ERROR
+
+        logger.log(
+            log_level,
+            "RES %s %d %dms",
+            request_id, status, duration_ms,
+            extra={"method": method, "path": path, "status": status, "duration_ms": duration_ms, "user_id": user_id},
+        )
+
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+
+app.add_middleware(RequestLoggingMiddleware)
 
 # CORS configuration (only enabled when CORS_ORIGINS is set)
 _cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
@@ -500,6 +650,7 @@ async def websocket_endpoint(ws: WebSocket):
             "recent_jobs": recent_jobs,
         })
     except Exception:
+        logger.exception("WebSocket initial sync failed (user_id=%s)", user_id)
         await ws_manager.disconnect(user_id, ws)
         return
 
@@ -516,7 +667,7 @@ async def websocket_endpoint(ws: WebSocket):
                 try:
                     await ws.close(code=4002, reason="Receive timeout")
                 except Exception:
-                    pass
+                    logger.debug("WebSocket close failed during timeout disconnect")
                 break
 
             msg_type = data.get("type")
@@ -529,9 +680,9 @@ async def websocket_endpoint(ws: WebSocket):
                     await job_registry.cancel(job_id, user_id)
 
     except WebSocketDisconnect:
-        pass
+        logger.debug("WebSocket client disconnected (user_id=%s)", user_id)
     except Exception:
-        pass
+        logger.exception("WebSocket unexpected error (user_id=%s)", user_id)
     finally:
         await ws_manager.disconnect(user_id, ws)
 
@@ -732,6 +883,30 @@ async def admin_delete_user(user_id: str, request: Request, current_user: dict =
         user_agent=request.headers.get("user-agent", ""),
     )
     return {"status": "ok"}
+
+
+@app.get("/api/admin/logs")
+async def admin_get_logs(
+    lines: int = 100,
+    level: str | None = None,
+    search: str | None = None,
+    current_user: dict = Depends(auth.require_admin),
+):
+    """Return recent application log entries from in-memory ring buffer.
+
+    Query params:
+        lines  - max entries to return (default 100, max 2000)
+        level  - filter by level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+        search - substring filter on log message
+    """
+    lines = min(max(1, lines), 2000)
+    entries = list(_log_buffer)
+    if level:
+        level_upper = level.upper()
+        entries = [e for e in entries if f'"level": "{level_upper}"' in e]
+    if search:
+        entries = [e for e in entries if search.lower() in e.lower()]
+    return {"count": len(entries[-lines:]), "logs": entries[-lines:]}
 
 
 @app.get("/api/admin/stats")
@@ -1172,7 +1347,7 @@ async def discover_models(provider_key: str, user: dict = Depends(auth.get_curre
         try:
             api_key = vault.decrypt(encrypted)
         except Exception:
-            pass
+            logger.warning("Failed to decrypt API key for provider=%s user_id=%s", provider_key, user["id"])
     if not api_key:
         key_env = prov_cfg.get("api_key_env", "")
         if key_env:
@@ -1455,6 +1630,7 @@ async def set_my_key(request: Request, user: dict = Depends(auth.get_current_use
     key_name = prov_cfg.get("api_key_env", f"{provider_key.upper()}_API_KEY")
     encrypted = vault.encrypt(value)
     key_id = await db.upsert_user_key(user["id"], provider_key, key_name, encrypted)
+    logger.info("API key set: user_id=%s provider=%s", user["id"], provider_key)
 
     return {"status": "ok", "key_id": key_id, "provider_key": provider_key}
 
@@ -1472,6 +1648,7 @@ async def delete_my_key(request: Request, user: dict = Depends(auth.get_current_
     if not deleted:
         return JSONResponse({"error": "Key not found"}, status_code=404)
 
+    logger.info("API key deleted: user_id=%s provider=%s", user["id"], provider_key)
     return {"status": "ok"}
 
 
@@ -1486,7 +1663,7 @@ async def cancel_benchmark(request: Request, user: dict = Depends(auth.get_curre
     try:
         body = await request.json()
     except Exception:
-        pass  # Empty body is OK for backward compat
+        logger.debug("Cancel request with empty/invalid body (backward compat)")
 
     job_id = body.get("job_id")
 
@@ -1538,6 +1715,11 @@ async def _benchmark_handler(job_id: str, params: dict, cancel_event, progress_c
     context_tiers = params.get("context_tiers", [0])
     warmup = params.get("warmup", True)
     provider_params = params.get("provider_params")
+
+    logger.info(
+        "Benchmark started: job_id=%s user_id=%s models=%d tiers=%s runs=%d",
+        job_id, user_id, len(model_ids) if model_ids else 0, context_tiers, runs,
+    )
 
     config = await _get_user_config(user_id)
     defaults = config.get("defaults", {})
@@ -1706,6 +1888,11 @@ async def _benchmark_handler(job_id: str, params: dict, cancel_event, progress_c
             results_json=json.dumps(all_results),
         )
 
+        logger.info(
+            "Benchmark completed: job_id=%s user_id=%s results=%d run_id=%s",
+            job_id, user_id, len(all_results), run_id,
+        )
+
         await db.log_audit(
             user_id=user_id,
             username=params.get("user_email", ""),
@@ -1716,6 +1903,7 @@ async def _benchmark_handler(job_id: str, params: dict, cancel_event, progress_c
 
         return run_id
 
+    logger.info("Benchmark produced no results: job_id=%s user_id=%s", job_id, user_id)
     return None
 
 
@@ -1824,13 +2012,14 @@ async def get_history(user: dict = Depends(auth.get_current_user)):
             try:
                 run["results"] = json.loads(run["results_json"])
             except (json.JSONDecodeError, TypeError):
+                logger.debug("Failed to parse results_json for run")
                 run["results"] = []
             del run["results_json"]
         if isinstance(run.get("context_tiers"), str):
             try:
                 run["context_tiers"] = json.loads(run["context_tiers"])
             except (json.JSONDecodeError, TypeError):
-                pass
+                logger.debug("Failed to parse context_tiers for run")
     return {"runs": runs}
 
 
@@ -1844,13 +2033,14 @@ async def get_history_run(run_id: str, user: dict = Depends(auth.get_current_use
         try:
             run["results"] = json.loads(run["results_json"])
         except (json.JSONDecodeError, TypeError):
+            logger.debug("Failed to parse results_json for run %s", run_id)
             run["results"] = []
         del run["results_json"]
     if isinstance(run.get("context_tiers"), str):
         try:
             run["context_tiers"] = json.loads(run["context_tiers"])
         except (json.JSONDecodeError, TypeError):
-            pass
+            logger.debug("Failed to parse context_tiers for run %s", run_id)
     return run
 
 
@@ -1932,7 +2122,7 @@ def _parse_expected_tool(value):
         if isinstance(parsed, list):
             return parsed
     except (json.JSONDecodeError, TypeError):
-        pass
+        logger.debug("_maybe_parse_json: value is not JSON, returning as-is")
     return value
 
 
@@ -2035,7 +2225,7 @@ async def get_tool_suite(suite_id: str, user: dict = Depends(auth.get_current_us
             try:
                 c["expected_params"] = json.loads(c["expected_params"])
             except (json.JSONDecodeError, TypeError):
-                pass
+                logger.debug("Failed to parse expected_params for test case in suite %s", suite_id)
         if c.get("multi_turn_config"):
             try:
                 mt = json.loads(c["multi_turn_config"]) if isinstance(c["multi_turn_config"], str) else c["multi_turn_config"]
@@ -2045,7 +2235,7 @@ async def get_tool_suite(suite_id: str, user: dict = Depends(auth.get_current_us
                 c["valid_prerequisites"] = mt.get("valid_prerequisites", [])
                 c["optimal_hops"] = mt.get("optimal_hops", 2)
             except (json.JSONDecodeError, TypeError):
-                pass
+                logger.debug("Failed to parse multi_turn_config for test case in suite %s", suite_id)
     suite["test_cases"] = cases
     return suite
 
@@ -2097,7 +2287,7 @@ async def export_tool_suite(suite_id: str, user: dict = Depends(auth.get_current
             try:
                 tc["expected_params"] = json.loads(c["expected_params"]) if isinstance(c["expected_params"], str) else c["expected_params"]
             except (json.JSONDecodeError, TypeError):
-                pass
+                logger.debug("Failed to parse expected_params during export")
         if c.get("param_scoring") and c["param_scoring"] != "exact":
             tc["param_scoring"] = c["param_scoring"]
         if c.get("multi_turn_config"):
@@ -2109,7 +2299,7 @@ async def export_tool_suite(suite_id: str, user: dict = Depends(auth.get_current
                         if k in mt:
                             tc[k] = mt[k]
             except (json.JSONDecodeError, TypeError):
-                pass
+                logger.debug("Failed to parse multi_turn_config during export")
         test_cases.append(tc)
     export_data = {
         "name": suite.get("name", "Untitled"),
@@ -2182,7 +2372,7 @@ async def list_test_cases(suite_id: str, user: dict = Depends(auth.get_current_u
             try:
                 c["expected_params"] = json.loads(c["expected_params"])
             except (json.JSONDecodeError, TypeError):
-                pass
+                logger.debug("Failed to parse expected_params for case in suite %s", suite_id)
         if c.get("multi_turn_config"):
             try:
                 mt = json.loads(c["multi_turn_config"]) if isinstance(c["multi_turn_config"], str) else c["multi_turn_config"]
@@ -2192,7 +2382,7 @@ async def list_test_cases(suite_id: str, user: dict = Depends(auth.get_current_u
                 c["valid_prerequisites"] = mt.get("valid_prerequisites", [])
                 c["optimal_hops"] = mt.get("optimal_hops", 2)
             except (json.JSONDecodeError, TypeError):
-                pass
+                logger.debug("Failed to parse multi_turn_config for case in suite %s", suite_id)
     return {"cases": cases}
 
 
@@ -2539,6 +2729,7 @@ async def run_single_eval(
         try:
             expected_params = json.loads(expected_params)
         except (json.JSONDecodeError, TypeError):
+            logger.debug("Failed to parse expected_params for test case %s", test_case.get("id"))
             expected_params = None
 
     result = {
@@ -2613,6 +2804,7 @@ async def run_single_eval(
         except Exception:
             # Fallback: some providers don't support tool_choice="required"
             if kwargs.get("tool_choice") == "required":
+                logger.debug("tool_choice=required failed, falling back to auto for %s", target.model_id)
                 kwargs["tool_choice"] = "auto"
                 response = await litellm.acompletion(**kwargs)
             else:
@@ -2625,6 +2817,7 @@ async def run_single_eval(
             try:
                 result["actual_params"] = json.loads(message.tool_calls[0].function.arguments)
             except (json.JSONDecodeError, TypeError):
+                logger.debug("Failed to parse tool call arguments")
                 result["actual_params"] = None
         else:
             result["actual_tool"] = None
@@ -2642,7 +2835,7 @@ async def run_single_eval(
                     if not result.get("actual_params") and (parsed.get("arguments") or parsed.get("parameters")):
                         result["actual_params"] = parsed.get("arguments") or parsed.get("parameters")
             except (json.JSONDecodeError, TypeError):
-                pass
+                logger.debug("Failed to parse JSON-in-tool-name for model %s", target.model_id)
         elif not _raw_tool and message.content:
             try:
                 content = message.content.strip()
@@ -2654,7 +2847,7 @@ async def run_single_eval(
                         result["actual_tool"] = parsed["name"]
                         result["actual_params"] = parsed.get("arguments") or parsed.get("parameters") or {}
             except Exception:
-                pass
+                logger.debug("Failed to extract tool call from message content for model %s", target.model_id)
 
         result["latency_ms"] = round(latency_ms)
 
@@ -2701,6 +2894,7 @@ async def run_multi_turn_eval(
         try:
             expected_params = json.loads(expected_params)
         except (json.JSONDecodeError, TypeError):
+            logger.debug("Failed to parse expected_params for multi-turn test case %s", test_case.get("id"))
             expected_params = None
 
     result = {
@@ -2780,6 +2974,7 @@ async def run_multi_turn_eval(
                 response = await litellm.acompletion(**kwargs)
             except Exception:
                 if kwargs.get("tool_choice") == "required":
+                    logger.debug("tool_choice=required failed in multi-turn, falling back to auto for %s", target.model_id)
                     kwargs["tool_choice"] = "auto"
                     response = await litellm.acompletion(**kwargs)
                 else:
@@ -2803,6 +2998,7 @@ async def run_multi_turn_eval(
             try:
                 called_params = json.loads(tool_call.function.arguments)
             except (json.JSONDecodeError, TypeError):
+                logger.debug("Failed to parse multi-turn tool call arguments")
                 called_params = None
 
             result["tool_chain"].append({
@@ -3039,6 +3235,7 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
                             try:
                                 mt_config = json.loads(case["multi_turn_config"]) if isinstance(case["multi_turn_config"], str) else case["multi_turn_config"]
                             except (json.JSONDecodeError, TypeError):
+                                logger.debug("Failed to parse multi_turn_config in SSE stream")
                                 mt_config = None
 
                         if mt_config and mt_config.get("multi_turn"):
@@ -3113,6 +3310,7 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
                             v["model_id"] = res.get("model_id", "?")
                             await jq.put(v)
                         except Exception:
+                            logger.exception("Inline judge failed for case=%s model=%s", res.get("test_case_id", "?"), res.get("model_id", "?"))
                             await jq.put({
                                 "test_case_id": res.get("test_case_id", "?"),
                                 "model_id": res.get("model_id", "?"),
@@ -3264,7 +3462,7 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
                     if rpt and rpt.get("status") == "running":
                         await db.update_judge_report(judge_report_id, status="error")
                 except Exception:
-                    pass
+                    logger.exception("Failed to clean up orphaned judge report %s", judge_report_id)
             user_lock.release()
 
     return StreamingResponse(
@@ -3463,6 +3661,7 @@ async def run_param_tune(request: Request, user: dict = Depends(auth.get_current
                                 try:
                                     mt_config = json.loads(case["multi_turn_config"]) if isinstance(case["multi_turn_config"], str) else case["multi_turn_config"]
                                 except (json.JSONDecodeError, TypeError):
+                                    logger.debug("Failed to parse multi_turn_config in param tuner")
                                     mt_config = None
 
                             if mt_config and mt_config.get("multi_turn"):
@@ -3703,6 +3902,7 @@ def _parse_meta_response(text: str) -> list[dict]:
                 return data
         except json.JSONDecodeError:
             pass
+    logger.debug("_parse_meta_response: all parse strategies failed, returning empty list")
     return []
 
 
@@ -4276,6 +4476,7 @@ def _parse_judge_json(text: str) -> dict:
                 return data
         except json.JSONDecodeError:
             pass
+    logger.debug("_parse_judge_json: all parse strategies failed, returning empty dict")
     return {}
 
 
@@ -4585,7 +4786,7 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
                     if rpt and rpt.get("status") == "running":
                         await db.update_judge_report(report_id, status="error")
                 except Exception:
-                    pass
+                    logger.exception("Failed to clean up judge report %s in finally block", report_id)
             user_lock.release()
 
     return StreamingResponse(
@@ -4819,7 +5020,7 @@ async def run_judge_compare(request: Request, user: dict = Depends(auth.get_curr
                     if rpt and rpt.get("status") == "running":
                         await db.update_judge_report(report_id, status="error")
                 except Exception:
-                    pass
+                    logger.exception("Failed to clean up comparison judge report %s", report_id)
             user_lock.release()
 
     return StreamingResponse(
@@ -5003,6 +5204,7 @@ async def mcp_discover(request: Request, user: dict = Depends(auth.get_current_u
     try:
         body = await request.json()
     except Exception:
+        logger.debug("MCP discover: invalid/empty request body")
         return JSONResponse({"error": "url is required"}, status_code=400)
     url = (body.get("url") or "").strip()
 
@@ -5038,6 +5240,7 @@ async def mcp_import(request: Request, user: dict = Depends(auth.get_current_use
     try:
         body = await request.json()
     except Exception:
+        logger.debug("MCP import: invalid/empty request body")
         return JSONResponse({"error": "No tools selected"}, status_code=400)
     tools = body.get("tools", [])
     suite_name = (body.get("suite_name") or "").strip()
@@ -5271,7 +5474,7 @@ def inject_user_keys(targets: list[Target], user_keys_cache: dict[str, str]) -> 
                 injected.append(replace(target, api_key=decrypted))
                 continue
             except Exception:
-                pass  # Decryption failed; fall through to global key
+                logger.warning("API key decryption failed for provider=%s, falling back to global key", target.provider_key)
 
         # No user key found -- keep the global key (already on target)
         injected.append(target)
@@ -5381,6 +5584,7 @@ async def async_run_single(
                 completion_tokens=result.output_tokens,
             )
         except Exception:
+            logger.debug("Cost calculation not available for model %s", target.model_id)
             result.cost = 0.0
 
         # Custom pricing fallback: when LiteLLM returns 0, use config pricing
@@ -5822,7 +6026,7 @@ async def trigger_schedule(schedule_id: str, user: dict = Depends(auth.get_curre
             next_run = (datetime.now(timezone.utc) + timedelta(hours=interval)).strftime("%Y-%m-%d %H:%M:%S")
             await db.update_schedule_after_run(schedule["id"], now, next_run)
         except Exception as exc:
-            print(f"  [trigger] Error running schedule {schedule['id']}: {exc}")
+            logger.exception("Trigger error running schedule %s", schedule["id"])
 
     asyncio.create_task(_run())
     return {"status": "ok", "message": "Benchmark triggered"}
@@ -6135,6 +6339,7 @@ async def import_settings(request: Request, user: dict = Depends(auth.get_curren
     try:
         body = await request.json()
     except Exception:
+        logger.debug("Import settings: invalid JSON body")
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
     # Validate required fields
@@ -6205,14 +6410,14 @@ if __name__ == "__main__":
 
     # Warn if using auto-generated keys in production
     if not os.environ.get("FERNET_KEY"):
-        print("  [!] FERNET_KEY not set. Using auto-generated key from data/.fernet_key")
-        print("  [!] Set FERNET_KEY env var in production and BACK UP the key.\n")
+        logger.warning("FERNET_KEY not set. Using auto-generated key from data/.fernet_key")
+        logger.warning("Set FERNET_KEY env var in production and BACK UP the key.")
 
     parser = argparse.ArgumentParser(description="LLM Benchmark Studio")
     parser.add_argument("--port", type=int, default=8501, help="Port (default: 8501)")
     parser.add_argument("--host", default="0.0.0.0", help="Host (default: 0.0.0.0)")
     args = parser.parse_args()
 
-    print(f"\n  LLM Benchmark Studio running at http://localhost:{args.port}\n")
+    logger.info("LLM Benchmark Studio starting on http://localhost:%d", args.port)
     log_level = os.environ.get("LOG_LEVEL", "warning").lower()
     uvicorn.run(app, host=args.host, port=args.port, log_level=log_level)

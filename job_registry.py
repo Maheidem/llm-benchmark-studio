@@ -18,11 +18,14 @@ Usage:
 
 import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Awaitable
 
 import db
+
+logger = logging.getLogger(__name__)
 
 
 class JobRegistry:
@@ -57,6 +60,7 @@ class JobRegistry:
 
     async def startup(self):
         """Called during app lifespan startup."""
+        logger.info("Job registry starting up")
         await self._startup_recovery()
         self._watchdog_task = asyncio.create_task(self._watchdog())
 
@@ -67,7 +71,7 @@ class JobRegistry:
             try:
                 await self._watchdog_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Watchdog task cancelled during shutdown")
         # Cancel all running jobs and mark as interrupted
         for job_id, task in list(self._running.items()):
             task.cancel()
@@ -110,6 +114,8 @@ class JobRegistry:
             progress_detail=progress_detail,
         )
 
+        logger.info("Job created: job_id=%s type=%s user_id=%s status=%s", job_id, job_type, user_id, initial_status)
+
         # Broadcast job_created
         await self._broadcast(user_id, {
             "type": "job_created",
@@ -135,6 +141,7 @@ class JobRegistry:
 
         if job["status"] in ("pending", "queued"):
             # Not yet running -- just mark cancelled
+            logger.info("Job cancelled (not yet running): job_id=%s user_id=%s", job_id, user_id)
             await self._update_status(job_id, "cancelled")
             await self._broadcast(job["user_id"], {
                 "type": "job_cancelled", "job_id": job_id,
@@ -143,6 +150,7 @@ class JobRegistry:
 
         if job["status"] == "running":
             # Signal cancellation via event
+            logger.info("Job cancel requested (running): job_id=%s user_id=%s", job_id, user_id)
             cancel_event = self._cancel_events.get(job_id)
             if cancel_event:
                 cancel_event.set()
@@ -214,11 +222,13 @@ class JobRegistry:
                         "type": "job_completed", "job_id": job_id, "result_ref": result_ref,
                     })
             except asyncio.CancelledError:
+                logger.debug("Job %s cancelled", job_id)
                 await self._update_status(job_id, "interrupted")
                 await self._broadcast(user_id, {
                     "type": "job_failed", "job_id": job_id, "error": "Interrupted",
                 })
             except Exception as e:
+                logger.exception("Job %s failed", job_id)
                 await self._update_status(job_id, "failed", error_msg=str(e)[:500])
                 await self._broadcast(user_id, {
                     "type": "job_failed", "job_id": job_id, "error": str(e)[:500],
@@ -259,7 +269,7 @@ class JobRegistry:
         """On server restart, mark any running/pending/queued jobs as interrupted."""
         count = await db.mark_interrupted_jobs()
         if count > 0:
-            print(f"  [job_registry] Marked {count} orphaned jobs as interrupted")
+            logger.warning("Marked %d orphaned jobs as interrupted on startup", count)
 
     async def _watchdog(self):
         """Periodically check for timed-out jobs (every 60s)."""
@@ -280,7 +290,7 @@ class JobRegistry:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                print(f"  [job_registry] Watchdog error: {e}")
+                logger.exception("Watchdog error")
 
     async def _update_status(
         self,
@@ -295,6 +305,7 @@ class JobRegistry:
             if status in ("done", "failed", "cancelled", "interrupted")
             else None
         )
+        logger.info("Job state transition: job_id=%s -> %s", job_id, status)
         await db.update_job_status(job_id, status, completed_at, result_ref, error_msg)
 
     async def _get_user_limit(self, user_id: str) -> int:

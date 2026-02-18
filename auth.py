@@ -7,11 +7,14 @@ JWT-based auth with:
 - python-jose[cryptography] for JWT
 """
 
+import logging
 import os
 import hashlib
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+
+logger = logging.getLogger(__name__)
 
 import bcrypt
 from fastapi import Request, HTTPException, Depends
@@ -164,6 +167,7 @@ async def register_handler(request: Request) -> JSONResponse:
     try:
         body = await request.json()
     except Exception:
+        logger.debug("Register: invalid JSON body")
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
     email = body.get("email", "").strip().lower()
     password = body.get("password", "")
@@ -186,6 +190,7 @@ async def register_handler(request: Request) -> JSONResponse:
     # Create user
     hashed = hash_password(password)
     user = await db.create_user(email, hashed, role)
+    logger.info("User registered: %s (role=%s)", email, role)
 
     # Audit: user registration
     ip = request.client.host if request.client else None
@@ -231,6 +236,7 @@ async def login_handler(request: Request) -> JSONResponse:
     # Rate limit check
     allowed, retry_after = login_limiter.check(ip)
     if not allowed:
+        logger.warning("Login rate limited: ip=%s retry_after=%ds", ip, retry_after)
         return JSONResponse(
             {"error": f"Too many login attempts. Try again in {retry_after} seconds."},
             status_code=429,
@@ -240,6 +246,7 @@ async def login_handler(request: Request) -> JSONResponse:
     try:
         body = await request.json()
     except Exception:
+        logger.debug("Login: invalid JSON body")
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
     email = body.get("email", "").strip().lower()
     password = body.get("password", "")
@@ -247,6 +254,7 @@ async def login_handler(request: Request) -> JSONResponse:
     user = await db.get_user_by_email(email)
     if not user or not verify_password(password, user["password_hash"]):
         login_limiter.record_attempt(ip)
+        logger.warning("Login failed for email=%s ip=%s", email, ip)
         # Audit: failed login
         await db.log_audit(
             user_id=user["id"] if user else None,
@@ -264,6 +272,7 @@ async def login_handler(request: Request) -> JSONResponse:
 
     expires = (datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)).isoformat()
     await db.store_refresh_token(user["id"], hash_token(refresh), expires)
+    logger.info("Login success: %s", email)
 
     # Audit: successful login
     await db.log_audit(
@@ -320,6 +329,7 @@ async def refresh_handler(request: Request) -> JSONResponse:
 
     # Issue new access token (refresh token stays the same until expiry)
     access = create_access_token(user["id"], user["role"])
+    logger.debug("Token refreshed for user_id=%s", user["id"])
 
     # Audit: token refresh
     ip = request.client.host if request.client else None
@@ -352,8 +362,10 @@ async def logout_handler(request: Request) -> JSONResponse:
             user = await db.get_user_by_id(user_id) if user_id else None
             username = user.get("email", "") if user else ""
         except Exception:
-            pass
+            logger.debug("Could not decode refresh token during logout (expired or invalid)")
         await db.delete_refresh_token(hash_token(refresh))
+
+    logger.info("User logged out: user_id=%s", user_id or "unknown")
 
     # Audit: logout
     ip = request.client.host if request.client else None

@@ -1,10 +1,13 @@
 """Fernet-based encryption for user API keys."""
 
+import logging
 import os
 import warnings
 from pathlib import Path
 
 from cryptography.fernet import Fernet
+
+logger = logging.getLogger(__name__)
 
 _KEY_FILE = Path(__file__).parent / "data" / ".fernet_key"
 
