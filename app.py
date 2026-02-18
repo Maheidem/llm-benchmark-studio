@@ -2072,6 +2072,94 @@ async def delete_tool_suite(suite_id: str, user: dict = Depends(auth.get_current
     return {"status": "ok"}
 
 
+@app.get("/api/tool-suites/{suite_id}/export")
+async def export_tool_suite(suite_id: str, user: dict = Depends(auth.get_current_user)):
+    """Export a tool suite as a downloadable JSON file (matches import format)."""
+    suite = await db.get_tool_suite(suite_id, user["id"])
+    if not suite:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    tools = json.loads(suite["tools_json"]) if suite.get("tools_json") else []
+    cases = await db.get_test_cases(suite_id)
+    test_cases = []
+    for c in cases:
+        tc = {"prompt": c["prompt"]}
+        et = _parse_expected_tool(c["expected_tool"])
+        if et is not None:
+            tc["expected_tool"] = et
+        if c.get("expected_params"):
+            try:
+                tc["expected_params"] = json.loads(c["expected_params"]) if isinstance(c["expected_params"], str) else c["expected_params"]
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if c.get("param_scoring") and c["param_scoring"] != "exact":
+            tc["param_scoring"] = c["param_scoring"]
+        if c.get("multi_turn_config"):
+            try:
+                mt = json.loads(c["multi_turn_config"]) if isinstance(c["multi_turn_config"], str) else c["multi_turn_config"]
+                if mt.get("multi_turn"):
+                    tc["multi_turn"] = True
+                    for k in ("max_rounds", "mock_responses", "valid_prerequisites", "optimal_hops"):
+                        if k in mt:
+                            tc[k] = mt[k]
+            except (json.JSONDecodeError, TypeError):
+                pass
+        test_cases.append(tc)
+    export_data = {
+        "name": suite.get("name", "Untitled"),
+        "description": suite.get("description", ""),
+        "tools": tools,
+        "test_cases": test_cases,
+    }
+    slug = re.sub(r'[^a-z0-9]+', '-', (suite.get("name") or "suite").lower()).strip('-')[:40]
+    headers = {"Content-Disposition": f'attachment; filename=suite-{slug}.json'}
+    return JSONResponse(content=export_data, headers=headers)
+
+
+@app.get("/api/tool-eval/import/example")
+async def tool_eval_import_example():
+    """Return an example JSON template for suite import."""
+    example = {
+        "name": "Weather API Suite",
+        "description": "Tests weather-related tool calling",
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get current weather for a city",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "city": {"type": "string", "description": "City name"},
+                            "units": {"type": "string", "enum": ["celsius", "fahrenheit"], "description": "Temperature units"}
+                        },
+                        "required": ["city"]
+                    }
+                }
+            }
+        ],
+        "test_cases": [
+            {
+                "prompt": "What's the weather in Paris?",
+                "expected_tool": "get_weather",
+                "expected_params": {"city": "Paris"}
+            },
+            {
+                "prompt": "Check temperature in Tokyo in fahrenheit",
+                "expected_tool": "get_weather",
+                "expected_params": {"city": "Tokyo", "units": "fahrenheit"}
+            },
+            {
+                "prompt": "Tell me a joke",
+                "expected_tool": None,
+                "expected_params": None
+            }
+        ]
+    }
+    headers = {"Content-Disposition": 'attachment; filename=suite-example.json'}
+    return JSONResponse(content=example, headers=headers)
+
+
 # --- Test Cases ---
 
 @app.get("/api/tool-suites/{suite_id}/cases")

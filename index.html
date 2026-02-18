@@ -1465,6 +1465,10 @@
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
               Import Suite
             </button>
+            <button onclick="teDownloadImportExample()" class="px-4 py-2 rounded-sm text-xs flex items-center gap-2 border border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-500 transition-colors" title="Download example JSON template for import">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+              Example JSON
+            </button>
             <button onclick="mcpOpenModal()" class="px-4 py-2 rounded-sm text-xs flex items-center gap-2 border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors">
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
               Import from MCP
@@ -1522,10 +1526,13 @@
             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
             Back to Suites
           </button>
-          <button onclick="teStartRunFromEditor()" class="run-btn px-4 py-2 rounded-sm text-xs flex items-center gap-2">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-            Run Eval
-          </button>
+          <div class="flex items-center gap-2">
+            <button onclick="teExportSuite(teCurrentSuite?.id)" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1.5 rounded-sm transition-colors" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);" onmouseover="this.style.borderColor='rgba(191,255,0,0.5)'" onmouseout="this.style.borderColor='rgba(191,255,0,0.2)'">Export Suite</button>
+            <button onclick="teStartRunFromEditor()" class="run-btn px-4 py-2 rounded-sm text-xs flex items-center gap-2">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+              Run Eval
+            </button>
+          </div>
         </div>
 
         <!-- Suite Name + Description -->
@@ -8732,7 +8739,8 @@
           <td class="px-5 py-3 text-center font-mono text-xs text-zinc-500">${s.tool_count || 0}</td>
           <td class="px-5 py-3 text-center font-mono text-xs text-zinc-500">${s.test_case_count || 0}</td>
           <td class="px-5 py-3 text-right text-xs text-zinc-600 font-body">${updated}</td>
-          <td class="px-5 py-3 text-right">
+          <td class="px-5 py-3 text-right flex items-center justify-end gap-3">
+            <button onclick="teExportSuite('${s.id}')" class="text-zinc-700 hover:text-emerald-400 transition-colors text-xs font-display tracking-wider uppercase">Export</button>
             <button onclick="teDeleteSuite('${s.id}','${_teEsc(s.name)}')" class="text-zinc-700 hover:text-red-400 transition-colors text-xs font-display tracking-wider uppercase">Delete</button>
           </td>
         </tr>`;
@@ -8799,6 +8807,42 @@
         }
       };
       input.click();
+    }
+
+    async function teExportSuite(suiteId) {
+      try {
+        const res = await apiFetch(`/api/tool-suites/${suiteId}/export`);
+        if (!res.ok) { showToast('Failed to export suite', 'error'); return; }
+        const blob = await res.blob();
+        const cd = res.headers.get('content-disposition') || '';
+        const match = cd.match(/filename=([^\s;]+)/);
+        const filename = match ? match[1] : `suite-${suiteId.slice(0,8)}.json`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast('Suite exported', 'success');
+      } catch (e) {
+        showToast('Failed to export suite', 'error');
+      }
+    }
+
+    async function teDownloadImportExample() {
+      try {
+        const res = await apiFetch('/api/tool-eval/import/example');
+        if (!res.ok) { showToast('Failed to download example', 'error'); return; }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'suite-example.json';
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        showToast('Failed to download example', 'error');
+      }
     }
 
     function teDeleteSuite(id, name) {
