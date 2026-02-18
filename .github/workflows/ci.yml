@@ -37,7 +37,7 @@ jobs:
         run: uv run pytest tests/ --ignore=tests/test_e2e_smoke.py -x -q
 
       - name: Run Level 2 tests (E2E smoke, needs ZAI_API_KEY)
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && secrets.ZAI_API_KEY != ''
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
           JWT_SECRET: test-ci-secret
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
