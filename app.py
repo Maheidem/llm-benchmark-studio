@@ -375,7 +375,10 @@ def _record_rate_limit(user_id: str):
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     """Serve the dashboard UI."""
-    return (_dir / "index.html").read_text()
+    return HTMLResponse(
+        content=(_dir / "index.html").read_text(),
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
 
 
 @app.get("/healthz")
