@@ -1278,6 +1278,15 @@
       <!-- System Health -->
       <div id="adminSystemHealth" class="card rounded-md p-5 mb-6"></div>
 
+      <!-- Active Processes -->
+      <div class="card rounded-md p-5 mb-6">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase">Active Processes</h3>
+          <button onclick="loadAdminJobs()" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 transition-colors">Refresh</button>
+        </div>
+        <div id="adminJobsTable" class="overflow-x-auto"></div>
+      </div>
+
       <!-- User Management -->
       <div class="card rounded-md p-5 mb-6">
         <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase mb-4">User Management</h3>
@@ -2075,6 +2084,7 @@
               </div>
               <div class="flex items-center gap-4">
                 <span id="ptProgressCount" class="text-xs font-mono text-zinc-600">0/0</span>
+                <span id="ptETA" class="text-xs font-body text-zinc-500"></span>
                 <button id="ptCancelBtn" onclick="ptCancelTune()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm transition-colors" style="color:var(--coral);border:1px solid rgba(255,59,92,0.3);" onmouseover="this.style.borderColor='rgba(255,59,92,0.6)'" onmouseout="this.style.borderColor='rgba(255,59,92,0.3)'">Cancel</button>
               </div>
             </div>
@@ -2875,7 +2885,9 @@
         : `Running &middot; ${pct}%`;
       const timeAgo = _notifTimeAgo(job.created_at);
 
-      return `<div class="notif-item">
+      // Make running items clickable to navigate to their view
+      const clickHandler = `onclick="notifNavigateToRunning('${job.job_type}', '${job.id}')"`;
+      return `<div class="notif-item" ${clickHandler} style="cursor:pointer;">
         <div class="notif-icon ${job.job_type}">${icon}</div>
         <div class="notif-body">
           <div class="notif-title">${_escHtml(detail)}</div>
@@ -2912,7 +2924,36 @@
       </div>`;
     }
 
-    // ── Navigate to Result ──
+    // ── Navigate to Running Job ──
+    function notifNavigateToRunning(jobType, jobId) {
+      // Close dropdown first
+      _notifDropdownOpen = false;
+      document.getElementById('notifDropdown').classList.remove('open');
+
+      switch (jobType) {
+        case 'benchmark':
+          showTab('benchmark');
+          break;
+        case 'param_tune':
+          showTab('tool-eval');
+          // Reconnect to the running tune
+          if (_activeParamTuneRunId) {
+            ptViewHistoryRun(_activeParamTuneRunId);
+          } else {
+            // No tune_id yet — show history (it may be just queued/starting)
+            showToolEvalView('pt-history');
+          }
+          break;
+        case 'tool_eval':
+          showTab('tool-eval');
+          break;
+        default:
+          showTab('tool-eval');
+          break;
+      }
+    }
+
+    // ── Navigate to Completed Result ──
     function notifNavigateToResult(jobType, resultRef) {
       // Close dropdown first
       _notifDropdownOpen = false;
@@ -2933,7 +2974,12 @@
           break;
         case 'param_tune':
           showTab('tool-eval');
-          // TODO: navigate to param tune history
+          // Navigate to completed tune result
+          if (resultRef) {
+            ptViewHistoryRun(resultRef);
+          } else {
+            showToolEvalView('pt-history');
+          }
           break;
         case 'prompt_tune':
           showTab('tool-eval');
@@ -4496,7 +4542,7 @@
       ).join(' ');
 
       // Custom fields (anything not standard)
-      const stdKeys = new Set(['model_id','display_name','context_window','max_output_tokens','skip_params','input_cost_per_mtok','output_cost_per_mtok']);
+      const stdKeys = new Set(['model_id','display_name','context_window','max_output_tokens','skip_params','input_cost_per_mtok','output_cost_per_mtok','system_prompt']);
       const customs = Object.entries(m).filter(([k]) => !stdKeys.has(k));
       const customHtml = customs.map(([k,v]) =>
         `<div class="flex items-center gap-2">
@@ -4559,6 +4605,12 @@
             <span class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">Custom Fields</span>
             <div id="cf-${sid}" class="space-y-1">${customHtml || '<span class="text-[10px] text-zinc-700 font-body">none</span>'}</div>
             <button onclick="promptAddCustomField('${provKey}','${m.model_id}')" class="text-[10px] font-mono text-zinc-500 hover:text-zinc-300 mt-1 px-1.5 py-0.5 rounded-sm" style="border:1px solid var(--border-subtle)">+ add field</button>
+          </div>
+          <!-- System Prompt -->
+          <div class="mt-4 pt-3" style="border-top:1px solid var(--border-subtle)">
+            <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase block mb-1">System Prompt</label>
+            <p class="text-[10px] text-zinc-700 font-body mb-2">Custom system prompt prepended to all benchmarks and evals for this model. Leave empty for default behavior.</p>
+            <textarea id="sp-${sid}" rows="3" class="w-full px-3 py-2 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;resize:vertical;" placeholder="e.g. You are a helpful assistant. Always respond in JSON format.">${m.system_prompt ? m.system_prompt.replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''}</textarea>
           </div>
           <div id="save-status-${sid}" class="mt-2 text-[11px] font-body hidden"></div>
         </div>
@@ -4644,6 +4696,9 @@
       if (icpVal !== '' && icpVal != null) pricingFields.input_cost_per_mtok = parseFloat(icpVal);
       if (ocpVal !== '' && ocpVal != null) pricingFields.output_cost_per_mtok = parseFloat(ocpVal);
 
+      // Collect system prompt
+      const systemPromptVal = document.getElementById(`sp-${sid}`)?.value || '';
+
       const body = {
         provider_key: providerKey,
         model_id: modelId,
@@ -4652,6 +4707,7 @@
         context_window: parseInt(document.getElementById(`ctx-${sid}`)?.value) || null,
         max_output_tokens: parseInt(document.getElementById(`mot-${sid}`)?.value) || null,
         skip_params: currentSkipParams,
+        system_prompt: systemPromptVal || null,
         custom_fields: {
           ...(Object.keys(customs).length ? customs : {}),
           ...(Object.keys(pricingFields).length ? pricingFields : {}),
@@ -5489,7 +5545,12 @@
     const AUDIT_PAGE_SIZE = 50;
 
     async function loadAdminDashboard() {
-      await Promise.all([loadAdminStats(), loadAdminSystem(), loadAdminUsers(), loadAuditLog()]);
+      await Promise.all([loadAdminStats(), loadAdminSystem(), loadAdminJobs(), loadAdminUsers(), loadAuditLog()]);
+      // Auto-refresh active processes every 15s while admin tab is visible
+      if (_adminJobsInterval) clearInterval(_adminJobsInterval);
+      _adminJobsInterval = setInterval(() => {
+        if (!document.getElementById('view-admin')?.classList.contains('hidden')) loadAdminJobs();
+      }, 15000);
     }
 
     async function loadAdminStats() {
@@ -5562,6 +5623,66 @@
           </div>
         `;
       } catch {}
+    }
+
+    let _adminJobsInterval = null;
+
+    async function loadAdminJobs() {
+      const container = document.getElementById('adminJobsTable');
+      if (!container) return;
+      try {
+        const res = await apiFetch('/api/admin/jobs');
+        if (!res.ok) { container.innerHTML = '<p class="text-xs text-zinc-600 font-body">Failed to load.</p>'; return; }
+        const data = await res.json();
+        const jobs = data.jobs || [];
+        if (jobs.length === 0) {
+          container.innerHTML = '<p class="text-xs text-zinc-600 font-body py-3">No active processes.</p>';
+          return;
+        }
+        const typeLabels = { benchmark: 'Benchmark', tool_eval: 'Tool Eval', judge: 'Judge', judge_compare: 'Judge Compare', param_tune: 'Param Tuner', prompt_tune: 'Prompt Tuner', scheduled_benchmark: 'Scheduled' };
+        const statusColors = { running: '#38BDF8', pending: '#85858F', queued: '#85858F' };
+        let html = `<table class="w-full text-xs"><thead><tr style="border-bottom:1px solid var(--border-subtle)">
+          <th class="text-left px-3 py-2 text-[10px] font-display tracking-wider uppercase text-zinc-600">Type</th>
+          <th class="text-left px-3 py-2 text-[10px] font-display tracking-wider uppercase text-zinc-600">User</th>
+          <th class="text-center px-3 py-2 text-[10px] font-display tracking-wider uppercase text-zinc-600">Status</th>
+          <th class="text-right px-3 py-2 text-[10px] font-display tracking-wider uppercase text-zinc-600">Progress</th>
+          <th class="text-left px-3 py-2 text-[10px] font-display tracking-wider uppercase text-zinc-600">Detail</th>
+          <th class="text-left px-3 py-2 text-[10px] font-display tracking-wider uppercase text-zinc-600">Started</th>
+          <th class="text-right px-3 py-2 text-[10px] font-display tracking-wider uppercase text-zinc-600">Actions</th>
+        </tr></thead><tbody>`;
+        for (const j of jobs) {
+          const typeLabel = typeLabels[j.job_type] || j.job_type;
+          const sColor = statusColors[j.status] || '#85858F';
+          const started = j.started_at ? _notifTimeAgo(j.started_at) : (j.created_at ? _notifTimeAgo(j.created_at) : '-');
+          const detail = j.progress_detail || '-';
+          html += `<tr style="border-bottom:1px solid var(--border-subtle)">
+            <td class="px-3 py-2.5 font-body text-zinc-300">${typeLabel}</td>
+            <td class="px-3 py-2.5 font-mono text-zinc-500">${j.user_email || '-'}</td>
+            <td class="px-3 py-2.5 text-center text-[10px] font-display tracking-wider uppercase" style="color:${sColor}">${j.status}</td>
+            <td class="px-3 py-2.5 text-right font-mono text-zinc-400">${j.progress_pct || 0}%</td>
+            <td class="px-3 py-2.5 font-body text-zinc-500 max-w-[200px] truncate" title="${(detail || '').replace(/"/g, '&quot;')}">${detail}</td>
+            <td class="px-3 py-2.5 font-body text-zinc-500">${started}</td>
+            <td class="px-3 py-2.5 text-right">
+              <button onclick="adminCancelJob('${j.id}')" class="text-[10px] font-display tracking-wider uppercase" style="color:var(--coral);">Cancel</button>
+            </td>
+          </tr>`;
+        }
+        html += '</tbody></table>';
+        container.innerHTML = html;
+      } catch {
+        container.innerHTML = '<p class="text-xs text-zinc-600 font-body">Failed to load processes.</p>';
+      }
+    }
+
+    async function adminCancelJob(jobId) {
+      showModal('Cancel Process', 'Cancel this process? This cannot be undone.', async () => {
+        try {
+          const res = await apiFetch(`/api/admin/jobs/${jobId}/cancel`, { method: 'POST' });
+          if (!res.ok) { showToast('Failed to cancel', 'error'); return; }
+          showToast('Process cancelled', 'success');
+          await loadAdminJobs();
+        } catch { showToast('Failed to cancel', 'error'); }
+      }, { danger: true, confirmLabel: 'Cancel Process' });
     }
 
     async function loadAdminUsers() {
@@ -7051,7 +7172,7 @@
       const activeId = viewMap[view] || viewMap.suites;
       views.forEach(v => document.getElementById(v)?.classList.toggle('hidden', v !== activeId));
       if (view === 'run') { jgLoadDefaults(); }
-      if (view === 'pt-config') { ptLoadSuiteSelector(); ptRenderModelGrid(); _ptApplyDefaults(); ptPopulatePresetDropdown(); ptUpdatePreview(); }
+      if (view === 'pt-config') { ptLoadSuiteSelector(); ptRenderModelGrid(); _ptApplyDefaults(); ptPopulatePresetDropdown(); ptUpdatePreview(); _ptCheckRunningBanner(); }
       if (view === 'pt-history') { ptLoadHistory(); }
       if (view === 'prt-config') { prtLoadSuiteSelector(); prtRenderModelGrid(); prtPopulateMetaModel(); _prtApplyDefaults(); prtUpdateEstimate(); }
       if (view === 'prt-history') { prtLoadHistory(); }
@@ -7071,6 +7192,8 @@
     let ptTotalCombos = 0;
     let _ptSearchSpaceKeys = [];  // keys from the active search space, set on tune start
     let _ptDefaults = {};      // stored defaults from Phase 10 settings, applied on render
+    let _ptTuneStartTime = null;  // Date.now() when tune starts, for ETA calculation
+    let _ptEtaBaseCount = 0;      // combo count at start/reconnection, for accurate rate calc
 
     // --- Preset management (Phase 3) ---
     function _ptGetPresets() {
@@ -8150,6 +8273,39 @@
     }
 
     let _activeParamTuneJobId = null;
+    let _activeParamTuneRunId = null;  // tune run ID for reconnection/backfill
+    let _ptSeenCombos = new Set();     // dedup: "model_id:combo_index" keys
+
+    // Show a banner on pt-config if a tune is currently running
+    function _ptCheckRunningBanner() {
+      const existingBanner = document.getElementById('ptRunningBanner');
+      if (existingBanner) existingBanner.remove();
+
+      // Check if there's an active param tune job
+      if (!_activeParamTuneJobId) return;
+      const job = _jobStore[_activeParamTuneJobId];
+      if (!job || !['running','pending','queued'].includes(job.status)) return;
+
+      const configView = document.getElementById('pt-config-view');
+      if (!configView) return;
+
+      const banner = document.createElement('div');
+      banner.id = 'ptRunningBanner';
+      banner.className = 'mb-4 px-4 py-3 rounded-md text-sm font-body cursor-pointer';
+      banner.style.cssText = 'background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.25);color:#38BDF8;';
+      const pct = job.progress_pct || 0;
+      const detail = job.progress_detail || 'Running...';
+      banner.innerHTML = `<div class="flex items-center justify-between"><span>Tuning in progress (${pct}%) — ${detail}</span><span class="text-[10px] font-display tracking-wider uppercase">Click to view</span></div>`;
+      banner.onclick = () => {
+        if (_activeParamTuneRunId) {
+          ptViewHistoryRun(_activeParamTuneRunId);
+        } else {
+          // Try to find tune_id from job result_ref or load history
+          showToolEvalView('pt-history');
+        }
+      };
+      configView.prepend(banner);
+    }
 
     async function ptStartTune() {
       const suiteId = document.getElementById('ptSuiteSelect').value;
@@ -8179,6 +8335,9 @@
       document.getElementById('ptProgressBar').style.width = '0%';
       document.getElementById('ptProgressLabel').textContent = 'Submitting...';
       document.getElementById('ptProgressCount').textContent = '0/0';
+      _ptClearETA();
+      _activeParamTuneRunId = null;
+      _ptSeenCombos = new Set();
 
       // Build per-model search spaces if param_support config is available
       const perModelSpaces = ptBuildPerModelSearchSpaces();
@@ -8218,6 +8377,40 @@
       }
     }
 
+    // Format ETA seconds into human-readable string
+    function _ptFormatETA(seconds) {
+      if (!isFinite(seconds) || seconds < 0) return 'Estimating...';
+      if (seconds < 10) return 'Almost done...';
+      if (seconds < 60) return `~${Math.round(seconds)}s remaining`;
+      const m = Math.floor(seconds / 60);
+      const s = Math.round(seconds % 60);
+      return s > 0 ? `~${m}m ${s}s remaining` : `~${m}m remaining`;
+    }
+
+    // Update ETA display based on current progress
+    function _ptUpdateETA() {
+      const etaEl = document.getElementById('ptETA');
+      if (!etaEl) return;
+      const completed = ptResults.length - _ptEtaBaseCount;
+      if (!_ptTuneStartTime || completed < 3) {
+        etaEl.textContent = completed > 0 ? 'Estimating...' : '';
+        return;
+      }
+      const elapsed = (Date.now() - _ptTuneStartTime) / 1000;
+      const rate = completed / elapsed;
+      if (rate <= 0) { etaEl.textContent = 'Estimating...'; return; }
+      const remaining = (ptTotalCombos - ptResults.length) / rate;
+      etaEl.textContent = _ptFormatETA(remaining);
+    }
+
+    // Clear ETA display and reset tracking state
+    function _ptClearETA() {
+      _ptTuneStartTime = null;
+      _ptEtaBaseCount = 0;
+      const etaEl = document.getElementById('ptETA');
+      if (etaEl) etaEl.textContent = '';
+    }
+
     // WebSocket event bridge for inline param tuner progress
     function _onParamTuneJobEvent(msg) {
       if (!_activeParamTuneJobId || msg.job_id !== _activeParamTuneJobId) return;
@@ -8236,19 +8429,28 @@
 
         case 'tune_start':
           ptTotalCombos = msg.total_combos || 0;
+          _activeParamTuneRunId = msg.tune_id || null;
+          _ptSeenCombos = new Set();
+          _ptTuneStartTime = Date.now();
+          _ptEtaBaseCount = 0;
           document.getElementById('ptProgressLabel').textContent = `Tuning ${msg.models?.length || 0} model(s), ${ptTotalCombos} combinations`;
           document.getElementById('ptProgressCount').textContent = `0/${ptTotalCombos}`;
           break;
 
         case 'combo_result': {
           const evt = msg.data || msg;
+          // Dedup: skip if already backfilled from DB
+          const dedupKey = `${evt.model_id || ''}:${evt.combo_index ?? ''}`;
+          if (_ptSeenCombos.has(dedupKey)) break;
+          _ptSeenCombos.add(dedupKey);
           ptResults.push(evt);
           if (evt.overall_score > ptBestScore) {
             ptBestScore = evt.overall_score;
             ptBestConfig = { ...evt.config, model_id: evt.model_id, model_name: evt.model_name };
           }
-          // Update progress count
+          // Update progress count and ETA
           document.getElementById('ptProgressCount').textContent = `${ptResults.length}/${ptTotalCombos}`;
+          _ptUpdateETA();
           ptRenderResultsTable();
           ptUpdateBestCard();
           break;
@@ -8261,6 +8463,9 @@
           ptUpdateBestCard();
           ptRenderResultsTable();
           _activeParamTuneJobId = null;
+          _activeParamTuneRunId = null;
+          _ptSeenCombos = new Set();
+          _ptClearETA();
           _ptResetStartBtn();
           showToast('Tuning complete!', 'success');
           break;
@@ -8272,6 +8477,9 @@
             document.getElementById('ptApplyBestBtn').classList.remove('hidden');
             ptRenderResultsTable();
             _activeParamTuneJobId = null;
+            _activeParamTuneRunId = null;
+            _ptSeenCombos = new Set();
+            _ptClearETA();
             _ptResetStartBtn();
             showToast('Tuning complete!', 'success');
           }
@@ -8280,6 +8488,9 @@
         case 'job_failed':
           document.getElementById('ptProgressSection').classList.add('hidden');
           _activeParamTuneJobId = null;
+          _activeParamTuneRunId = null;
+          _ptSeenCombos = new Set();
+          _ptClearETA();
           _ptResetStartBtn();
           showToast(msg.error || msg.error_msg || 'Tuning failed', 'error');
           break;
@@ -8287,6 +8498,9 @@
         case 'job_cancelled':
           document.getElementById('ptProgressSection').classList.add('hidden');
           _activeParamTuneJobId = null;
+          _activeParamTuneRunId = null;
+          _ptSeenCombos = new Set();
+          _ptClearETA();
           _ptResetStartBtn();
           showToast('Tuning cancelled. Partial results saved.', '');
           break;
@@ -8567,7 +8781,20 @@
         const models = r.models_json ? (typeof r.models_json === 'string' ? JSON.parse(r.models_json) : r.models_json) : [];
         const modelStr = models.length <= 2 ? models.join(', ') : models.length + ' models';
         const scoreColor = r.best_score ? _ptScoreColor(r.best_score * 100) : '#85858F';
-        const statusColor = r.status === 'completed' ? 'var(--lime)' : r.status === 'cancelled' ? '#EAB308' : r.status === 'interrupted' ? '#FB923C' : r.status === 'error' ? 'var(--coral)' : '#85858F';
+        const statusColor = r.status === 'completed' ? 'var(--lime)' : r.status === 'cancelled' ? '#EAB308' : r.status === 'interrupted' ? '#FB923C' : r.status === 'error' ? 'var(--coral)' : r.status === 'running' ? '#38BDF8' : '#85858F';
+        const isRunning = r.status === 'running';
+        const isFinished = ['completed','cancelled','interrupted','error'].includes(r.status);
+        // Build action buttons based on status
+        let actions = `<button onclick="ptViewHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 mr-2">View</button>`;
+        if (isRunning) {
+          actions += `<button onclick="ptStopHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase mr-2" style="color:#EAB308;">Stop</button>`;
+        }
+        if (isFinished) {
+          actions += `<button onclick="ptRerunHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase mr-2" style="color:#22D3EE;">Re-run</button>`;
+        }
+        if (!isRunning) {
+          actions += `<button onclick="ptDeleteHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-700 hover:text-red-400">Delete</button>`;
+        }
         return `<tr>
           <td class="px-5 py-3 text-xs text-zinc-500 font-body">${_teTimeAgo(r.timestamp)}</td>
           <td class="px-5 py-3 text-sm font-body text-zinc-300">${_teEsc(r.suite_name || '')}</td>
@@ -8575,10 +8802,7 @@
           <td class="px-5 py-3 text-right text-xs font-mono text-zinc-400">${r.completed_combos || 0}/${r.total_combos || 0}</td>
           <td class="px-5 py-3 text-right text-sm font-mono font-bold" style="color:${scoreColor}">${r.best_score ? ((r.best_score * 100).toFixed(1) + '%') : '-'}</td>
           <td class="px-5 py-3 text-center text-[10px] font-display tracking-wider uppercase" style="color:${statusColor}">${r.status || ''}</td>
-          <td class="px-5 py-3 text-right">
-            <button onclick="ptViewHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 mr-2">View</button>
-            <button onclick="ptDeleteHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-700 hover:text-red-400">Delete</button>
-          </td>
+          <td class="px-5 py-3 text-right">${actions}</td>
         </tr>`;
       }).join('');
     }
@@ -8591,6 +8815,7 @@
         ptResults = run.results_json ? (typeof run.results_json === 'string' ? JSON.parse(run.results_json) : run.results_json) : [];
         ptBestConfig = typeof run.best_config_json === 'string' ? JSON.parse(run.best_config_json) : run.best_config_json;
         ptBestScore = run.best_score || 0;
+        ptTotalCombos = run.total_combos || 0;
         // Restore search space keys for column rendering
         try {
           const ss = run.search_space_json ? (typeof run.search_space_json === 'string' ? JSON.parse(run.search_space_json) : run.search_space_json) : {};
@@ -8610,26 +8835,79 @@
           }
         } catch { _ptSearchSpaceKeys = []; }
 
-        showToolEvalView('pt-run');
-        document.getElementById('ptProgressSection').classList.add('hidden');
-        document.getElementById('ptResultsSection').classList.remove('hidden');
-        document.getElementById('ptApplyBestBtn').classList.remove('hidden');
-
-        // Show interrupted banner if applicable
-        const ptInterruptedBanner = document.getElementById('ptInterruptedBanner');
-        if (ptInterruptedBanner) ptInterruptedBanner.remove();
-        if (run.status === 'interrupted') {
-          const banner = document.createElement('div');
-          banner.id = 'ptInterruptedBanner';
-          banner.className = 'mb-4 px-4 py-3 rounded-md text-sm font-body';
-          banner.style.cssText = 'background:rgba(251,146,60,0.08);border:1px solid rgba(251,146,60,0.25);color:#FB923C;';
-          if (ptResults.length > 0) {
-            const total = run.total_combos || '?';
-            banner.textContent = `This run was interrupted. Showing ${ptResults.length} of ${total} partial results.`;
+        // Check if this tune is still running — reconnect to live progress
+        const isRunning = run.status === 'running';
+        let reconnectedJobId = null;
+        if (isRunning) {
+          // Find the matching job in _jobStore (or use _activeParamTuneJobId)
+          if (_activeParamTuneJobId) {
+            reconnectedJobId = _activeParamTuneJobId;
           } else {
-            banner.textContent = 'This run was interrupted before any results were saved.';
+            // Scan _jobStore for a running param_tune job
+            const ptJobs = Object.values(_jobStore).filter(
+              j => j.job_type === 'param_tune' && (j.status === 'running' || j.status === 'pending' || j.status === 'queued')
+            );
+            if (ptJobs.length === 1) reconnectedJobId = ptJobs[0].id;
           }
-          document.getElementById('ptResultsSection').insertAdjacentElement('beforebegin', banner);
+        }
+
+        showToolEvalView('pt-run');
+
+        if (isRunning && reconnectedJobId) {
+          // --- RECONNECTION MODE ---
+          // Backfill dedup set from existing results
+          _ptSeenCombos = new Set();
+          for (const r of ptResults) {
+            _ptSeenCombos.add(`${r.model_id || ''}:${r.combo_index ?? ''}`);
+          }
+          // Reconnect the WS bridge
+          _activeParamTuneJobId = reconnectedJobId;
+          _activeParamTuneRunId = tuneId;
+
+          // Show progress section with backfilled state
+          document.getElementById('ptProgressSection').classList.remove('hidden');
+          document.getElementById('ptResultsSection').classList.remove('hidden');
+          document.getElementById('ptApplyBestBtn').classList.add('hidden');
+          const pct = ptTotalCombos > 0 ? Math.round((ptResults.length / ptTotalCombos) * 100) : 0;
+          document.getElementById('ptProgressBar').style.width = pct + '%';
+          document.getElementById('ptProgressLabel').textContent = `Reconnected — tuning in progress`;
+          document.getElementById('ptProgressCount').textContent = `${ptResults.length}/${ptTotalCombos}`;
+
+          // Start ETA from reconnection point
+          _ptTuneStartTime = Date.now();
+          _ptEtaBaseCount = ptResults.length;
+          const etaEl = document.getElementById('ptETA');
+          if (etaEl) etaEl.textContent = ptResults.length > 0 ? 'Estimating...' : '';
+
+          // Remove any stale banners
+          const ptInterruptedBanner = document.getElementById('ptInterruptedBanner');
+          if (ptInterruptedBanner) ptInterruptedBanner.remove();
+
+          showToast('Reconnected to running tune', 'success');
+        } else {
+          // --- NORMAL HISTORY VIEW ---
+          document.getElementById('ptProgressSection').classList.add('hidden');
+          document.getElementById('ptResultsSection').classList.remove('hidden');
+          document.getElementById('ptApplyBestBtn').classList.remove('hidden');
+          _activeParamTuneRunId = null;
+          _ptSeenCombos = new Set();
+
+          // Show interrupted banner if applicable
+          const ptInterruptedBanner = document.getElementById('ptInterruptedBanner');
+          if (ptInterruptedBanner) ptInterruptedBanner.remove();
+          if (run.status === 'interrupted') {
+            const banner = document.createElement('div');
+            banner.id = 'ptInterruptedBanner';
+            banner.className = 'mb-4 px-4 py-3 rounded-md text-sm font-body';
+            banner.style.cssText = 'background:rgba(251,146,60,0.08);border:1px solid rgba(251,146,60,0.25);color:#FB923C;';
+            if (ptResults.length > 0) {
+              const total = run.total_combos || '?';
+              banner.textContent = `This run was interrupted. Showing ${ptResults.length} of ${total} partial results.`;
+            } else {
+              banner.textContent = 'This run was interrupted before any results were saved.';
+            }
+            document.getElementById('ptResultsSection').insertAdjacentElement('beforebegin', banner);
+          }
         }
 
         ptUpdateBestCard();
@@ -8648,6 +8926,90 @@
           await ptLoadHistory();
         } catch { showToast('Failed to delete', 'error'); }
       }, { danger: true, confirmLabel: 'Delete' });
+    }
+
+    function ptStopHistoryRun(tuneId) {
+      // Find the job_id for this running tune — check _activeParamTuneJobId first,
+      // then scan _jobStore for a running param_tune job
+      let jobId = _activeParamTuneJobId;
+      if (!jobId) {
+        const paramTuneJobs = Object.values(_jobStore).filter(
+          j => j.job_type === 'param_tune' && (j.status === 'running' || j.status === 'pending' || j.status === 'queued')
+        );
+        if (paramTuneJobs.length === 1) jobId = paramTuneJobs[0].id;
+      }
+      if (jobId) {
+        notifCancelJob(jobId);
+        showToast('Stop requested', '');
+        // Refresh history after a short delay to reflect status change
+        setTimeout(() => ptLoadHistory(), 2000);
+      } else {
+        // Fallback: use legacy cancel endpoint
+        apiFetch('/api/tool-eval/param-tune/cancel', { method: 'POST' })
+          .then(() => {
+            showToast('Stop requested', '');
+            setTimeout(() => ptLoadHistory(), 2000);
+          })
+          .catch(() => showToast('Failed to stop', 'error'));
+      }
+    }
+
+    async function ptRerunHistoryRun(tuneId) {
+      try {
+        const res = await apiFetch(`/api/tool-eval/param-tune/history/${tuneId}`);
+        if (!res.ok) { showToast('Failed to load run for re-run', 'error'); return; }
+        const run = await res.json();
+        const models = run.models_json ? (typeof run.models_json === 'string' ? JSON.parse(run.models_json) : run.models_json) : [];
+        const searchSpace = run.search_space_json ? (typeof run.search_space_json === 'string' ? JSON.parse(run.search_space_json) : run.search_space_json) : null;
+        const suiteId = run.suite_id;
+
+        if (!suiteId || models.length === 0) {
+          showToast('Incomplete run data — cannot re-run', 'error');
+          return;
+        }
+
+        // Re-submit directly to the API with the same parameters
+        const body = { suite_id: suiteId, models: models, search_space: searchSpace };
+
+        // Reset UI for new run
+        ptResults = [];
+        ptBestConfig = null;
+        ptBestScore = 0;
+        _ptSearchSpaceKeys = searchSpace ? Object.keys(searchSpace) : [];
+        showToolEvalView('pt-run');
+        document.getElementById('ptProgressSection').classList.remove('hidden');
+        document.getElementById('ptBestCard').classList.add('hidden');
+        document.getElementById('ptResultsSection').classList.remove('hidden');
+        document.getElementById('ptApplyBestBtn').classList.add('hidden');
+        document.getElementById('ptResultsHead').innerHTML = '';
+        document.getElementById('ptResultsBody').innerHTML = '';
+        const _adjBanner = document.getElementById('ptAdjustmentsSummary');
+        if (_adjBanner) { _adjBanner.classList.add('hidden'); _adjBanner.innerHTML = ''; }
+        document.getElementById('ptProgressBar').style.width = '0%';
+        document.getElementById('ptProgressLabel').textContent = 'Re-running...';
+        document.getElementById('ptProgressCount').textContent = '0/0';
+        _ptClearETA();
+
+        const submitRes = await apiFetch('/api/tool-eval/param-tune', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        if (submitRes.status === 409) { showToast('A benchmark or eval is already running', 'error'); return; }
+        if (!submitRes.ok) {
+          const err = await submitRes.json().catch(() => ({}));
+          showToast(err.error || `Re-run failed (${submitRes.status})`, 'error');
+          return;
+        }
+
+        const data = await submitRes.json();
+        _activeParamTuneJobId = data.job_id;
+        document.getElementById('ptProgressLabel').textContent = 'Re-run queued...';
+        showToast('Re-run submitted', 'success');
+      } catch (e) {
+        showToast('Re-run failed: ' + (e.message || 'unknown'), 'error');
+      }
     }
 
     function _ptResetStartBtn() {

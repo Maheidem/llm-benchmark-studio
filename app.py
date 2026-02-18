@@ -1190,6 +1190,14 @@ async def update_model_config(request: Request, user: dict = Depends(auth.get_cu
                     else:
                         model.pop("skip_params", None)
 
+                # System prompt (empty string or null clears)
+                if "system_prompt" in body:
+                    sp_val = body["system_prompt"]
+                    if sp_val and isinstance(sp_val, str) and sp_val.strip():
+                        model["system_prompt"] = sp_val.strip()
+                    else:
+                        model.pop("system_prompt", None)
+
                 # Custom fields (merge; null deletes)
                 if "custom_fields" in body and isinstance(body["custom_fields"], dict):
                     standard = {"id", "display_name", "context_window", "max_output_tokens", "skip_params"}
@@ -2867,10 +2875,15 @@ async def run_single_eval(
         target, provider_params=pp_copy, temperature=temperature,
     )
 
-    # Build messages (optional system prompt for prompt tuner)
+    # Build messages: per-model system_prompt (from config) + explicit system_prompt (from prompt tuner)
     messages = []
+    combined_system = ""
+    if target.system_prompt:
+        combined_system = target.system_prompt
     if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
+        combined_system = (combined_system + "\n\n" + system_prompt) if combined_system else system_prompt
+    if combined_system:
+        messages.append({"role": "system", "content": combined_system})
     messages.append({"role": "user", "content": test_case["prompt"]})
 
     kwargs = {
@@ -3035,7 +3048,11 @@ async def run_multi_turn_eval(
         "raw_exchanges": [],
     }
 
-    messages = [{"role": "user", "content": test_case["prompt"]}]
+    # Build messages: per-model system_prompt prepended if configured
+    messages = []
+    if target.system_prompt:
+        messages.append({"role": "system", "content": target.system_prompt})
+    messages.append({"role": "user", "content": test_case["prompt"]})
 
     # Build validated+clamped params via provider_params module
     pp_copy = dict(provider_params) if provider_params else None
@@ -3676,10 +3693,36 @@ async def _param_tune_handler(job_id: str, params: dict, cancel_event, progress_
             if isinstance(ss, dict) and ss:
                 per_model_combos[mid] = _expand_search_space(ss)
         combos = _expand_search_space(search_space) if search_space else [{}]
-        total_combos = sum(len(per_model_combos.get(t.model_id, combos)) for t in targets)
     else:
         combos = _expand_search_space(search_space)
-        total_combos = len(combos) * len(targets)
+
+    # Pre-validate and deduplicate combos per target.
+    # validate_params() clamps/drops params, so many raw combos become identical
+    # after validation.  We dedup here so total_combos matches reality.
+    # Each entry stores (original_combo, resolved_combo, adjustments).
+    validated_target_combos: dict[str, list[tuple[dict, dict, list[dict]]]] = {}
+    for t in targets:
+        raw_combos = per_model_combos.get(t.model_id, combos)
+        prov_key = identify_provider(t.model_id, getattr(t, "provider_key", None))
+        seen: set[tuple] = set()
+        unique: list[tuple[dict, dict, list[dict]]] = []
+        for combo in raw_combos:
+            # Build the same params_to_check that run_provider would
+            temp = float(combo.get("temperature", 0.0))
+            pp = {k: v for k, v in combo.items() if k not in ("temperature", "tool_choice", "max_tokens")}
+            params_to_check = {"temperature": temp, **pp}
+            validation = validate_params(prov_key, t.model_id, params_to_check)
+            resolved = validation["resolved_params"]
+            adjustments = validation.get("adjustments", [])
+            # Dedup key: sorted tuple of resolved params + tool_choice (which isn't validated)
+            tc = combo.get("tool_choice", "required")
+            dedup_key = (tc,) + tuple(sorted(resolved.items()))
+            if dedup_key not in seen:
+                seen.add(dedup_key)
+                unique.append((combo, resolved, adjustments))
+        validated_target_combos[t.model_id] = unique
+
+    total_combos = sum(len(validated_target_combos.get(t.model_id, [])) for t in targets)
 
     # Inject per-user API keys
     user_keys_cache = {}
@@ -3728,29 +3771,20 @@ async def _param_tune_handler(job_id: str, params: dict, cancel_event, progress_
     async def run_provider(prov_targets):
         """Run all combos for all models in this provider group."""
         for target in prov_targets:
-            model_combos = per_model_combos.get(target.model_id, combos)
-            for combo_idx, combo in enumerate(model_combos):
+            target_combos = validated_target_combos.get(target.model_id, [])
+            for combo_idx, (combo, resolved, combo_adjustments) in enumerate(target_combos):
                 if cancel_event.is_set():
                     return
 
-                # Extract combo params
-                temp = float(combo.get("temperature", 0.0))
+                # Extract combo params (use resolved values from pre-validation)
+                temp = float(resolved.get("temperature", combo.get("temperature", 0.0)))
                 tc = combo.get("tool_choice", "required")
 
-                # Build provider_params from combo (tier2 params)
+                # Build provider_params from resolved (tier2 params, already validated)
                 pp = {}
-                for k, v in combo.items():
+                for k, v in resolved.items():
                     if k not in ("temperature", "tool_choice", "max_tokens"):
                         pp[k] = v
-
-                # Track adjustments from conflict resolution
-                params_to_check = {"temperature": temp, **pp}
-                prov_key = identify_provider(
-                    target.model_id,
-                    getattr(target, "provider_key", None),
-                )
-                validation = validate_params(prov_key, target.model_id, params_to_check)
-                combo_adjustments = validation.get("adjustments", [])
 
                 # Run all test cases for this combo
                 case_results = []
@@ -5835,7 +5869,14 @@ async def async_run_single(
     result = RunResult(target=target, context_tokens=context_tokens)
 
     messages = []
-    if context_tokens > 0:
+    # Per-model system prompt (prepended before context text)
+    if target.system_prompt:
+        if context_tokens > 0:
+            context_text = generate_context_text(context_tokens)
+            messages.append({"role": "system", "content": target.system_prompt + "\n\n" + context_text})
+        else:
+            messages.append({"role": "system", "content": target.system_prompt})
+    elif context_tokens > 0:
         context_text = generate_context_text(context_tokens)
         messages.append({"role": "system", "content": context_text})
     messages.append({"role": "user", "content": prompt})

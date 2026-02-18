@@ -56,6 +56,7 @@ class Target:
     provider_key: Optional[str] = None     # config key (e.g. "openai")
     input_cost_per_mtok: Optional[float] = None   # custom $/1M input tokens
     output_cost_per_mtok: Optional[float] = None  # custom $/1M output tokens
+    system_prompt: Optional[str] = None            # per-model system prompt (prepended to all requests)
 
 
 @dataclass
@@ -230,6 +231,7 @@ def build_targets(
                     provider_key=prov_key,
                     input_cost_per_mtok=model.get("input_cost_per_mtok"),
                     output_cost_per_mtok=model.get("output_cost_per_mtok"),
+                    system_prompt=model.get("system_prompt"),
                 )
             )
 
@@ -377,7 +379,14 @@ def run_single(
     result = RunResult(target=target, context_tokens=context_tokens)
 
     messages = []
-    if context_tokens > 0:
+    # Per-model system prompt (prepended before context text)
+    if target.system_prompt:
+        if context_tokens > 0:
+            context_text = generate_context_text(context_tokens)
+            messages.append({"role": "system", "content": target.system_prompt + "\n\n" + context_text})
+        else:
+            messages.append({"role": "system", "content": target.system_prompt})
+    elif context_tokens > 0:
         context_text = generate_context_text(context_tokens)
         messages.append({"role": "system", "content": context_text})
     messages.append({"role": "user", "content": prompt})
