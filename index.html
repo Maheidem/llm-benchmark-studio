@@ -4904,6 +4904,7 @@
 
       try {
         const res = await apiFetch('/api/history');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const history = data.runs || [];
 
@@ -4966,6 +4967,7 @@
           `;
         }).join('');
       } catch (e) {
+        console.error('[loadHistory]', e);
         container.innerHTML = '<p class="text-red-400 text-sm font-body">Failed to load history.</p>';
       }
     }

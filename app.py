@@ -1814,7 +1814,10 @@ async def get_history(user: dict = Depends(auth.get_current_user)):
     # Parse results_json back to objects for the frontend
     for run in runs:
         if isinstance(run.get("results_json"), str):
-            run["results"] = json.loads(run["results_json"])
+            try:
+                run["results"] = json.loads(run["results_json"])
+            except (json.JSONDecodeError, TypeError):
+                run["results"] = []
             del run["results_json"]
         if isinstance(run.get("context_tiers"), str):
             try:
@@ -1831,7 +1834,10 @@ async def get_history_run(run_id: str, user: dict = Depends(auth.get_current_use
     if not run:
         return JSONResponse({"error": "Run not found"}, status_code=404)
     if isinstance(run.get("results_json"), str):
-        run["results"] = json.loads(run["results_json"])
+        try:
+            run["results"] = json.loads(run["results_json"])
+        except (json.JSONDecodeError, TypeError):
+            run["results"] = []
         del run["results_json"]
     if isinstance(run.get("context_tiers"), str):
         try:
@@ -2529,9 +2535,20 @@ async def run_single_eval(
             result["actual_tool"] = None
             result["actual_params"] = None
 
-        # Fallback: some models (especially local LLMs) return tool calls as
-        # JSON text in message.content instead of proper tool_calls format.
-        if not result.get("actual_tool") and message.content:
+        # Normalize: some local LLMs stuff a full JSON object into function.name
+        # (e.g. '{"name":"get_time","arguments":{}}' instead of just 'get_time').
+        # Also handles models that return tool calls as text in message.content.
+        _raw_tool = result.get("actual_tool")
+        if _raw_tool and _raw_tool.strip().startswith("{"):
+            try:
+                parsed = json.loads(_raw_tool)
+                if "name" in parsed:
+                    result["actual_tool"] = parsed["name"]
+                    if not result.get("actual_params") and (parsed.get("arguments") or parsed.get("parameters")):
+                        result["actual_params"] = parsed.get("arguments") or parsed.get("parameters")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        elif not _raw_tool and message.content:
             try:
                 content = message.content.strip()
                 start_idx = content.find('{')
@@ -2542,7 +2559,7 @@ async def run_single_eval(
                         result["actual_tool"] = parsed["name"]
                         result["actual_params"] = parsed.get("arguments") or parsed.get("parameters") or {}
             except Exception:
-                pass  # Best effort — leave actual_tool as None
+                pass
 
         result["latency_ms"] = round(latency_ms)
 
