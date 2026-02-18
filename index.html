@@ -974,8 +974,8 @@
           <div id="progressSkipped" class="mt-3"></div>
         </div>
         <!-- Error banner for SSE issues -->
-        <div id="sseBanner" class="hidden error-banner mt-3">
-          <span id="sseBannerMsg">Connection lost</span>
+        <div id="sseBanner" class="hidden error-banner mt-3" style="flex-direction:column;align-items:flex-start;gap:8px;">
+          <div id="sseBannerMsg" class="font-mono text-xs" style="word-break:break-word;width:100%;cursor:pointer;" onclick="navigator.clipboard.writeText(this.textContent).then(()=>showToast('Error copied','success'))" title="Click to copy error">Connection lost</div>
           <button onclick="retryBenchmark()">Retry</button>
         </div>
       </div>
@@ -3491,7 +3491,8 @@
         }));
         document.getElementById('resultsSection').classList.remove('hidden');
         if (currentResults.length === 0 || currentResults.every(r => !r.success)) {
-          document.getElementById('statCards').innerHTML = `<div class="col-span-full error-banner">All benchmarks failed. Check your API keys and model configuration.</div>`;
+          const failedErrors = currentResults.filter(r => !r.success && r.error).map(r => `<div class="text-[11px] font-mono mt-1" style="color:#FCA5A5;word-break:break-word;cursor:pointer;" onclick="navigator.clipboard.writeText(this.textContent).then(()=>showToast('Copied','success'))" title="Click to copy">${r.provider}/${r.model}: ${r.error}</div>`);
+          document.getElementById('statCards').innerHTML = `<div class="col-span-full error-banner" style="flex-direction:column;align-items:flex-start;"><div>All benchmarks failed. Check your API keys and model configuration.</div>${failedErrors.length > 0 ? '<div class="w-full mt-2 pt-2" style="border-top:1px solid rgba(255,59,92,0.2);">' + failedErrors.join('') + '</div>' : ''}</div>`;
         }
         renderFinalResults();
       } catch (e) {
@@ -3622,7 +3623,7 @@
         }
       }
 
-      panel.innerHTML = rows.join('') + (errorLines.length > 0 ? '<div class="mt-2 flex flex-col gap-1">' + errorLines.join('') + '</div>' : '');
+      panel.innerHTML = rows.join('') + (errorLines.length > 0 ? '<div class="mt-3 p-3 rounded-sm flex flex-col gap-1.5" style="background:rgba(255,59,92,0.06);border:1px solid rgba(255,59,92,0.2);"><div class="text-[11px] font-display tracking-wider uppercase" style="color:#FB7185;margin-bottom:2px;">Errors</div>' + errorLines.join('') + '</div>' : '');
     }
 
     function handleSSE(data) {
@@ -3696,7 +3697,8 @@
         document.getElementById('progressSection').classList.add('hidden');
         document.getElementById('resultsSection').classList.remove('hidden');
         if (currentResults.length === 0 || currentResults.every(r => !r.success)) {
-          document.getElementById('statCards').innerHTML = `<div class="col-span-full error-banner">All benchmarks failed. Check your API keys and model configuration.</div>`;
+          const failedErrors = currentResults.filter(r => !r.success && r.error).map(r => `<div class="text-[11px] font-mono mt-1" style="color:#FCA5A5;word-break:break-word;cursor:pointer;" onclick="navigator.clipboard.writeText(this.textContent).then(()=>showToast('Copied','success'))" title="Click to copy">${r.provider}/${r.model}: ${r.error}</div>`);
+          document.getElementById('statCards').innerHTML = `<div class="col-span-full error-banner" style="flex-direction:column;align-items:flex-start;"><div>All benchmarks failed. Check your API keys and model configuration.</div>${failedErrors.length > 0 ? '<div class="w-full mt-2 pt-2" style="border-top:1px solid rgba(255,59,92,0.2);">' + failedErrors.join('') + '</div>' : ''}</div>`;
         }
         renderFinalResults();
       }
@@ -4052,7 +4054,7 @@
         row.innerHTML = `
           <td class="px-5 py-3.5 text-center">${pos}</td>
           <td class="px-5 py-3.5"><span class="badge" style="background:${color.bg};color:${color.text};border:1px solid ${color.border}">${r.provider}</span></td>
-          <td class="px-5 py-3.5 text-zinc-200 font-medium font-body text-[13px]">${r.model}</td>
+          <td class="px-5 py-3.5 text-zinc-200 font-medium font-body text-[13px]">${r.model}${!r.success && r.error ? `<div class="text-[11px] font-mono mt-0.5" style="color:#FB7185;word-break:break-word;max-width:320px;cursor:pointer;" onclick="navigator.clipboard.writeText(this.textContent).then(()=>showToast('Error copied','success'))" title="Click to copy">${r.error}</div>` : ''}</td>
           ${ctxCell}
           <td class="px-5 py-3.5 text-right font-mono text-sm ${r.success && i === 0 ? '' : 'text-zinc-400'}" ${r.success && i === 0 ? 'style="color:var(--lime)"' : ''}>${r.success ? r.tokens_per_second.toFixed(1) : '-'}</td>
           ${stdDevCell}
