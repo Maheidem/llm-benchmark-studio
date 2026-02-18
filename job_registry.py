@@ -154,6 +154,15 @@ class JobRegistry:
             cancel_event = self._cancel_events.get(job_id)
             if cancel_event:
                 cancel_event.set()
+                return True
+            # Ghost job: DB says running but no in-memory task/event (orphaned after restart)
+            logger.warning("Ghost job detected (no cancel_event): job_id=%s, marking interrupted", job_id)
+            await self._update_status(job_id, "interrupted")
+            # Also clean up the linked tune run if applicable
+            await self._cleanup_linked_tune_run(job)
+            await self._broadcast(job["user_id"], {
+                "type": "job_cancelled", "job_id": job_id,
+            })
             return True
 
         return False  # Already terminal
@@ -307,6 +316,23 @@ class JobRegistry:
         )
         logger.info("Job state transition: job_id=%s -> %s", job_id, status)
         await db.update_job_status(job_id, status, completed_at, result_ref, error_msg)
+
+    async def _cleanup_linked_tune_run(self, job: dict):
+        """If a job is linked to a param/prompt tune run, mark it interrupted too."""
+        result_ref = job.get("result_ref")
+        if not result_ref:
+            return
+        job_type = job.get("job_type", "")
+        user_id = job["user_id"]
+        try:
+            if "param" in job_type:
+                await db.update_param_tune_run(result_ref, user_id, status="interrupted")
+                logger.info("Marked param_tune_run %s as interrupted (ghost cleanup)", result_ref)
+            elif "prompt" in job_type:
+                await db.update_prompt_tune_run(result_ref, user_id, status="interrupted")
+                logger.info("Marked prompt_tune_run %s as interrupted (ghost cleanup)", result_ref)
+        except Exception:
+            logger.exception("Failed to clean up linked tune run %s", result_ref)
 
     async def _get_user_limit(self, user_id: str) -> int:
         """Get the user's max concurrent jobs from rate_limits table."""

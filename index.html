@@ -2818,12 +2818,23 @@
       try {
         const res = await apiFetch(`${NOTIF_JOBS_API}/${jobId}/cancel`, { method: 'POST' });
         if (res.ok) {
+          const body = await res.json().catch(() => ({}));
+          const wasOrphan = body.was_orphan === true;
           if (_jobStore[jobId]) {
-            _jobStore[jobId].status = 'cancelled';
-            _jobStore[jobId].completed_at = new Date().toISOString();
+            _jobStore[jobId].status = wasOrphan ? 'interrupted' : 'cancelled';
+            _jobStore[jobId].completed_at = _jobStore[jobId].completed_at || new Date().toISOString();
           }
           notifRender();
-          showToast('Process cancelled', '');
+          showToast(wasOrphan ? 'Run already stopped' : 'Process cancelled', '');
+        } else if (res.status === 400) {
+          // Ghost job: backend says job already finished (interrupted/done/failed/cancelled)
+          // Treat as success — update local state to reflect terminal status
+          if (_jobStore[jobId]) {
+            _jobStore[jobId].status = _jobStore[jobId].status === 'running' ? 'interrupted' : _jobStore[jobId].status;
+            _jobStore[jobId].completed_at = _jobStore[jobId].completed_at || new Date().toISOString();
+          }
+          notifRender();
+          showToast('Run already stopped', '');
         } else {
           const err = await res.json().catch(() => ({}));
           showToast(err.error || 'Failed to cancel', 'error');
@@ -8818,13 +8829,21 @@
 
     async function ptCancelTune() {
       if (_activeParamTuneJobId) {
-        notifCancelJob(_activeParamTuneJobId);
+        await notifCancelJob(_activeParamTuneJobId);
+        // If cancel resolved a ghost job, refresh the view to show actual state
+        const job = _jobStore[_activeParamTuneJobId];
+        if (job && !ACTIVE_STATUSES.has(job.status)) {
+          // Job is now terminal — clear active state so UI reflects completion
+          _activeParamTuneJobId = null;
+        }
       } else {
         // Legacy fallback
         try {
           await apiFetch('/api/tool-eval/param-tune/cancel', { method: 'POST' });
           showToast('Cancellation requested', '');
-        } catch {}
+        } catch {
+          showToast('Run already stopped', '');
+        }
       }
     }
 
@@ -9040,7 +9059,7 @@
       }, { danger: true, confirmLabel: 'Delete' });
     }
 
-    function ptStopHistoryRun(tuneId) {
+    async function ptStopHistoryRun(tuneId) {
       // Find the job_id for this running tune — check _activeParamTuneJobId first,
       // then scan _jobStore for a running param_tune job
       let jobId = _activeParamTuneJobId;
@@ -9051,18 +9070,19 @@
         if (paramTuneJobs.length === 1) jobId = paramTuneJobs[0].id;
       }
       if (jobId) {
-        notifCancelJob(jobId);
-        showToast('Stop requested', '');
-        // Refresh history after a short delay to reflect status change
-        setTimeout(() => ptLoadHistory(), 2000);
+        await notifCancelJob(jobId);
+        // Always refresh history to show actual status (handles ghost jobs too)
+        setTimeout(() => ptLoadHistory(), 1500);
       } else {
-        // Fallback: use legacy cancel endpoint
-        apiFetch('/api/tool-eval/param-tune/cancel', { method: 'POST' })
-          .then(() => {
-            showToast('Stop requested', '');
-            setTimeout(() => ptLoadHistory(), 2000);
-          })
-          .catch(() => showToast('Failed to stop', 'error'));
+        // No job in _jobStore — ghost job scenario. Try legacy cancel, then always refresh.
+        try {
+          await apiFetch('/api/tool-eval/param-tune/cancel', { method: 'POST' });
+          showToast('Stop requested', '');
+        } catch {
+          // Legacy cancel failed too — the run is likely already terminal
+          showToast('Run already stopped', '');
+        }
+        setTimeout(() => ptLoadHistory(), 1500);
       }
     }
 

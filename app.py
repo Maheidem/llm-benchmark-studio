@@ -164,10 +164,10 @@ async def lifespan(app_instance):
     if stale_count:
         logger.info("Cleaned up %d stale judge report(s)", stale_count)
     # Clean up orphaned param/prompt tune runs stuck in "running" from prior crashes
-    stale_param = await db.cleanup_stale_param_tune_runs(minutes=30)
+    stale_param = await db.cleanup_stale_param_tune_runs(minutes=0)
     if stale_param:
         logger.info("Cleaned up %d stale param tune run(s)", stale_param)
-    stale_prompt = await db.cleanup_stale_prompt_tune_runs(minutes=30)
+    stale_prompt = await db.cleanup_stale_prompt_tune_runs(minutes=0)
     if stale_prompt:
         logger.info("Cleaned up %d stale prompt tune run(s)", stale_prompt)
     # Initialize job registry (startup recovery + watchdog)
@@ -770,6 +770,34 @@ async def get_job(job_id: str, user: dict = Depends(auth.get_current_user)):
     return job
 
 
+async def _cleanup_orphaned_tune_run(job: dict) -> bool:
+    """If a terminal job has a linked tune run still showing 'running', mark it interrupted.
+
+    Returns True if a cleanup was performed, False if nothing to clean up.
+    """
+    result_ref = job.get("result_ref")
+    if not result_ref:
+        return False
+    job_type = job.get("job_type", "")
+    user_id = job["user_id"]
+    try:
+        if "param" in job_type:
+            run = await db.get_param_tune_run(result_ref, user_id)
+            if run and run.get("status") == "running":
+                await db.update_param_tune_run(result_ref, user_id, status="interrupted")
+                logger.info("Cleaned up orphaned param_tune_run %s (job %s already %s)", result_ref, job["id"], job["status"])
+                return True
+        elif "prompt" in job_type:
+            run = await db.get_prompt_tune_run(result_ref, user_id)
+            if run and run.get("status") == "running":
+                await db.update_prompt_tune_run(result_ref, user_id, status="interrupted")
+                logger.info("Cleaned up orphaned prompt_tune_run %s (job %s already %s)", result_ref, job["id"], job["status"])
+                return True
+    except Exception:
+        logger.exception("Failed to clean up orphaned tune run %s", result_ref)
+    return False
+
+
 @app.post("/api/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str, request: Request, user: dict = Depends(auth.get_current_user)):
     """Cancel a specific job (user can only cancel their own jobs)."""
@@ -778,6 +806,14 @@ async def cancel_job(job_id: str, request: Request, user: dict = Depends(auth.ge
         return JSONResponse({"error": "Job not found"}, status_code=404)
 
     if job["status"] in ("done", "failed", "cancelled", "interrupted"):
+        # Job already terminal -- but linked tune run might still show "running" (ghost).
+        # Clean it up so the frontend sees a consistent state.
+        cleaned = await _cleanup_orphaned_tune_run(job)
+        if cleaned:
+            await ws_manager.send_to_user(user["id"], {
+                "type": "job_cancelled", "job_id": job_id,
+            })
+            return {"status": "ok", "message": "Job already finished, cleaned up linked run", "was_orphan": True}
         return JSONResponse({"error": "Job already finished"}, status_code=400)
 
     # For queued jobs, just mark cancelled directly
@@ -831,6 +867,13 @@ async def admin_cancel_job(job_id: str, request: Request, current_user: dict = D
         return JSONResponse({"error": "Job not found"}, status_code=404)
 
     if job["status"] in ("done", "failed", "cancelled", "interrupted"):
+        # Job already terminal -- clean up any orphaned linked tune run
+        cleaned = await _cleanup_orphaned_tune_run(job)
+        if cleaned:
+            await ws_manager.send_to_user(job["user_id"], {
+                "type": "job_cancelled", "job_id": job_id,
+            })
+            return {"status": "ok", "message": "Job already finished, cleaned up linked run", "was_orphan": True}
         return JSONResponse({"error": "Job already finished"}, status_code=400)
 
     # Use job registry for running jobs (signals cancel_event)
