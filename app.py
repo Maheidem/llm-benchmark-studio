@@ -1463,6 +1463,93 @@ async def discover_models(provider_key: str, user: dict = Depends(auth.get_curre
         )
 
 
+@app.get("/api/lm-studio/detect")
+async def detect_lm_studio_backend(provider_key: str, user: dict = Depends(auth.get_current_user)):
+    """Detect LM Studio model backend type (GGUF vs MLX) via /v1/models.
+
+    Queries the provider's api_base for the /v1/models endpoint and reads
+    the compatibility_type field from each loaded model.
+
+    Returns: {
+        "available": true/false,
+        "models": [{"id": "...", "compatibility_type": "gguf"|"mlx"|"unknown"}],
+        "backend_type": "gguf"|"mlx"|"mixed"|"unknown",
+        "mlx_unsupported_params": ["mirostat", "mirostat_eta", "mirostat_tau", "typical_p"]
+    }
+    """
+    import httpx
+
+    config = await _get_user_config(user["id"])
+    prov_cfg = config.get("providers", {}).get(provider_key)
+    if not prov_cfg:
+        return JSONResponse({"error": f"Provider '{provider_key}' not found"}, status_code=404)
+
+    api_base = prov_cfg.get("api_base", "")
+    if not api_base:
+        return {"available": False, "models": [], "backend_type": "unknown",
+                "error": "No api_base configured for this provider"}
+
+    # Resolve API key
+    api_key = None
+    encrypted = await db.get_user_key_for_provider(user["id"], provider_key)
+    if encrypted:
+        try:
+            api_key = vault.decrypt(encrypted)
+        except Exception:
+            pass
+    if not api_key:
+        env_var = prov_cfg.get("api_key_env", "")
+        if env_var:
+            api_key = os.environ.get(env_var, "")
+
+    url = f"{api_base.rstrip('/')}/models"
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    # Params that MLX backend does NOT support (llama.cpp / GGUF only)
+    mlx_unsupported = ["mirostat", "mirostat_eta", "mirostat_tau", "typical_p"]
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+
+        models = []
+        compat_types = set()
+        for m in data:
+            ct = m.get("compatibility_type", "unknown")
+            models.append({
+                "id": m.get("id", ""),
+                "compatibility_type": ct,
+            })
+            if ct and ct != "unknown":
+                compat_types.add(ct)
+
+        # Determine overall backend type
+        if len(compat_types) == 0:
+            backend_type = "unknown"
+        elif len(compat_types) == 1:
+            backend_type = compat_types.pop()
+        else:
+            backend_type = "mixed"
+
+        return {
+            "available": True,
+            "models": models,
+            "backend_type": backend_type,
+            "mlx_unsupported_params": mlx_unsupported if backend_type in ("mlx", "mixed") else [],
+        }
+
+    except httpx.TimeoutException:
+        return {"available": False, "models": [], "backend_type": "unknown",
+                "error": "LM Studio not responding (timeout)"}
+    except Exception as e:
+        return {"available": False, "models": [], "backend_type": "unknown",
+                "error": f"Failed to query LM Studio: {str(e)[:200]}"}
+
+
 @app.delete("/api/config/provider")
 async def delete_provider(request: Request, user: dict = Depends(auth.get_current_user)):
     """Remove a provider and all its models."""
@@ -2792,7 +2879,7 @@ async def run_single_eval(
         "tools": tools,
         "tool_choice": tool_choice,
         "max_tokens": 1024,
-        "timeout": 60,
+        "timeout": 120,
         "num_retries": 1,
     }
     if target.api_base:
@@ -2961,7 +3048,7 @@ async def run_multi_turn_eval(
         "tools": tools,
         "tool_choice": tool_choice,
         "max_tokens": 1024,
-        "timeout": 60,
+        "timeout": 120,
         "num_retries": 1,
     }
     if target.api_base:
@@ -3555,37 +3642,306 @@ def _expand_search_space(search_space: dict) -> list[dict]:
     return combos
 
 
+async def _param_tune_handler(job_id: str, params: dict, cancel_event, progress_cb) -> str | None:
+    """Job registry handler for parameter tuning grid search.
+
+    Extracts the core param tune logic from the old SSE generator.
+    Returns the tune_id on success, or None.
+    """
+    user_id = params["user_id"]
+    suite_id = params["suite_id"]
+    model_ids = params["models"]
+    search_space = params.get("search_space", {})
+    per_model_search_spaces = params.get("per_model_search_spaces", {})
+
+    logger.info(
+        "Param tune started: job_id=%s user_id=%s models=%d",
+        job_id, user_id, len(model_ids),
+    )
+
+    # Load suite + test cases
+    suite = await db.get_tool_suite(suite_id, user_id)
+    cases = await db.get_test_cases(suite_id)
+    tools = json.loads(suite["tools_json"])
+
+    # Build targets first (may differ from model_ids if duplicates exist)
+    config = await _get_user_config(user_id)
+    all_targets = build_targets(config)
+    targets = [t for t in all_targets if t.model_id in model_ids]
+
+    # Expand search spaces — use len(targets) not len(model_ids) for accurate count
+    per_model_combos: dict[str, list[dict]] = {}
+    if per_model_search_spaces and isinstance(per_model_search_spaces, dict):
+        for mid, ss in per_model_search_spaces.items():
+            if isinstance(ss, dict) and ss:
+                per_model_combos[mid] = _expand_search_space(ss)
+        combos = _expand_search_space(search_space) if search_space else [{}]
+        total_combos = sum(len(per_model_combos.get(t.model_id, combos)) for t in targets)
+    else:
+        combos = _expand_search_space(search_space)
+        total_combos = len(combos) * len(targets)
+
+    # Inject per-user API keys
+    user_keys_cache = {}
+    for t in targets:
+        if t.provider_key and t.provider_key not in user_keys_cache:
+            encrypted = await db.get_user_key_for_provider(user_id, t.provider_key)
+            if encrypted:
+                user_keys_cache[t.provider_key] = encrypted
+    targets = inject_user_keys(targets, user_keys_cache)
+
+    # Pre-create the tune run in DB
+    tune_id = await db.save_param_tune_run(
+        user_id=user_id,
+        suite_id=suite["id"],
+        suite_name=suite["name"],
+        models_json=json.dumps(model_ids),
+        search_space_json=json.dumps(per_model_search_spaces if per_model_combos else search_space),
+        total_combos=total_combos,
+    )
+
+    # Helper to send WebSocket messages directly to the user
+    async def _ws_send(payload: dict):
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, payload)
+
+    # Notify frontend of tune start
+    await _ws_send({
+        "type": "tune_start",
+        "job_id": job_id,
+        "tune_id": tune_id,
+        "total_combos": total_combos,
+        "models": model_ids,
+        "suite_name": suite["name"],
+    })
+
+    start_time = time.perf_counter()
+    all_results = []
+    completed = 0
+    results_queue = asyncio.Queue()
+
+    # Group targets by provider
+    provider_groups: dict[str, list[Target]] = {}
+    for target in targets:
+        provider_groups.setdefault(target.provider, []).append(target)
+
+    async def run_provider(prov_targets):
+        """Run all combos for all models in this provider group."""
+        for target in prov_targets:
+            model_combos = per_model_combos.get(target.model_id, combos)
+            for combo_idx, combo in enumerate(model_combos):
+                if cancel_event.is_set():
+                    return
+
+                # Extract combo params
+                temp = float(combo.get("temperature", 0.0))
+                tc = combo.get("tool_choice", "required")
+
+                # Build provider_params from combo (tier2 params)
+                pp = {}
+                for k, v in combo.items():
+                    if k not in ("temperature", "tool_choice", "max_tokens"):
+                        pp[k] = v
+
+                # Track adjustments from conflict resolution
+                params_to_check = {"temperature": temp, **pp}
+                prov_key = identify_provider(
+                    target.model_id,
+                    getattr(target, "provider_key", None),
+                )
+                validation = validate_params(prov_key, target.model_id, params_to_check)
+                combo_adjustments = validation.get("adjustments", [])
+
+                # Run all test cases for this combo
+                case_results = []
+                for case in cases:
+                    if cancel_event.is_set():
+                        return
+
+                    _record_rate_limit(user_id)
+
+                    # Check if multi-turn
+                    mt_config = None
+                    if case.get("multi_turn_config"):
+                        try:
+                            mt_config = json.loads(case["multi_turn_config"]) if isinstance(case["multi_turn_config"], str) else case["multi_turn_config"]
+                        except (json.JSONDecodeError, TypeError):
+                            logger.debug("Failed to parse multi_turn_config in param tuner")
+                            mt_config = None
+
+                    if mt_config and mt_config.get("multi_turn"):
+                        case_with_mt = {**case, "_mt_config": mt_config}
+                        r = await run_multi_turn_eval(target, tools, case_with_mt, temp, tc, provider_params=pp if pp else None)
+                    else:
+                        r = await run_single_eval(target, tools, case, temp, tc, provider_params=pp if pp else None)
+                    case_results.append(r)
+
+                # Compute aggregate scores for this combo
+                tool_scores = [r["tool_selection_score"] for r in case_results if r.get("success")]
+                param_scores = [r["param_accuracy"] for r in case_results if r.get("success") and r.get("param_accuracy") is not None]
+                overall_scores = [r["overall_score"] for r in case_results if r.get("success")]
+                latencies = [r["latency_ms"] for r in case_results if r.get("success") and r.get("latency_ms")]
+
+                cases_passed = sum(1 for r in case_results if r.get("success") and r.get("overall_score", 0) == 1.0)
+
+                # Trim case results for storage/WS (exclude raw_request/raw_response)
+                trimmed_cases = []
+                for cr in case_results:
+                    trimmed_cases.append({
+                        "test_case_id": cr.get("test_case_id"),
+                        "prompt": cr.get("prompt", ""),
+                        "expected_tool": cr.get("expected_tool"),
+                        "actual_tool": cr.get("actual_tool"),
+                        "expected_params": cr.get("expected_params"),
+                        "actual_params": cr.get("actual_params"),
+                        "tool_selection_score": cr.get("tool_selection_score", 0.0),
+                        "param_accuracy": cr.get("param_accuracy"),
+                        "overall_score": cr.get("overall_score", 0.0),
+                        "success": cr.get("success", False),
+                        "error": cr.get("error", ""),
+                        "latency_ms": cr.get("latency_ms", 0),
+                    })
+
+                combo_result = {
+                    "combo_index": combo_idx,
+                    "model_id": target.model_id,
+                    "model_name": target.display_name,
+                    "config": combo,
+                    "overall_score": round(sum(overall_scores) / len(overall_scores), 4) if overall_scores else 0.0,
+                    "tool_accuracy": round(sum(tool_scores) / len(tool_scores) * 100, 2) if tool_scores else 0.0,
+                    "param_accuracy": round(sum(param_scores) / len(param_scores) * 100, 2) if param_scores else 0.0,
+                    "latency_avg_ms": round(sum(latencies) / len(latencies)) if latencies else 0,
+                    "cases_passed": cases_passed,
+                    "cases_total": len(cases),
+                    "adjustments": combo_adjustments,
+                    "case_results": trimmed_cases,
+                }
+
+                await results_queue.put(combo_result)
+
+    # Launch provider groups in parallel
+    tasks = [asyncio.create_task(run_provider(g)) for g in provider_groups.values()]
+
+    async def sentinel():
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await results_queue.put(None)
+
+    asyncio.create_task(sentinel())
+
+    # Consume results and report progress via WebSocket
+    while True:
+        try:
+            item = await asyncio.wait_for(results_queue.get(), timeout=15)
+        except asyncio.TimeoutError:
+            continue  # Keep waiting
+        if item is None:
+            break
+        if cancel_event.is_set():
+            for t in tasks:
+                t.cancel()
+            # Save partial results
+            duration = time.perf_counter() - start_time
+            await db.update_param_tune_run(
+                tune_id, user_id,
+                results_json=json.dumps(all_results),
+                completed_combos=completed,
+                status="cancelled",
+                duration_s=round(duration, 2),
+                best_config_json=json.dumps(_find_best_config(all_results)),
+                best_score=_find_best_score(all_results),
+            )
+            return None
+
+        completed += 1
+        all_results.append(item)
+
+        # Send combo result to frontend via WebSocket
+        await _ws_send({
+            "type": "combo_result",
+            "job_id": job_id,
+            "tune_id": tune_id,
+            "data": item,
+        })
+
+        # Update job progress
+        pct = int((completed / total_combos) * 100) if total_combos > 0 else 0
+        detail = f"{item['model_name']}, combo {completed}/{total_combos}"
+        await progress_cb(pct, detail)
+
+    # Tuning complete -- find best config
+    duration = time.perf_counter() - start_time
+    best_config = _find_best_config(all_results)
+    best_score = _find_best_score(all_results)
+
+    await db.update_param_tune_run(
+        tune_id, user_id,
+        results_json=json.dumps(all_results),
+        best_config_json=json.dumps(best_config),
+        best_score=best_score,
+        completed_combos=completed,
+        status="completed",
+        duration_s=round(duration, 2),
+    )
+
+    # Send completion event to frontend
+    await _ws_send({
+        "type": "tune_complete",
+        "job_id": job_id,
+        "tune_id": tune_id,
+        "best_config": best_config,
+        "best_score": best_score,
+        "duration_s": round(duration, 2),
+    })
+
+    logger.info(
+        "Param tune completed: job_id=%s tune_id=%s user_id=%s combos=%d best_score=%.4f",
+        job_id, tune_id, user_id, completed, best_score,
+    )
+
+    return tune_id
+
+
+# Register the param tune handler with the job registry
+job_registry.register_handler("param_tune", _param_tune_handler)
+
+
 @app.post("/api/tool-eval/param-tune")
 async def run_param_tune(request: Request, user: dict = Depends(auth.get_current_user)):
-    """Run a parameter tuning grid search and stream results via SSE."""
+    """Run a parameter tuning grid search via job registry. Returns job_id immediately.
+
+    Progress is delivered via WebSocket (combo_result, tune_start, tune_complete events).
+    """
     body = await request.json()
     suite_id = body.get("suite_id")
     model_ids = body.get("models", [])
     search_space = body.get("search_space", {})
+    per_model_search_spaces = body.get("per_model_search_spaces", {})
 
     # --- Validation ---
     if not suite_id:
         return JSONResponse({"error": "suite_id is required"}, status_code=400)
     if not isinstance(model_ids, list) or len(model_ids) == 0:
         return JSONResponse({"error": "models must be a non-empty list"}, status_code=400)
-    if not isinstance(search_space, dict) or not search_space:
+
+    # Validate search spaces
+    if per_model_search_spaces and isinstance(per_model_search_spaces, dict):
+        has_valid = any(isinstance(ss, dict) and ss for ss in per_model_search_spaces.values())
+        if not has_valid:
+            return JSONResponse({"error": "per_model_search_spaces produced no combinations"}, status_code=400)
+    elif not isinstance(search_space, dict) or not search_space:
         return JSONResponse({"error": "search_space must be a non-empty dict"}, status_code=400)
+    else:
+        combos = _expand_search_space(search_space)
+        if len(combos) == 0:
+            return JSONResponse({"error": "search_space produced no combinations"}, status_code=400)
 
-    # Expand search space into grid
-    combos = _expand_search_space(search_space)
-    if len(combos) == 0:
-        return JSONResponse({"error": "search_space produced no combinations"}, status_code=400)
-
-    total_combos = len(combos) * len(model_ids)
-
-    # Load suite + test cases
+    # Load suite + test cases (validate before submitting job)
     suite = await db.get_tool_suite(suite_id, user["id"])
     if not suite:
         return JSONResponse({"error": "Suite not found"}, status_code=404)
     cases = await db.get_test_cases(suite_id)
     if not cases:
         return JSONResponse({"error": "Suite has no test cases"}, status_code=400)
-    tools = json.loads(suite["tools_json"])
 
     # Rate limit check
     allowed, remaining = _check_rate_limit(user["id"])
@@ -3594,245 +3950,37 @@ async def run_param_tune(request: Request, user: dict = Depends(auth.get_current
             {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} per hour."},
             status_code=429,
         )
+    _record_rate_limit(user["id"])
 
-    # Concurrent guard (shared with benchmarks and tool eval)
-    user_lock = _get_user_lock(user["id"])
-    if user_lock.locked():
-        return JSONResponse(
-            {"error": "A benchmark or eval is already running"},
-            status_code=409,
-        )
-
-    # Build targets from user config
+    # Build targets (validate models exist in config)
     config = await _get_user_config(user["id"])
     all_targets = build_targets(config)
     targets = [t for t in all_targets if t.model_id in model_ids]
     if not targets:
         return JSONResponse({"error": "No matching models found in config"}, status_code=400)
 
-    # Inject per-user API keys
-    user_keys_cache = {}
-    for t in targets:
-        if t.provider_key and t.provider_key not in user_keys_cache:
-            encrypted = await db.get_user_key_for_provider(user["id"], t.provider_key)
-            if encrypted:
-                user_keys_cache[t.provider_key] = encrypted
-    targets = inject_user_keys(targets, user_keys_cache)
+    # Build progress detail
+    model_count = len(model_ids)
+    progress_detail = f"Param Tune: {model_count} model{'s' if model_count != 1 else ''}, {suite['name']}"
 
-    cancel_event = _get_user_cancel(user["id"])
+    # Submit to job registry
+    job_params = {
+        "user_id": user["id"],
+        "user_email": user.get("email", ""),
+        "suite_id": suite_id,
+        "models": model_ids,
+        "search_space": search_space,
+        "per_model_search_spaces": per_model_search_spaces,
+    }
 
-    # Pre-create the run in DB
-    tune_id = await db.save_param_tune_run(
+    job_id = await job_registry.submit(
+        job_type="param_tune",
         user_id=user["id"],
-        suite_id=suite["id"],
-        suite_name=suite["name"],
-        models_json=json.dumps(model_ids),
-        search_space_json=json.dumps(search_space),
-        total_combos=total_combos,
+        params=job_params,
+        progress_detail=progress_detail,
     )
 
-    async def generate():
-        await user_lock.acquire()
-        cancel_event.clear()
-        start_time = time.perf_counter()
-        all_results = []
-        completed = 0
-        try:
-            yield _sse({
-                "type": "tune_start",
-                "tune_id": tune_id,
-                "total_combos": total_combos,
-                "models": model_ids,
-                "suite_name": suite["name"],
-            })
-
-            queue = asyncio.Queue()
-
-            # Group targets by provider
-            provider_groups: dict[str, list[Target]] = {}
-            for target in targets:
-                provider_groups.setdefault(target.provider, []).append(target)
-
-            async def run_provider(prov_targets):
-                """Run all combos for all models in this provider group."""
-                for target in prov_targets:
-                    for combo_idx, combo in enumerate(combos):
-                        if cancel_event.is_set():
-                            return
-
-                        # Extract combo params
-                        temp = float(combo.get("temperature", 0.0))
-                        tc = combo.get("tool_choice", "required")
-                        mt = int(combo.get("max_tokens", 1024))
-
-                        # Build provider_params from combo (tier2 params)
-                        pp = {}
-                        for k, v in combo.items():
-                            if k not in ("temperature", "tool_choice", "max_tokens"):
-                                pp[k] = v
-
-                        # Run all test cases for this combo
-                        case_results = []
-                        for case in cases:
-                            if cancel_event.is_set():
-                                return
-
-                            _record_rate_limit(user["id"])
-
-                            # Check if multi-turn
-                            mt_config = None
-                            if case.get("multi_turn_config"):
-                                try:
-                                    mt_config = json.loads(case["multi_turn_config"]) if isinstance(case["multi_turn_config"], str) else case["multi_turn_config"]
-                                except (json.JSONDecodeError, TypeError):
-                                    logger.debug("Failed to parse multi_turn_config in param tuner")
-                                    mt_config = None
-
-                            if mt_config and mt_config.get("multi_turn"):
-                                case_with_mt = {**case, "_mt_config": mt_config}
-                                r = await run_multi_turn_eval(target, tools, case_with_mt, temp, tc, provider_params=pp if pp else None)
-                            else:
-                                r = await run_single_eval(target, tools, case, temp, tc, provider_params=pp if pp else None)
-                            case_results.append(r)
-
-                        # Compute aggregate scores for this combo
-                        tool_scores = [r["tool_selection_score"] for r in case_results if r.get("success")]
-                        param_scores = [r["param_accuracy"] for r in case_results if r.get("success") and r.get("param_accuracy") is not None]
-                        overall_scores = [r["overall_score"] for r in case_results if r.get("success")]
-                        latencies = [r["latency_ms"] for r in case_results if r.get("success") and r.get("latency_ms")]
-
-                        cases_passed = sum(1 for r in case_results if r.get("success") and r.get("overall_score", 0) == 1.0)
-
-                        combo_result = {
-                            "combo_index": combo_idx,
-                            "model_id": target.model_id,
-                            "model_name": target.display_name,
-                            "config": combo,
-                            "overall_score": round(sum(overall_scores) / len(overall_scores), 4) if overall_scores else 0.0,
-                            "tool_accuracy": round(sum(tool_scores) / len(tool_scores) * 100, 2) if tool_scores else 0.0,
-                            "param_accuracy": round(sum(param_scores) / len(param_scores) * 100, 2) if param_scores else 0.0,
-                            "latency_avg_ms": round(sum(latencies) / len(latencies)) if latencies else 0,
-                            "cases_passed": cases_passed,
-                            "cases_total": len(cases),
-                        }
-
-                        await queue.put(combo_result)
-
-            # Launch provider groups in parallel
-            tasks = [asyncio.create_task(run_provider(g))
-                     for g in provider_groups.values()]
-
-            async def sentinel():
-                await asyncio.gather(*tasks, return_exceptions=True)
-                await queue.put(None)
-
-            asyncio.create_task(sentinel())
-
-            # Consume and emit SSE events
-            completed = 0
-            while True:
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=15)
-                except asyncio.TimeoutError:
-                    yield _sse({"type": "heartbeat"})
-                    continue
-                if item is None:
-                    break
-                if cancel_event.is_set():
-                    for t in tasks:
-                        t.cancel()
-                    # Save partial results
-                    duration = time.perf_counter() - start_time
-                    await db.update_param_tune_run(
-                        tune_id, user["id"],
-                        results_json=json.dumps(all_results),
-                        completed_combos=completed,
-                        status="cancelled",
-                        duration_s=round(duration, 2),
-                        best_config_json=json.dumps(_find_best_config(all_results)),
-                        best_score=_find_best_score(all_results),
-                    )
-                    yield _sse({"type": "cancelled"})
-                    return
-
-                completed += 1
-                all_results.append(item)
-
-                yield _sse({"type": "combo_result", **item})
-                yield _sse({
-                    "type": "tune_progress",
-                    "completed": completed,
-                    "total": total_combos,
-                    "elapsed_s": round(time.perf_counter() - start_time, 1),
-                })
-
-            # Tuning complete -- find best config
-            duration = time.perf_counter() - start_time
-            best_config = _find_best_config(all_results)
-            best_score = _find_best_score(all_results)
-
-            await db.update_param_tune_run(
-                tune_id, user["id"],
-                results_json=json.dumps(all_results),
-                best_config_json=json.dumps(best_config),
-                best_score=best_score,
-                completed_combos=completed,
-                status="completed",
-                duration_s=round(duration, 2),
-            )
-
-            yield _sse({
-                "type": "tune_complete",
-                "tune_id": tune_id,
-                "best_config": best_config,
-                "best_score": best_score,
-                "duration_s": round(duration, 2),
-            })
-
-        except Exception as e:
-            duration = time.perf_counter() - start_time
-            await db.update_param_tune_run(
-                tune_id, user["id"],
-                results_json=json.dumps(all_results),
-                completed_combos=completed,
-                status="error",
-                duration_s=round(duration, 2),
-            )
-            yield _sse({"type": "error", "message": sanitize_error(str(e))})
-        finally:
-            # Safety net: if run is still "running" (e.g. client disconnected,
-            # CancelledError, deploy killed the process), save partial results
-            # and mark as "interrupted" so it doesn't stay stuck forever.
-            try:
-                run = await db.get_param_tune_run(tune_id, user["id"])
-                if run and run.get("status") == "running":
-                    duration = time.perf_counter() - start_time
-                    logger.warning(
-                        "Param tune run %s still 'running' in finally block — "
-                        "saving %d partial results and marking as interrupted",
-                        tune_id, len(all_results),
-                    )
-                    await db.update_param_tune_run(
-                        tune_id, user["id"],
-                        results_json=json.dumps(all_results),
-                        completed_combos=completed,
-                        best_config_json=json.dumps(_find_best_config(all_results)),
-                        best_score=_find_best_score(all_results),
-                        status="interrupted",
-                        duration_s=round(duration, 2),
-                    )
-            except Exception:
-                logger.exception("Failed to clean up param tune run %s in finally block", tune_id)
-            user_lock.release()
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "X-Accel-Buffering": "no",
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-        },
-    )
+    return {"job_id": job_id, "status": "submitted"}
 
 
 def _find_best_config(results: list[dict]) -> dict | None:
@@ -3851,8 +3999,19 @@ def _find_best_score(results: list[dict]) -> float:
 
 
 @app.post("/api/tool-eval/param-tune/cancel")
-async def cancel_param_tune(user: dict = Depends(auth.get_current_user)):
-    """Cancel a running param tune. Reuses same cancellation mechanism."""
+async def cancel_param_tune(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Cancel a running param tune via job registry."""
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    job_id = body.get("job_id")
+
+    if job_id:
+        # Cancel via job registry (preferred)
+        cancelled = await job_registry.cancel(job_id, user["id"])
+        if cancelled:
+            return {"status": "ok", "message": "Cancellation requested"}
+        return JSONResponse({"error": "Job not found or already finished"}, status_code=404)
+
+    # Fallback: cancel via legacy user-level event (backward compat)
     _get_user_cancel(user["id"]).set()
     return {"status": "ok", "message": "Cancellation requested"}
 
@@ -5459,6 +5618,86 @@ async def validate_provider_params(request: Request, user: dict = Depends(auth.g
     return result
 
 
+@app.post("/api/param-support/seed")
+async def seed_param_support(user: dict = Depends(auth.get_current_user)):
+    """Generate default param_support config from PROVIDER_REGISTRY.
+
+    Transforms tier1+tier2 definitions into user-editable provider_defaults
+    that the frontend uses as the single source of truth for the param tuner UI.
+
+    Returns: {provider_defaults: {...}, model_overrides: {...}, presets: []}
+    """
+    provider_defaults = {}
+    model_overrides = {}
+
+    for prov_key, prov in PROVIDER_REGISTRY.items():
+        if prov_key == "_unknown":
+            continue  # Skip fallback provider
+        params = {}
+        # Merge tier1 + tier2 into a flat param dict
+        for tier_key in ("tier1", "tier2"):
+            tier = prov.get(tier_key, {})
+            for param_name, spec in tier.items():
+                # Only include params that are supported (True, "partial", "unknown")
+                supported = spec.get("supported", True)
+                if supported is False:
+                    continue
+                params[param_name] = {
+                    "enabled": True,
+                    "supported": supported,
+                }
+                # Copy numeric range fields
+                for field in ("min", "max", "step", "default", "type"):
+                    if field in spec:
+                        params[param_name][field] = spec[field]
+                # Copy enum values
+                if "values" in spec:
+                    params[param_name]["values"] = spec["values"]
+                # Copy notes
+                if "note" in spec:
+                    params[param_name]["note"] = spec["note"]
+        provider_defaults[prov_key] = {
+            "display_name": prov.get("display_name", prov_key),
+            "params": params,
+        }
+
+        # Copy model_overrides if present
+        if "model_overrides" in prov:
+            model_overrides[prov_key] = prov["model_overrides"]
+
+    result = {
+        "provider_defaults": provider_defaults,
+        "model_overrides": model_overrides,
+        "presets": list(BUILTIN_PARAM_PRESETS),
+    }
+    return result
+
+
+# Built-in vendor-recommended parameter presets
+BUILTIN_PARAM_PRESETS = [
+    {
+        "name": "Qwen3 Coder 30B (Recommended)",
+        "builtin": True,
+        "search_space": {
+            "temperature": [0.7],
+            "top_p": [0.8],
+            "top_k": [20],
+        },
+        "system_prompt": "Greedy decoding (temp=0) worsens quality. Always use sampling.",
+    },
+    {
+        "name": "GLM-4.7 Flash (Z.AI Recommended)",
+        "builtin": True,
+        "search_space": {
+            "temperature": [0.8],
+            "top_p": [0.6],
+            "top_k": [2],
+        },
+        "system_prompt": "Very low top_k recommended for MoE architecture.",
+    },
+]
+
+
 # ---------------------------------------------------------------------------
 # Phase 10 Settings API
 # ---------------------------------------------------------------------------
@@ -5480,6 +5719,7 @@ PHASE10_DEFAULTS = {
         "top_p_min": 0.5,
         "top_p_max": 1.0,
         "top_p_step": 0.25,
+        "presets": [],
     },
     "prompt_tuner": {
         "mode": "quick",
@@ -5492,12 +5732,13 @@ PHASE10_DEFAULTS = {
 
 @app.get("/api/settings/phase10")
 async def get_phase10_settings(user: dict = Depends(auth.get_current_user)):
-    """Return Phase 10 feature settings (judge, param tuner, prompt tuner)."""
+    """Return Phase 10 feature settings (judge, param tuner, prompt tuner, param_support)."""
     config = await _get_user_config(user["id"])
     return {
         "judge": {**PHASE10_DEFAULTS["judge"], **config.get("judge_defaults", {})},
         "param_tuner": {**PHASE10_DEFAULTS["param_tuner"], **config.get("param_tuner_defaults", {})},
         "prompt_tuner": {**PHASE10_DEFAULTS["prompt_tuner"], **config.get("prompt_tuner_defaults", {})},
+        "param_support": config.get("param_support_defaults", None),
     }
 
 
@@ -5512,7 +5753,40 @@ async def save_phase10_settings(request: Request, user: dict = Depends(auth.get_
     for section in allowed_sections:
         if section in body and isinstance(body[section], dict):
             config_key = f"{section}_defaults"
-            config[config_key] = {**PHASE10_DEFAULTS[section], **body[section]}
+            section_data = body[section]
+
+            # Validate param_tuner.presets if present
+            if section == "param_tuner" and "presets" in section_data:
+                presets = section_data["presets"]
+                if not isinstance(presets, list):
+                    return JSONResponse({"error": "presets must be an array"}, status_code=400)
+                if len(presets) > 20:
+                    return JSONResponse({"error": "Maximum 20 presets allowed"}, status_code=400)
+                for i, preset in enumerate(presets):
+                    if not isinstance(preset, dict):
+                        return JSONResponse({"error": f"Preset {i} must be an object"}, status_code=400)
+                    if not preset.get("name") or not isinstance(preset["name"], str):
+                        return JSONResponse({"error": f"Preset {i} must have a non-empty 'name' string"}, status_code=400)
+                    if not isinstance(preset.get("search_space"), dict):
+                        return JSONResponse({"error": f"Preset {i} must have a 'search_space' object"}, status_code=400)
+
+            config[config_key] = {**PHASE10_DEFAULTS[section], **section_data}
+
+    # Handle param_support separately (not in PHASE10_DEFAULTS, stored as-is)
+    if "param_support" in body:
+        ps = body["param_support"]
+        if ps is None:
+            # Allow clearing param_support
+            config.pop("param_support_defaults", None)
+        elif isinstance(ps, dict):
+            # Validate structure
+            if not isinstance(ps.get("provider_defaults", {}), dict):
+                return JSONResponse({"error": "param_support.provider_defaults must be an object"}, status_code=400)
+            if not isinstance(ps.get("model_overrides", {}), dict):
+                return JSONResponse({"error": "param_support.model_overrides must be an object"}, status_code=400)
+            config["param_support_defaults"] = ps
+        else:
+            return JSONResponse({"error": "param_support must be an object or null"}, status_code=400)
 
     await _save_user_config(user["id"], config)
     return {"ok": True}

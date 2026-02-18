@@ -1148,6 +1148,44 @@
 
       <!-- ── Sub-view: Tuning (Parameter Tuner + Prompt Tuner) ── -->
       <div id="settings-tuning" class="settings-panel hidden">
+        <!-- Provider Parameter Support Configuration -->
+        <div class="card rounded-md p-5 mb-6">
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-3">
+              <svg class="w-5 h-5" style="color:#38BDF8" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75"/></svg>
+              <h3 class="font-display font-semibold text-sm text-zinc-100 tracking-wider uppercase">Provider Parameter Support</h3>
+            </div>
+            <button onclick="psResetToDefaults()" class="text-[10px] font-display font-medium tracking-wider uppercase px-2.5 py-1 rounded-sm text-zinc-500 hover:text-zinc-300 transition-colors" style="border:1px solid var(--border-subtle);">Reset to Defaults</button>
+          </div>
+          <p class="text-[11px] text-zinc-600 font-body mb-5">Configure which parameters each provider supports. The param tuner uses these settings to build per-model search spaces.</p>
+          <div id="psNotSeeded" class="hidden text-center py-6">
+            <p class="text-sm text-zinc-500 font-body mb-3">Parameter support config not initialized yet.</p>
+            <button onclick="psSeedAndLoad()" class="text-xs font-display font-medium tracking-wider uppercase px-4 py-2 rounded-sm transition-colors" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);">Initialize from Provider Registry</button>
+          </div>
+          <div id="psConfigured" class="hidden">
+            <div class="flex items-center gap-3 mb-4">
+              <label class="text-[10px] font-display tracking-wider uppercase text-zinc-500">Provider</label>
+              <select id="psProviderSelect" onchange="psRenderProvider()" class="text-xs font-mono px-3 py-2 rounded-sm flex-1" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;max-width:280px;">
+              </select>
+            </div>
+            <!-- Param table for selected provider -->
+            <div id="psParamTable" class="mb-4"></div>
+            <button onclick="psAddParam()" class="text-xs text-zinc-400 hover:text-lime-400 transition-colors font-body flex items-center gap-1 mb-5">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+              Add Parameter
+            </button>
+            <!-- Model Overrides (collapsible) -->
+            <details class="group" style="border-top:1px solid var(--border-subtle);">
+              <summary class="pt-4 pb-2 cursor-pointer text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 transition-colors">Model Overrides</summary>
+              <div id="psOverridesTable" class="mt-2 mb-3"></div>
+              <button onclick="psAddOverride()" class="text-xs text-zinc-400 hover:text-lime-400 transition-colors font-body flex items-center gap-1 mb-2">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                Add Override
+              </button>
+            </details>
+          </div>
+        </div>
+
         <!-- Parameter Tuner -->
         <div class="card rounded-md p-5 mb-6">
           <div class="flex items-center gap-3 mb-4">
@@ -1957,7 +1995,18 @@
 
         <!-- Search Space Builder -->
         <div class="card rounded-md p-5 mb-6">
-          <label class="section-label mb-4 block">Search Space</label>
+          <div class="flex items-center justify-between mb-4">
+            <label class="section-label" style="margin:0">Search Space</label>
+            <!-- Preset bar -->
+            <div class="flex items-center gap-2">
+              <select id="ptPresetSelect" class="text-xs font-mono px-2 py-1.5 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;min-width:140px;">
+                <option value="">-- Presets --</option>
+              </select>
+              <button onclick="ptLoadSelectedPreset()" class="text-[10px] font-display font-medium tracking-wider uppercase px-2.5 py-1 rounded-sm text-zinc-500 hover:text-zinc-300 transition-colors" style="border:1px solid var(--border-subtle);">Load</button>
+              <button onclick="ptSavePreset()" class="text-[10px] font-display font-medium tracking-wider uppercase px-2.5 py-1 rounded-sm transition-colors" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);">Save</button>
+              <button onclick="ptDeleteSelectedPreset()" class="text-[10px] font-display font-medium tracking-wider uppercase px-2.5 py-1 rounded-sm text-zinc-600 hover:text-red-400 transition-colors" style="border:1px solid var(--border-subtle);">Delete</button>
+            </div>
+          </div>
           <div id="ptSearchSpace" class="space-y-4">
             <div class="text-xs text-zinc-600 font-body text-center py-4">Select models to configure parameters</div>
           </div>
@@ -1987,6 +2036,14 @@
               <div id="ptModelGrid" class="flex flex-col gap-1 max-h-48 overflow-y-auto" style="scrollbar-width:thin;"></div>
             </div>
           </div>
+        </div>
+
+        <!-- Compatibility Matrix (collapsible) -->
+        <div id="ptCompatSection" class="hidden mb-6">
+          <details class="card rounded-md overflow-hidden">
+            <summary class="px-5 py-3 cursor-pointer section-label hover:text-zinc-300 transition-colors" style="border-bottom:1px solid var(--border-subtle);">Compatibility Matrix</summary>
+            <div id="ptCompatBody" class="px-5 py-3 overflow-x-auto"></div>
+          </details>
         </div>
 
         <!-- Start Button -->
@@ -2049,6 +2106,8 @@
                 <button onclick="ptExportCSV()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);">Export CSV</button>
               </div>
             </div>
+            <!-- Adjustments summary banner (populated by JS when adjustments exist) -->
+            <div id="ptAdjustmentsSummary" class="hidden px-5 py-2 text-xs font-body" style="background:rgba(234,179,8,0.05);border-bottom:1px solid rgba(234,179,8,0.15);color:#EAB308;"></div>
             <table class="w-full text-sm results-table">
               <thead id="ptResultsHead"></thead>
               <tbody id="ptResultsBody"></tbody>
@@ -2597,6 +2656,10 @@
             _activeBenchmarkJobId = job.id;
             _restoreBenchmarkInlineProgress(job);
           }
+          // Restore param tuner tracking if there's an active param_tune job
+          if (job.job_type === 'param_tune' && (job.status === 'running' || job.status === 'pending' || job.status === 'queued')) {
+            _activeParamTuneJobId = job.id;
+          }
         }
         for (const job of (msg.recent_jobs || [])) { _jobStore[job.id] = job; }
         notifRender();
@@ -2674,6 +2737,12 @@
         case 'benchmark_progress':
           break;
 
+        // Param tune-specific streaming events — pass through to inline handler
+        case 'tune_start':
+        case 'combo_result':
+        case 'tune_complete':
+          break;
+
         default:
           console.log('[NotifWS] Unknown message type:', msg.type);
           return;
@@ -2684,6 +2753,10 @@
       // Bridge: forward job events to inline benchmark progress if applicable
       if (typeof _onBenchmarkJobEvent === 'function') {
         _onBenchmarkJobEvent(msg);
+      }
+      // Bridge: forward job events to inline param tuner progress
+      if (typeof _onParamTuneJobEvent === 'function') {
+        _onParamTuneJobEvent(msg);
       }
     }
 
@@ -6262,6 +6335,11 @@
           seed: { type: 'int', supported: true, deprecated: true, note: 'Seed is deprecated for OpenAI' },
           reasoning_effort: { type: 'enum', values: ['none','low','medium','high'], supported: true, note: 'Only for reasoning models (o-series, GPT-5)' }
         },
+        tier3_examples: {
+          service_tier: { type: 'string', values: ['auto','default','flex','priority'] },
+          prediction: { type: 'object' },
+          web_search_options: { type: 'object' }
+        },
         conflicts: [
           { params: ['temperature'], condition: "model contains 'gpt-5'", resolution: 'Lock to 1.0', message: 'GPT-5 locks temperature to 1.0' }
         ],
@@ -6284,6 +6362,10 @@
           seed: { supported: false, reason: 'Anthropic does not support seed' },
           reasoning_effort: { type: 'enum', values: ['none','low','medium','high'], supported: true, note: 'Maps to thinking.budget_tokens' }
         },
+        tier3_examples: {
+          cache_control: { type: 'object' },
+          inference_geo: { type: 'string' }
+        },
         conflicts: [
           { params: ['temperature','top_p'], condition: 'both set on newer models', resolution: 'Drop top_p, keep temperature', message: 'Anthropic newer models cannot use both temperature and top_p' }
         ]
@@ -6302,6 +6384,9 @@
           seed: { type: 'int', supported: true },
           reasoning_effort: { type: 'enum', values: ['none','low','medium','high'], supported: true, note: 'Maps to thinkingConfig.thinkingLevel' }
         },
+        tier3_examples: {
+          safety_settings: { type: 'array' }
+        },
         conflicts: []
       },
       ollama: {
@@ -6317,6 +6402,15 @@
           presence_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
           seed: { type: 'int', supported: true },
           reasoning_effort: { supported: false }
+        },
+        tier3_examples: {
+          mirostat: { type: 'int', values: [0,1,2], note: 'Mirostat sampling mode' },
+          mirostat_eta: { type: 'float', note: 'Mirostat learning rate' },
+          mirostat_tau: { type: 'float', note: 'Mirostat target entropy' },
+          repetition_penalty: { type: 'float', min: 0, max: 3, note: 'Multiplicative penalty' },
+          num_ctx: { type: 'int', note: 'Context window size override' },
+          min_p: { type: 'float', min: 0, max: 1, note: 'Minimum probability threshold' },
+          keep_alive: { type: 'string', note: 'Model memory duration' }
         },
         conflicts: [],
         info_banner: 'Ollama defaults to 2048 token context. Set num_ctx in Custom Parameters to increase (e.g. {"num_ctx": 8192}).'
@@ -6335,6 +6429,10 @@
           seed: { type: 'int', supported: true },
           reasoning_effort: { supported: false }
         },
+        tier3_examples: {
+          repetition_penalty: { type: 'float', min: 0, max: 3 },
+          min_p: { type: 'float', min: 0, max: 1 }
+        },
         conflicts: []
       },
       mistral: {
@@ -6350,6 +6448,9 @@
           presence_penalty: { min: -2, max: 2, default: 0, type: 'float', supported: true },
           seed: { type: 'int', supported: true },
           reasoning_effort: { supported: false }
+        },
+        tier3_examples: {
+          safe_prompt: { type: 'boolean' }
         },
         conflicts: []
       },
@@ -6950,7 +7051,7 @@
       const activeId = viewMap[view] || viewMap.suites;
       views.forEach(v => document.getElementById(v)?.classList.toggle('hidden', v !== activeId));
       if (view === 'run') { jgLoadDefaults(); }
-      if (view === 'pt-config') { ptLoadSuiteSelector(); ptRenderModelGrid(); _ptApplyDefaults(); ptUpdatePreview(); }
+      if (view === 'pt-config') { ptLoadSuiteSelector(); ptRenderModelGrid(); _ptApplyDefaults(); ptPopulatePresetDropdown(); ptUpdatePreview(); }
       if (view === 'pt-history') { ptLoadHistory(); }
       if (view === 'prt-config') { prtLoadSuiteSelector(); prtRenderModelGrid(); prtPopulateMetaModel(); _prtApplyDefaults(); prtUpdateEstimate(); }
       if (view === 'prt-history') { prtLoadHistory(); }
@@ -6968,8 +7069,140 @@
     let ptSortAsc = false;
     let ptHistory = [];
     let ptTotalCombos = 0;
-    let _ptSSETimeout = null;
+    let _ptSearchSpaceKeys = [];  // keys from the active search space, set on tune start
     let _ptDefaults = {};      // stored defaults from Phase 10 settings, applied on render
+
+    // --- Preset management (Phase 3) ---
+    function _ptGetPresets() {
+      return (_p10Settings?.param_tuner?.presets) || [];
+    }
+
+    function ptPopulatePresetDropdown() {
+      const sel = document.getElementById('ptPresetSelect');
+      if (!sel) return;
+      const presets = _ptGetPresets();
+      sel.innerHTML = '<option value="">-- Presets --</option>';
+      for (let i = 0; i < presets.length; i++) {
+        sel.innerHTML += `<option value="${i}">${_teEsc(presets[i].name || 'Unnamed')}</option>`;
+      }
+    }
+
+    function ptSavePreset() {
+      const searchSpace = ptBuildSearchSpace();
+      if (Object.keys(searchSpace).length === 0) {
+        showToast('Enable at least one parameter before saving', 'error');
+        return;
+      }
+      showInputModal('Save Preset', 'Preset name', async (name) => {
+        if (!name || !name.trim()) { showToast('Name is required', 'error'); return; }
+        name = name.trim();
+
+        const presets = [..._ptGetPresets()];
+        // Check for duplicate name
+        const existingIdx = presets.findIndex(p => p.name === name);
+        const preset = { name, search_space: searchSpace };
+
+        if (existingIdx >= 0) {
+          presets[existingIdx] = preset;
+        } else {
+          if (presets.length >= 20) {
+            showToast('Maximum 20 presets allowed', 'error');
+            return;
+          }
+          presets.push(preset);
+        }
+
+        await _ptSavePresets(presets);
+        showToast(`Preset "${name}" saved`, 'success');
+      }, { confirmLabel: 'Save' });
+    }
+
+    function ptLoadSelectedPreset() {
+      const sel = document.getElementById('ptPresetSelect');
+      if (!sel || sel.value === '') { showToast('Select a preset first', 'error'); return; }
+      const idx = parseInt(sel.value);
+      const presets = _ptGetPresets();
+      if (idx < 0 || idx >= presets.length) return;
+      _ptApplyPresetToUI(presets[idx]);
+    }
+
+    function ptDeleteSelectedPreset() {
+      const sel = document.getElementById('ptPresetSelect');
+      if (!sel || sel.value === '') { showToast('Select a preset first', 'error'); return; }
+      const idx = parseInt(sel.value);
+      const presets = _ptGetPresets();
+      if (idx < 0 || idx >= presets.length) return;
+      const name = presets[idx].name || 'Unnamed';
+      showModal('Delete Preset', `Delete preset "${_teEsc(name)}"? This cannot be undone.`, async () => {
+        const updated = [...presets];
+        updated.splice(idx, 1);
+        await _ptSavePresets(updated);
+        showToast(`Preset "${name}" deleted`, 'success');
+      }, { danger: true, confirmLabel: 'Delete' });
+    }
+
+    function _ptApplyPresetToUI(preset) {
+      if (!preset || !preset.search_space) return;
+      const space = preset.search_space;
+
+      // For each rendered param row, apply preset values or disable
+      const rows = document.querySelectorAll('#ptSearchSpace [data-param-name]');
+      for (const row of rows) {
+        const name = row.dataset.paramName;
+        const type = row.dataset.paramType;
+        const toggle = document.getElementById('ptToggle_' + name);
+        if (!toggle) continue;
+
+        if (name in space) {
+          toggle.checked = true;
+          const val = space[name];
+          if ((type === 'float' || type === 'int') && typeof val === 'object' && !Array.isArray(val)) {
+            const minEl = document.getElementById('pt_' + name + '_min');
+            const maxEl = document.getElementById('pt_' + name + '_max');
+            const stepEl = document.getElementById('pt_' + name + '_step');
+            if (minEl && val.min !== undefined) minEl.value = val.min;
+            if (maxEl && val.max !== undefined) maxEl.value = val.max;
+            if (stepEl && val.step !== undefined) stepEl.value = val.step;
+          } else if (type === 'enum' && Array.isArray(val)) {
+            // Uncheck all, then check preset values
+            const allCbs = document.querySelectorAll('.pt-enum-' + name);
+            allCbs.forEach(cb => { cb.checked = false; });
+            for (const v of val) {
+              const cb = document.getElementById('pt_' + name + '_val_' + v);
+              if (cb) cb.checked = true;
+            }
+          }
+          // bool: just toggle on, values are always [true, false]
+        } else {
+          toggle.checked = false;
+        }
+      }
+
+      ptUpdatePreview();
+      showToast(`Preset "${preset.name}" loaded`, 'success');
+    }
+
+    async function _ptSavePresets(presets) {
+      // Update in-memory settings
+      if (!_p10Settings) _p10Settings = {};
+      if (!_p10Settings.param_tuner) _p10Settings.param_tuner = {};
+      _p10Settings.param_tuner.presets = presets;
+
+      // Save to backend
+      try {
+        const data = p10CollectUI();
+        data.param_tuner.presets = presets;
+        await apiFetch('/api/settings/phase10', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+        });
+      } catch {
+        showToast('Failed to save presets', 'error');
+      }
+
+      ptPopulatePresetDropdown();
+    }
 
     // --- Task #2: Registry access (uses existing ppRegistry from ppLoadRegistry) ---
     function _ptGetRegistry() { return ppRegistry || PP_REGISTRY; }
@@ -7027,6 +7260,10 @@
       const reg = _ptGetRegistry();
       if (!reg || ptSelectedModels.size === 0 || !config?.providers) return [];
 
+      // Check if param_support config is available (from Settings > Tuning)
+      const ps = _p10Settings?.param_support;
+      const useParamSupport = ps && ps.provider_defaults && Object.keys(ps.provider_defaults).length > 0;
+
       // Build model→registryKey mapping
       const modelProvMap = new Map(); // modelId → registryKey
       for (const [ck, pd] of Object.entries(config.providers)) {
@@ -7046,28 +7283,44 @@
       const paramMap = new Map(); // paramName → merged def
 
       for (const [modelId, rk] of modelProvMap) {
-        const provReg = reg[rk] || reg._unknown;
-        if (!provReg) continue;
-
-        const allParams = { ...(provReg.tier1 || {}), ...(provReg.tier2 || {}) };
+        // Source params: prefer param_support config, fallback to registry
+        let allParams, modelOverrides;
+        if (useParamSupport && ps.provider_defaults[rk]) {
+          // Read from user's saved param_support config
+          const provPS = ps.provider_defaults[rk];
+          allParams = {};
+          for (const [pname, spec] of Object.entries(provPS.params || {})) {
+            if (spec.enabled === false) continue; // Skip disabled params
+            allParams[pname] = spec;
+          }
+          modelOverrides = ps.model_overrides?.[rk] || {};
+        } else {
+          // Fallback: read from PROVIDER_REGISTRY
+          const provReg = reg[rk] || reg._unknown;
+          if (!provReg) continue;
+          allParams = { ...(provReg.tier1 || {}), ...(provReg.tier2 || {}) };
+          modelOverrides = provReg.model_overrides || {};
+        }
 
         for (const [pname, pdef] of Object.entries(allParams)) {
           // Check model overrides
           let override = null;
-          if (provReg.model_overrides) {
-            for (const [pattern, overrides] of Object.entries(provReg.model_overrides)) {
-              if (_ptMatchesGlob(modelId.split('/').pop(), pattern)) {
-                if (overrides[pname]) override = overrides[pname];
-              }
+          for (const [pattern, overrides] of Object.entries(modelOverrides)) {
+            if (_ptMatchesGlob(modelId.split('/').pop(), pattern)) {
+              if (overrides[pname]) override = overrides[pname];
             }
           }
 
           const isSupported = override?.supported !== false && pdef.supported !== false;
           const isLocked = override?.locked === true;
 
+          // Determine tier: if from param_support, use a heuristic (temperature/top_p/max_tokens = tier1)
+          const tier1Names = new Set(['temperature', 'max_tokens', 'top_p']);
+          const provReg = reg[rk] || reg._unknown;
+          const tier = provReg?.tier1?.[pname] ? 1 : (tier1Names.has(pname) ? 1 : 2);
+
           if (!paramMap.has(pname)) {
             // First time seeing this param
-            const tier = provReg.tier1?.[pname] ? 1 : 2;
             paramMap.set(pname, {
               name: pname,
               type: pdef.type || 'float',
@@ -7177,10 +7430,12 @@
 
       if (!paramDefs || paramDefs.length === 0) {
         container.innerHTML = '<div class="text-xs text-zinc-600 font-body text-center py-4">Select models to configure parameters</div>';
+        _ptCustomParamCounter = 0;
         return;
       }
 
       container.innerHTML = '';
+      _ptCustomParamCounter = 0;
 
       // Determine which params should be auto-enabled (defaults from settings or standard defaults)
       const autoEnable = new Set(['temperature', 'tool_choice']);
@@ -7279,8 +7534,135 @@
         container.appendChild(row);
       }
 
+      // Render custom parameters section
+      _ptRenderCustomParamsSection(container);
+
       // After rendering, update the preview
       ptUpdatePreview();
+    }
+
+    // --- Custom Parameters Section ---
+    function _ptGetTier3Suggestions() {
+      const reg = _ptGetRegistry();
+      if (!reg || ptSelectedModels.size === 0 || !config?.providers) return [];
+
+      const seen = new Set();
+      const suggestions = [];
+      for (const [ck, pd] of Object.entries(config.providers)) {
+        const rk = ptGetRegistryKey(ck, pd);
+        const provReg = reg[rk] || reg._unknown;
+        if (!provReg?.tier3_examples) continue;
+        const models = getProviderModels(pd);
+        const hasSelected = models.some(m => ptSelectedModels.has(m.model_id));
+        if (!hasSelected) continue;
+        for (const [pname, pdef] of Object.entries(provReg.tier3_examples)) {
+          if (!seen.has(pname)) {
+            seen.add(pname);
+            suggestions.push({ name: pname, ...pdef, provider: provReg.display_name || rk });
+          }
+        }
+      }
+      return suggestions;
+    }
+
+    function _ptRenderCustomParamsSection(container) {
+      const section = document.createElement('div');
+      section.id = 'ptCustomParamsSection';
+      section.className = 'border-t border-zinc-800 mt-4 pt-4';
+
+      const suggestions = _ptGetTier3Suggestions();
+      const hintText = suggestions.length
+        ? suggestions.slice(0, 4).map(s => s.name).join(', ')
+        : 'repetition_penalty, min_p, ...';
+
+      section.innerHTML = `
+        <div class="flex items-center justify-between mb-3">
+          <span class="section-label" style="margin:0">Custom Parameters</span>
+          <span class="text-[10px] text-zinc-600 font-body">Tier 3 passthrough</span>
+        </div>
+        ${suggestions.length ? `<div class="text-[10px] text-zinc-600 font-body mb-3">Suggested for selected providers: <span class="text-zinc-500">${suggestions.map(s => s.name).join(', ')}</span></div>` : ''}
+        <div id="ptCustomParamsList" class="space-y-3"></div>
+        <button onclick="ptAddCustomParam()" class="mt-3 text-xs text-zinc-400 hover:text-lime-400 transition-colors font-body flex items-center gap-1">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+          Add Custom Parameter
+        </button>`;
+
+      container.appendChild(section);
+    }
+
+    let _ptCustomParamCounter = 0;
+
+    function ptAddCustomParam() {
+      const list = document.getElementById('ptCustomParamsList');
+      if (!list) return;
+
+      const id = _ptCustomParamCounter++;
+      const suggestions = _ptGetTier3Suggestions();
+      const placeholder = suggestions.length
+        ? suggestions[Math.min(id, suggestions.length - 1)].name
+        : 'param_name';
+
+      const row = document.createElement('div');
+      row.className = 'flex items-start gap-2';
+      row.dataset.customParam = 'true';
+      row.dataset.customId = id;
+
+      row.innerHTML = `
+        <div class="flex-1 rounded-sm p-3" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);">
+          <div class="flex items-center gap-2 mb-2">
+            <input type="text" id="ptCustomName_${id}" placeholder="${placeholder}" class="${_ptInputStyle()}" style="${_ptInputInline()}width:140px;" onchange="ptUpdatePreview()">
+            <select id="ptCustomType_${id}" class="text-xs font-mono px-2 py-1.5 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;" onchange="ptCustomTypeChanged(${id})">
+              <option value="range">Range (min/max/step)</option>
+              <option value="values">Values (comma-separated)</option>
+            </select>
+            <button onclick="ptRemoveCustomParam(${id})" class="text-zinc-600 hover:text-red-400 transition-colors ml-auto" title="Remove">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div id="ptCustomInputs_${id}">
+            <div class="grid grid-cols-3 gap-2" id="ptCustomRange_${id}">
+              <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Min</label><input id="ptCustomMin_${id}" type="number" step="0.01" value="0" class="${_ptInputStyle()}" style="${_ptInputInline()}" onchange="ptUpdatePreview()"></div>
+              <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Max</label><input id="ptCustomMax_${id}" type="number" step="0.01" value="1" class="${_ptInputStyle()}" style="${_ptInputInline()}" onchange="ptUpdatePreview()"></div>
+              <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Step</label><input id="ptCustomStep_${id}" type="number" step="0.01" min="0.001" value="0.1" class="${_ptInputStyle()}" style="${_ptInputInline()}" onchange="ptUpdatePreview()"></div>
+            </div>
+            <div class="hidden" id="ptCustomValues_${id}">
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Values</label>
+              <input id="ptCustomValuesInput_${id}" type="text" placeholder="1.0, 1.05, 1.1" class="${_ptInputStyle()}" style="${_ptInputInline()}" onchange="ptUpdatePreview()">
+            </div>
+          </div>
+          <div id="ptCustomPills_${id}" class="flex flex-wrap gap-1 mt-2"></div>
+        </div>`;
+
+      list.appendChild(row);
+      ptUpdatePreview();
+    }
+
+    function ptRemoveCustomParam(id) {
+      const row = document.querySelector(`[data-custom-id="${id}"]`);
+      if (row) row.remove();
+      ptUpdatePreview();
+    }
+
+    function ptCustomTypeChanged(id) {
+      const type = document.getElementById('ptCustomType_' + id)?.value;
+      const rangeEl = document.getElementById('ptCustomRange_' + id);
+      const valuesEl = document.getElementById('ptCustomValues_' + id);
+      if (type === 'range') {
+        rangeEl?.classList.remove('hidden');
+        valuesEl?.classList.add('hidden');
+      } else {
+        rangeEl?.classList.add('hidden');
+        valuesEl?.classList.remove('hidden');
+      }
+      ptUpdatePreview();
+    }
+
+    function _ptParseCustomValues(str) {
+      if (!str || !str.trim()) return [];
+      return str.split(',').map(v => v.trim()).filter(v => v !== '').map(v => {
+        const num = Number(v);
+        return isNaN(num) ? v : num;
+      });
     }
 
     // --- Task #7: Wire model selection changes ---
@@ -7334,6 +7716,27 @@
         }
       }
 
+      // Count custom params
+      const customRows = document.querySelectorAll('#ptCustomParamsList [data-custom-param]');
+      for (const crow of customRows) {
+        const cid = crow.dataset.customId;
+        const cname = document.getElementById('ptCustomName_' + cid)?.value?.trim();
+        if (!cname) { ptRenderPills('ptCustomPills_' + cid, []); continue; }
+        const ctype = document.getElementById('ptCustomType_' + cid)?.value;
+        if (ctype === 'range') {
+          const cmin = parseFloat(document.getElementById('ptCustomMin_' + cid)?.value) || 0;
+          const cmax = parseFloat(document.getElementById('ptCustomMax_' + cid)?.value) || 1;
+          const cstep = parseFloat(document.getElementById('ptCustomStep_' + cid)?.value) || 0.1;
+          const vals = ptGenerateValues(cmin, cmax, cstep);
+          ptRenderPills('ptCustomPills_' + cid, vals);
+          if (vals.length) { dims.push(vals.length); breakdown.push(vals.length + ' ' + cname); }
+        } else {
+          const vals = _ptParseCustomValues(document.getElementById('ptCustomValuesInput_' + cid)?.value);
+          ptRenderPills('ptCustomPills_' + cid, vals);
+          if (vals.length) { dims.push(vals.length); breakdown.push(vals.length + ' ' + cname); }
+        }
+      }
+
       const total = dims.length ? dims.reduce((a, b) => a * b, 1) : 0;
       ptTotalCombos = total;
 
@@ -7350,12 +7753,215 @@
         else if (total <= 100) { badge.textContent = 'LARGE'; badge.style.background = 'rgba(249,115,22,0.1)'; badge.style.color = '#F97316'; }
         else { badge.textContent = 'WARNING'; badge.style.background = 'rgba(255,59,92,0.1)'; badge.style.color = 'var(--coral)'; }
       }
+
+      // Update compatibility matrix
+      ptRenderCompatMatrix();
     }
 
     function ptRenderPills(containerId, values) {
       const el = document.getElementById(containerId);
       if (!el) return;
       el.innerHTML = values.map(v => `<span class="inline-block px-2 py-0.5 rounded-sm text-[10px] font-mono text-zinc-300" style="background:rgba(255,255,255,0.04);border:1px solid var(--border-subtle);">${v}</span>`).join('');
+    }
+
+    // --- Task #9: Compatibility Matrix ---
+    function ptRenderCompatMatrix() {
+      const section = document.getElementById('ptCompatSection');
+      const body = document.getElementById('ptCompatBody');
+      if (!section || !body) return;
+
+      // Need at least 1 model selected and param_support configured
+      const ps = _p10Settings?.param_support;
+      const hasPS = ps && ps.provider_defaults && Object.keys(ps.provider_defaults).length > 0;
+      if (ptSelectedModels.size === 0 || !config?.providers) {
+        section.classList.add('hidden');
+        body.innerHTML = '';
+        return;
+      }
+
+      // Build per-model param info
+      const reg = _ptGetRegistry();
+      const models = []; // [{id, shortName, rk}]
+      for (const [ck, pd] of Object.entries(config.providers)) {
+        const rk = ptGetRegistryKey(ck, pd);
+        for (const m of getProviderModels(pd)) {
+          if (ptSelectedModels.has(m.model_id)) {
+            const shortName = m.display_name || m.model_id.split('/').pop();
+            models.push({ id: m.model_id, shortName, rk });
+          }
+        }
+      }
+      if (models.length === 0) { section.classList.add('hidden'); body.innerHTML = ''; return; }
+
+      // Get global search space from current UI state
+      const globalSpace = ptBuildSearchSpace();
+      const enabledParams = Object.keys(globalSpace);
+      if (enabledParams.length === 0) {
+        section.classList.add('hidden');
+        body.innerHTML = '';
+        return;
+      }
+
+      // For each model + param, determine support status
+      // Returns: { status: 'supported'|'locked'|'unsupported', range?, lockedValue? }
+      function getParamStatus(model, pname, globalVal) {
+        if (hasPS) {
+          const provPS = ps.provider_defaults[model.rk];
+          if (!provPS) return { status: 'supported', range: globalVal }; // No config = pass-through
+          const pspec = provPS.params?.[pname];
+          if (!pspec || pspec.enabled === false) return { status: 'unsupported' };
+
+          // Check model overrides
+          const modelOverrides = ps.model_overrides?.[model.rk] || {};
+          let override = null;
+          for (const [pattern, overrides] of Object.entries(modelOverrides)) {
+            if (_ptMatchesGlob(model.id.split('/').pop(), pattern)) {
+              if (overrides[pname]) override = overrides[pname];
+            }
+          }
+          if (override?.supported === false) return { status: 'unsupported' };
+          if (override?.locked === true) return { status: 'locked', lockedValue: override.value };
+
+          // Supported - compute clamped range
+          if (typeof globalVal === 'object' && !Array.isArray(globalVal) && globalVal.min !== undefined) {
+            const provMin = pspec.min ?? globalVal.min;
+            const provMax = pspec.max ?? globalVal.max;
+            const clampedMin = Math.max(globalVal.min, provMin);
+            const clampedMax = Math.min(globalVal.max, provMax);
+            const isClamped = clampedMin !== globalVal.min || clampedMax !== globalVal.max;
+            return { status: 'supported', range: { min: clampedMin, max: clampedMax, step: globalVal.step }, clamped: isClamped };
+          }
+          return { status: 'supported', range: globalVal };
+        } else {
+          // No param_support - check registry
+          const provReg = reg?.[model.rk] || reg?._unknown;
+          if (!provReg) return { status: 'supported', range: globalVal };
+          const allParams = { ...(provReg.tier1 || {}), ...(provReg.tier2 || {}) };
+          const pdef = allParams[pname];
+          if (!pdef) return { status: 'unsupported' };
+          if (pdef.supported === false) return { status: 'unsupported' };
+          // Check model overrides for locked
+          const modelOverrides = provReg.model_overrides || {};
+          for (const [pattern, overrides] of Object.entries(modelOverrides)) {
+            if (_ptMatchesGlob(model.id.split('/').pop(), pattern)) {
+              const ov = overrides[pname];
+              if (ov?.locked === true) return { status: 'locked', lockedValue: ov.value };
+              if (ov?.supported === false) return { status: 'unsupported' };
+            }
+          }
+          return { status: 'supported', range: globalVal };
+        }
+      }
+
+      // Build the matrix data
+      const matrix = []; // [{param, cells: [{status, range?, lockedValue?, clamped?}]}]
+      const perModelCombos = models.map(() => []); // per-model list of value counts
+
+      for (const pname of enabledParams) {
+        const globalVal = globalSpace[pname];
+        const row = { param: pname, cells: [] };
+        for (let mi = 0; mi < models.length; mi++) {
+          const status = getParamStatus(models[mi], pname, globalVal);
+          row.cells.push(status);
+          // Count values for combo calculation
+          if (status.status === 'supported') {
+            const r = status.range;
+            if (typeof r === 'object' && !Array.isArray(r) && r.min !== undefined) {
+              perModelCombos[mi].push(ptGenerateValues(r.min, r.max, r.step).length || 1);
+            } else if (Array.isArray(r)) {
+              perModelCombos[mi].push(r.length || 1);
+            } else {
+              perModelCombos[mi].push(1);
+            }
+          } else if (status.status === 'locked') {
+            perModelCombos[mi].push(1);
+          }
+          // unsupported = param dropped, doesn't contribute to combos
+        }
+        matrix.push(row);
+      }
+
+      // Compute combo counts per model
+      const comboCounts = perModelCombos.map(arr => arr.length ? arr.reduce((a, b) => a * b, 1) : 0);
+
+      // Count adjustments summary
+      let totalUnsupported = 0, totalClamped = 0, totalLocked = 0;
+      for (const row of matrix) {
+        for (const cell of row.cells) {
+          if (cell.status === 'unsupported') totalUnsupported++;
+          if (cell.status === 'locked') totalLocked++;
+          if (cell.clamped) totalClamped++;
+        }
+      }
+
+      // Render HTML
+      const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+      // Helper to render cell content
+      function renderCell(cell) {
+        if (cell.status === 'unsupported') {
+          return `<span class="text-zinc-600" title="Not supported by this model">--</span>`;
+        }
+        if (cell.status === 'locked') {
+          return `<span class="text-amber-500" title="Locked to fixed value" style="font-size:10px;">locked=${esc(cell.lockedValue)}</span>`;
+        }
+        // Supported
+        const r = cell.range;
+        if (typeof r === 'object' && !Array.isArray(r) && r.min !== undefined) {
+          const clampClass = cell.clamped ? 'text-sky-400' : 'text-zinc-400';
+          const clampTitle = cell.clamped ? 'Range clamped to model limits' : 'Full range';
+          return `<span class="${clampClass}" title="${clampTitle}" style="font-size:10px;">${r.min}-${r.max} /${r.step}</span>`;
+        }
+        if (Array.isArray(r)) {
+          return `<span class="text-zinc-400" style="font-size:10px;">${r.length} vals</span>`;
+        }
+        return `<span class="text-lime-accent" style="font-size:10px;">ok</span>`;
+      }
+
+      // Truncate model names for column headers
+      const maxNameLen = models.length > 4 ? 12 : 18;
+      const truncName = s => s.length > maxNameLen ? s.slice(0, maxNameLen - 1) + '\u2026' : s;
+
+      let html = `<table class="w-full text-xs font-mono" style="border-collapse:collapse;">`;
+      // Header
+      html += `<thead><tr><th class="text-left text-zinc-500 font-display text-[10px] uppercase tracking-wider px-2 py-1.5" style="border-bottom:1px solid var(--border-subtle);">Param</th>`;
+      for (const m of models) {
+        html += `<th class="text-center text-zinc-500 font-display text-[10px] uppercase tracking-wider px-2 py-1.5" style="border-bottom:1px solid var(--border-subtle);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(m.id)}">${esc(truncName(m.shortName))}</th>`;
+      }
+      html += `</tr></thead><tbody>`;
+
+      // Param rows
+      for (const row of matrix) {
+        html += `<tr>`;
+        html += `<td class="text-zinc-300 px-2 py-1" style="border-bottom:1px solid rgba(255,255,255,0.03);">${esc(_ptDisplayName(row.param))}</td>`;
+        for (const cell of row.cells) {
+          html += `<td class="text-center px-2 py-1" style="border-bottom:1px solid rgba(255,255,255,0.03);">${renderCell(cell)}</td>`;
+        }
+        html += `</tr>`;
+      }
+
+      // Combo count row
+      html += `<tr style="border-top:1px solid var(--border-subtle);">`;
+      html += `<td class="text-zinc-400 font-display text-[10px] uppercase tracking-wider px-2 py-1.5 font-semibold">Combos</td>`;
+      for (const count of comboCounts) {
+        const color = count === 0 ? 'text-zinc-600' : count < 20 ? 'text-lime-accent' : count < 50 ? 'text-amber-400' : 'text-orange-400';
+        html += `<td class="text-center px-2 py-1.5 font-semibold ${color}">${count}</td>`;
+      }
+      html += `</tr>`;
+      html += `</tbody></table>`;
+
+      // Adjustments summary below table
+      const hasAdj = totalUnsupported > 0 || totalClamped > 0 || totalLocked > 0;
+      if (hasAdj) {
+        const parts = [];
+        if (totalUnsupported) parts.push(`<span class="text-zinc-500">${totalUnsupported} dropped</span>`);
+        if (totalClamped) parts.push(`<span class="text-sky-400">${totalClamped} clamped</span>`);
+        if (totalLocked) parts.push(`<span class="text-amber-500">${totalLocked} locked</span>`);
+        html += `<div class="mt-2 text-[10px] font-body text-zinc-500">Runtime adjustments: ${parts.join(' &middot; ')}</div>`;
+      }
+
+      body.innerHTML = html;
+      section.classList.remove('hidden');
     }
 
     function ptBuildSearchSpace() {
@@ -7382,7 +7988,101 @@
           space[name] = [true, false];
         }
       }
+
+      // Include custom params
+      const customRows = document.querySelectorAll('#ptCustomParamsList [data-custom-param]');
+      for (const crow of customRows) {
+        const cid = crow.dataset.customId;
+        const cname = document.getElementById('ptCustomName_' + cid)?.value?.trim();
+        if (!cname) continue;
+        const ctype = document.getElementById('ptCustomType_' + cid)?.value;
+        if (ctype === 'range') {
+          const cmin = parseFloat(document.getElementById('ptCustomMin_' + cid)?.value) || 0;
+          const cmax = parseFloat(document.getElementById('ptCustomMax_' + cid)?.value) || 1;
+          const cstep = parseFloat(document.getElementById('ptCustomStep_' + cid)?.value) || 0.1;
+          space[cname] = { min: cmin, max: cmax, step: cstep };
+        } else {
+          const vals = _ptParseCustomValues(document.getElementById('ptCustomValuesInput_' + cid)?.value);
+          if (vals.length) space[cname] = vals;
+        }
+      }
+
       return space;
+    }
+
+    // Build per-model search spaces, clamped to each model's param_support domain
+    function ptBuildPerModelSearchSpaces() {
+      const globalSpace = ptBuildSearchSpace();
+      const ps = _p10Settings?.param_support;
+      if (!ps?.provider_defaults || Object.keys(ps.provider_defaults).length === 0) {
+        return null; // No param_support — backend will use global search_space
+      }
+
+      const perModel = {};
+      for (const modelId of ptSelectedModels) {
+        // Resolve provider key for this model
+        let rk = '_unknown';
+        for (const [ck, pd] of Object.entries(config.providers)) {
+          const models = getProviderModels(pd);
+          if (models.some(m => m.model_id === modelId)) {
+            rk = ptGetRegistryKey(ck, pd);
+            break;
+          }
+        }
+
+        const provPS = ps.provider_defaults[rk];
+        if (!provPS) {
+          perModel[modelId] = globalSpace; // No config for this provider, use global
+          continue;
+        }
+
+        const provParams = provPS.params || {};
+        const modelOverrides = ps.model_overrides?.[rk] || {};
+        const tailored = {};
+
+        for (const [pname, pval] of Object.entries(globalSpace)) {
+          // Check if param is enabled for this provider
+          const pspec = provParams[pname];
+          if (!pspec || pspec.enabled === false) continue; // Skip unsupported
+
+          // Check model overrides
+          let override = null;
+          for (const [pattern, overrides] of Object.entries(modelOverrides)) {
+            if (_ptMatchesGlob(modelId.split('/').pop(), pattern)) {
+              if (overrides[pname]) override = overrides[pname];
+            }
+          }
+
+          if (override?.supported === false) continue; // Model override says unsupported
+          if (override?.locked === true) {
+            // Locked to a specific value
+            tailored[pname] = [override.value];
+            continue;
+          }
+
+          // For numeric ranges, clamp to provider's supported range
+          if (typeof pval === 'object' && !Array.isArray(pval) && pval.min !== undefined) {
+            const provMin = pspec.min ?? pval.min;
+            const provMax = pspec.max ?? pval.max;
+            tailored[pname] = {
+              min: Math.max(pval.min, provMin),
+              max: Math.min(pval.max, provMax),
+              step: pval.step,
+            };
+            // Ensure min <= max after clamping
+            if (tailored[pname].min > tailored[pname].max) {
+              tailored[pname].min = tailored[pname].max;
+            }
+          } else {
+            // Enum or array values — pass through
+            tailored[pname] = pval;
+          }
+        }
+
+        perModel[modelId] = tailored;
+      }
+
+      return perModel;
     }
 
     function ptLoadSuiteSelector() {
@@ -7449,6 +8149,8 @@
       }
     }
 
+    let _activeParamTuneJobId = null;
+
     async function ptStartTune() {
       const suiteId = document.getElementById('ptSuiteSelect').value;
       if (!suiteId) { showToast('Select a tool eval suite', 'error'); return; }
@@ -7463,6 +8165,7 @@
       ptResults = [];
       ptBestConfig = null;
       ptBestScore = 0;
+      _ptSearchSpaceKeys = Object.keys(searchSpace);  // capture for column rendering
 
       showToolEvalView('pt-run');
       document.getElementById('ptProgressSection').classList.remove('hidden');
@@ -7471,15 +8174,22 @@
       document.getElementById('ptApplyBestBtn').classList.add('hidden');
       document.getElementById('ptResultsHead').innerHTML = '';
       document.getElementById('ptResultsBody').innerHTML = '';
+      const _adjBanner = document.getElementById('ptAdjustmentsSummary');
+      if (_adjBanner) { _adjBanner.classList.add('hidden'); _adjBanner.innerHTML = ''; }
       document.getElementById('ptProgressBar').style.width = '0%';
-      document.getElementById('ptProgressLabel').textContent = 'Initializing...';
+      document.getElementById('ptProgressLabel').textContent = 'Submitting...';
       document.getElementById('ptProgressCount').textContent = '0/0';
 
+      // Build per-model search spaces if param_support config is available
+      const perModelSpaces = ptBuildPerModelSearchSpaces();
       const body = {
         suite_id: suiteId,
         models: Array.from(ptSelectedModels),
-        search_space: searchSpace
+        search_space: searchSpace,
       };
+      if (perModelSpaces) {
+        body.per_model_search_spaces = perModelSpaces;
+      }
 
       try {
         const res = await apiFetch('/api/tool-eval/param-tune', {
@@ -7495,85 +8205,100 @@
           _ptResetStartBtn(); return;
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+        // Job-based response: {job_id, status}
+        const data = await res.json();
+        _activeParamTuneJobId = data.job_id;
+        document.getElementById('ptProgressLabel').textContent = data.status === 'submitted' ? 'Tune queued...' : 'Tune starting...';
+        showToast('Parameter tuning submitted', 'success');
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          _ptResetTimeout();
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try { ptHandleSSE(JSON.parse(line.slice(6))); } catch (e) {}
-            }
-          }
-        }
+        // Progress updates arrive via WebSocket (handled by _onParamTuneJobEvent)
       } catch (e) {
         showToast('Connection error: ' + (e.message || 'unknown'), 'error');
-      } finally {
         _ptResetStartBtn();
-        _ptClearTimeout();
       }
     }
 
-    function ptHandleSSE(evt) {
-      switch (evt.type) {
+    // WebSocket event bridge for inline param tuner progress
+    function _onParamTuneJobEvent(msg) {
+      if (!_activeParamTuneJobId || msg.job_id !== _activeParamTuneJobId) return;
+
+      switch (msg.type) {
+        case 'job_started':
+          document.getElementById('ptProgressLabel').textContent = 'Tune running...';
+          break;
+
+        case 'job_progress': {
+          const pct = msg.progress_pct || 0;
+          document.getElementById('ptProgressBar').style.width = pct + '%';
+          document.getElementById('ptProgressLabel').textContent = msg.progress_detail || 'Running...';
+          break;
+        }
+
         case 'tune_start':
-          ptTotalCombos = evt.total_combos || 0;
-          document.getElementById('ptProgressLabel').textContent = `Tuning ${evt.models?.length || 0} model(s), ${ptTotalCombos} combinations`;
+          ptTotalCombos = msg.total_combos || 0;
+          document.getElementById('ptProgressLabel').textContent = `Tuning ${msg.models?.length || 0} model(s), ${ptTotalCombos} combinations`;
           document.getElementById('ptProgressCount').textContent = `0/${ptTotalCombos}`;
           break;
 
-        case 'combo_start':
-          document.getElementById('ptProgressLabel').textContent = `${evt.model || ''}: ${JSON.stringify(evt.config || {})}`;
-          break;
-
-        case 'combo_result':
+        case 'combo_result': {
+          const evt = msg.data || msg;
           ptResults.push(evt);
           if (evt.overall_score > ptBestScore) {
             ptBestScore = evt.overall_score;
             ptBestConfig = { ...evt.config, model_id: evt.model_id, model_name: evt.model_name };
           }
+          // Update progress count
+          document.getElementById('ptProgressCount').textContent = `${ptResults.length}/${ptTotalCombos}`;
           ptRenderResultsTable();
           ptUpdateBestCard();
           break;
-
-        case 'tune_progress':
-          const pct = ptTotalCombos > 0 ? Math.round((evt.completed / ptTotalCombos) * 100) : 0;
-          document.getElementById('ptProgressBar').style.width = pct + '%';
-          document.getElementById('ptProgressCount').textContent = `${evt.completed}/${ptTotalCombos}`;
-          break;
+        }
 
         case 'tune_complete':
           document.getElementById('ptProgressSection').classList.add('hidden');
           document.getElementById('ptApplyBestBtn').classList.remove('hidden');
-          if (evt.best_config) { ptBestConfig = evt.best_config; ptBestScore = evt.best_score || ptBestScore; }
+          if (msg.best_config) { ptBestConfig = msg.best_config; ptBestScore = msg.best_score || ptBestScore; }
           ptUpdateBestCard();
           ptRenderResultsTable();
+          _activeParamTuneJobId = null;
+          _ptResetStartBtn();
           showToast('Tuning complete!', 'success');
           break;
 
-        case 'cancelled':
+        case 'job_completed':
+          // Fallback: if tune_complete didn't fire, handle via generic job completion
+          if (_activeParamTuneJobId) {
+            document.getElementById('ptProgressSection').classList.add('hidden');
+            document.getElementById('ptApplyBestBtn').classList.remove('hidden');
+            ptRenderResultsTable();
+            _activeParamTuneJobId = null;
+            _ptResetStartBtn();
+            showToast('Tuning complete!', 'success');
+          }
+          break;
+
+        case 'job_failed':
           document.getElementById('ptProgressSection').classList.add('hidden');
+          _activeParamTuneJobId = null;
+          _ptResetStartBtn();
+          showToast(msg.error || msg.error_msg || 'Tuning failed', 'error');
+          break;
+
+        case 'job_cancelled':
+          document.getElementById('ptProgressSection').classList.add('hidden');
+          _activeParamTuneJobId = null;
+          _ptResetStartBtn();
           showToast('Tuning cancelled. Partial results saved.', '');
           break;
-
-        case 'error':
-          document.getElementById('ptProgressSection').classList.add('hidden');
-          showToast(evt.message || 'Tuning error', 'error');
-          break;
-
-        case 'heartbeat': break;
       }
     }
 
     // Collect unique config param keys from results for dynamic columns
     function _ptConfigKeys() {
       const keys = new Set();
+      // Include keys from search space definition (ensures columns appear even if param was dropped)
+      for (const k of _ptSearchSpaceKeys) keys.add(k);
+      // Also include keys from actual results
       for (const r of ptResults) {
         for (const k of Object.keys(r.config || {})) keys.add(k);
       }
@@ -7598,6 +8323,12 @@
       const body = document.getElementById('ptResultsBody');
       const cfgKeys = _ptConfigKeys();
 
+      // Check if any results have adjustments data
+      const hasAnyAdj = ptResults.some(r => Array.isArray(r.adjustments) && r.adjustments.length > 0);
+
+      // Update adjustments summary banner
+      _ptRenderAdjustmentsSummary(hasAnyAdj);
+
       // Build dynamic header
       const thStyle = 'px-4 py-2 section-label cursor-pointer';
       let headHtml = `<tr style="border-bottom:1px solid var(--border-subtle)">`;
@@ -7611,13 +8342,18 @@
       headHtml += `<th class="${thStyle} text-right" onclick="ptSortResults('tool_accuracy')">Tool %</th>`;
       headHtml += `<th class="${thStyle} text-right" onclick="ptSortResults('param_accuracy')">Param %</th>`;
       headHtml += `<th class="${thStyle} text-right" onclick="ptSortResults('latency_avg_ms')">Latency</th>`;
+      if (hasAnyAdj) {
+        headHtml += `<th class="${thStyle} text-center" onclick="ptSortResults('_adj_count')">Adj</th>`;
+      }
       headHtml += `</tr>`;
       head.innerHTML = headHtml;
 
       // Sort results — handle cfg: prefix for config param sorting
       const sorted = [...ptResults].sort((a, b) => {
         let va, vb;
-        if (ptSortKey.startsWith('cfg:')) {
+        if (ptSortKey === '_adj_count') {
+          va = (a.adjustments || []).length; vb = (b.adjustments || []).length;
+        } else if (ptSortKey.startsWith('cfg:')) {
           const ck = ptSortKey.slice(4);
           va = (a.config || {})[ck]; vb = (b.config || {})[ck];
         } else {
@@ -7639,8 +8375,10 @@
         const rowStyle = isBest ? 'border:1px solid rgba(234,179,8,0.3);background:rgba(234,179,8,0.03);' : '';
         const boldCls = isBest ? 'font-bold' : '';
         const scoreColor = _ptScoreColor((r.overall_score || 0) * 100);
+        const hasCases = Array.isArray(r.case_results) && r.case_results.length > 0;
+        const clickAttr = hasCases ? `onclick="ptShowDrilldown(${r.combo_index})" style="${rowStyle}cursor:pointer;" title="Click to view test case details"` : `style="${rowStyle}"`;
 
-        let rowHtml = `<tr style="${rowStyle}">`;
+        let rowHtml = `<tr class="${hasCases ? 'hover:bg-white/[0.02] transition-colors' : ''}" ${clickAttr}>`;
         rowHtml += `<td class="px-4 py-2 text-xs font-mono text-zinc-600">${i + 1}</td>`;
         rowHtml += `<td class="px-4 py-2 text-xs font-body text-zinc-300 ${boldCls}">${_teEsc(r.model_name || r.model_id || '')}</td>`;
         for (const k of cfgKeys) {
@@ -7648,12 +8386,79 @@
           rowHtml += `<td class="px-4 py-2 ${align} text-xs font-mono text-zinc-400">${cfg[k] ?? '-'}</td>`;
         }
         rowHtml += `<td class="px-4 py-2 text-right text-xs font-mono ${boldCls}" style="color:${scoreColor}">${((r.overall_score || 0) * 100).toFixed(1)}%</td>`;
-        rowHtml += `<td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${((r.tool_accuracy || 0) * 100).toFixed(1)}%</td>`;
-        rowHtml += `<td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${((r.param_accuracy || 0) * 100).toFixed(1)}%</td>`;
+        rowHtml += `<td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${(r.tool_accuracy || 0).toFixed(1)}%</td>`;
+        rowHtml += `<td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${(r.param_accuracy || 0).toFixed(1)}%</td>`;
         rowHtml += `<td class="px-4 py-2 text-right text-xs font-mono text-zinc-500">${r.latency_avg_ms ? r.latency_avg_ms + 'ms' : '-'}</td>`;
+        if (hasAnyAdj) {
+          rowHtml += _ptRenderAdjCell(r.adjustments);
+        }
         rowHtml += `</tr>`;
         return rowHtml;
       }).join('');
+    }
+
+    // Render a single adjustments cell for a result row
+    function _ptRenderAdjCell(adjustments) {
+      if (!Array.isArray(adjustments) || adjustments.length === 0) {
+        return `<td class="px-4 py-2 text-center text-xs font-mono text-zinc-700">-</td>`;
+      }
+      const count = adjustments.length;
+      // Build tooltip text: one line per adjustment
+      const lines = adjustments.map(a => {
+        const param = a.param || '?';
+        if (a.adjusted === null || a.adjusted === undefined) {
+          return `${param}: dropped -- ${a.reason || 'unsupported'}`;
+        }
+        return `${param}: ${a.original} -> ${a.adjusted} -- ${a.reason || 'clamped'}`;
+      });
+      const tip = _teEsc(lines.join('\n'));
+      // Dropped = adjusted is null; clamped = adjusted is a value
+      const dropped = adjustments.filter(a => a.adjusted === null || a.adjusted === undefined).length;
+      const clamped = count - dropped;
+      // Badge color: red-ish for drops, yellow for clamps, mixed shows count
+      let badgeBg, badgeColor;
+      if (dropped > 0 && clamped === 0) {
+        badgeBg = 'rgba(255,59,92,0.1)'; badgeColor = '#FB7185';
+      } else if (clamped > 0 && dropped === 0) {
+        badgeBg = 'rgba(234,179,8,0.1)'; badgeColor = '#EAB308';
+      } else {
+        badgeBg = 'rgba(251,146,60,0.1)'; badgeColor = '#FB923C';
+      }
+      return `<td class="px-4 py-2 text-center">
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-[10px] font-display tracking-wider uppercase cursor-help"
+          style="background:${badgeBg};color:${badgeColor}" title="${tip}">
+          ${count}${dropped > 0 ? (dropped === count ? ' dropped' : ' adj') : ' clamped'}
+        </span>
+      </td>`;
+    }
+
+    // Render the adjustments summary banner above the results table
+    function _ptRenderAdjustmentsSummary(hasAnyAdj) {
+      const banner = document.getElementById('ptAdjustmentsSummary');
+      if (!banner) return;
+      if (!hasAnyAdj) {
+        banner.classList.add('hidden');
+        banner.innerHTML = '';
+        return;
+      }
+      // Count totals across all results
+      let totalAdj = 0, totalDropped = 0, totalClamped = 0;
+      const runsWithAdj = new Set();
+      for (const r of ptResults) {
+        if (!Array.isArray(r.adjustments) || r.adjustments.length === 0) continue;
+        runsWithAdj.add(r.combo_index + ':' + r.model_id);
+        for (const a of r.adjustments) {
+          totalAdj++;
+          if (a.adjusted === null || a.adjusted === undefined) totalDropped++;
+          else totalClamped++;
+        }
+      }
+      const parts = [];
+      parts.push(`${totalAdj} param${totalAdj !== 1 ? 's' : ''} adjusted across ${runsWithAdj.size} run${runsWithAdj.size !== 1 ? 's' : ''}`);
+      if (totalDropped > 0) parts.push(`${totalDropped} dropped`);
+      if (totalClamped > 0) parts.push(`${totalClamped} clamped`);
+      banner.innerHTML = parts.join(' &middot; ');
+      banner.classList.remove('hidden');
     }
 
     // Extract config-only keys from ptBestConfig (excluding model_name, model_id)
@@ -7686,10 +8491,15 @@
     }
 
     async function ptCancelTune() {
-      try {
-        await apiFetch('/api/tool-eval/param-tune/cancel', { method: 'POST' });
-        showToast('Cancellation requested', '');
-      } catch {}
+      if (_activeParamTuneJobId) {
+        notifCancelJob(_activeParamTuneJobId);
+      } else {
+        // Legacy fallback
+        try {
+          await apiFetch('/api/tool-eval/param-tune/cancel', { method: 'POST' });
+          showToast('Cancellation requested', '');
+        } catch {}
+      }
     }
 
     function ptApplyBest() {
@@ -7709,13 +8519,23 @@
     function ptExportCSV() {
       if (!ptResults.length) { showToast('No results to export', 'error'); return; }
       const cfgKeys = _ptConfigKeys();
+      const hasAdj = ptResults.some(r => Array.isArray(r.adjustments) && r.adjustments.length > 0);
       const headers = ['model_id', 'model_name', ...cfgKeys, 'overall_score', 'tool_accuracy', 'param_accuracy', 'latency_avg_ms'];
+      if (hasAdj) headers.push('adjustments');
       const esc = v => { const s = String(v ?? ''); return s.includes(',') || s.includes('"') ? '"' + s.replace(/"/g, '""') + '"' : s; };
       const rows = ptResults.map(r => {
         const c = r.config || {};
         const vals = [r.model_id, r.model_name, ...cfgKeys.map(k => c[k] ?? ''),
-          ((r.overall_score || 0) * 100).toFixed(1), ((r.tool_accuracy || 0) * 100).toFixed(1),
-          ((r.param_accuracy || 0) * 100).toFixed(1), r.latency_avg_ms || ''];
+          ((r.overall_score || 0) * 100).toFixed(1), (r.tool_accuracy || 0).toFixed(1),
+          (r.param_accuracy || 0).toFixed(1), r.latency_avg_ms || ''];
+        if (hasAdj) {
+          const adj = r.adjustments || [];
+          const adjStr = adj.map(a => {
+            if (a.adjusted === null || a.adjusted === undefined) return `${a.param} dropped`;
+            return `${a.param}: ${a.original}->${a.adjusted}`;
+          }).join('; ');
+          vals.push(adjStr);
+        }
         return vals.map(esc).join(',');
       });
       const csv = [headers.map(esc).join(','), ...rows].join('\n');
@@ -7771,6 +8591,24 @@
         ptResults = run.results_json ? (typeof run.results_json === 'string' ? JSON.parse(run.results_json) : run.results_json) : [];
         ptBestConfig = typeof run.best_config_json === 'string' ? JSON.parse(run.best_config_json) : run.best_config_json;
         ptBestScore = run.best_score || 0;
+        // Restore search space keys for column rendering
+        try {
+          const ss = run.search_space_json ? (typeof run.search_space_json === 'string' ? JSON.parse(run.search_space_json) : run.search_space_json) : {};
+          // search_space_json might be per_model_search_spaces (keyed by model id) or a flat space
+          const firstVal = Object.values(ss)[0];
+          if (firstVal && typeof firstVal === 'object' && !Array.isArray(firstVal) && firstVal.min !== undefined) {
+            _ptSearchSpaceKeys = Object.keys(ss); // flat search space
+          } else if (firstVal && typeof firstVal === 'object') {
+            // per_model_search_spaces — union all keys
+            const allKeys = new Set();
+            for (const modelSS of Object.values(ss)) {
+              if (typeof modelSS === 'object') for (const k of Object.keys(modelSS)) allKeys.add(k);
+            }
+            _ptSearchSpaceKeys = [...allKeys];
+          } else {
+            _ptSearchSpaceKeys = Object.keys(ss);
+          }
+        } catch { _ptSearchSpaceKeys = []; }
 
         showToolEvalView('pt-run');
         document.getElementById('ptProgressSection').classList.add('hidden');
@@ -7820,19 +8658,111 @@
       }
     }
 
-    function _ptResetTimeout() {
-      _ptClearTimeout();
-      _ptSSETimeout = setTimeout(() => {
-        showToast('Connection timed out', 'error');
-      }, 30000);
-    }
-    function _ptClearTimeout() { if (_ptSSETimeout) { clearTimeout(_ptSSETimeout); _ptSSETimeout = null; } }
-
     function _ptScoreColor(pct) {
       if (pct >= 90) return 'var(--lime)';
       if (pct >= 70) return '#22D3EE';
       if (pct >= 50) return '#EAB308';
       return 'var(--coral)';
+    }
+
+    // --- Task #21: Drill-down modal for per-combo test results ---
+    function ptShowDrilldown(comboIndex) {
+      const result = ptResults.find(r => r.combo_index === comboIndex);
+      if (!result || !Array.isArray(result.case_results) || result.case_results.length === 0) {
+        showToast('No case details available for this combo', 'error');
+        return;
+      }
+      const cases = result.case_results;
+      const cfg = result.config || {};
+      const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+      // Config summary line
+      const cfgParts = Object.entries(cfg).map(([k, v]) => `<span class="text-zinc-500">${esc(k)}=</span><span class="text-zinc-300">${esc(v)}</span>`);
+      const cfgLine = cfgParts.join(' &middot; ');
+
+      // Build case results table
+      let tableHtml = `<table class="w-full text-xs font-mono" style="border-collapse:collapse;">`;
+      tableHtml += `<thead><tr style="border-bottom:1px solid var(--border-subtle);">`;
+      tableHtml += `<th class="text-left px-3 py-2 text-zinc-500 font-display text-[10px] uppercase tracking-wider">Case</th>`;
+      tableHtml += `<th class="text-left px-3 py-2 text-zinc-500 font-display text-[10px] uppercase tracking-wider">Expected Tool</th>`;
+      tableHtml += `<th class="text-left px-3 py-2 text-zinc-500 font-display text-[10px] uppercase tracking-wider">Actual Tool</th>`;
+      tableHtml += `<th class="text-right px-3 py-2 text-zinc-500 font-display text-[10px] uppercase tracking-wider">Tool</th>`;
+      tableHtml += `<th class="text-right px-3 py-2 text-zinc-500 font-display text-[10px] uppercase tracking-wider">Params</th>`;
+      tableHtml += `<th class="text-right px-3 py-2 text-zinc-500 font-display text-[10px] uppercase tracking-wider">Overall</th>`;
+      tableHtml += `<th class="text-right px-3 py-2 text-zinc-500 font-display text-[10px] uppercase tracking-wider">Latency</th>`;
+      tableHtml += `</tr></thead><tbody>`;
+
+      for (const c of cases) {
+        const toolMatch = c.tool_selection_score === 1.0;
+        const toolColor = toolMatch ? 'var(--lime)' : 'var(--coral)';
+        const overallPct = (c.overall_score || 0) * 100;
+        const overallColor = _ptScoreColor(overallPct);
+        const paramPct = c.param_accuracy != null ? (c.param_accuracy * 100).toFixed(0) + '%' : '-';
+        const paramColor = c.param_accuracy != null ? _ptScoreColor(c.param_accuracy * 100) : '#71717A';
+
+        // Error row styling
+        const rowBg = !c.success ? 'background:rgba(255,59,92,0.04);' : '';
+
+        tableHtml += `<tr style="border-bottom:1px solid rgba(255,255,255,0.03);${rowBg}">`;
+        tableHtml += `<td class="px-3 py-1.5 text-zinc-300 font-body" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(c.prompt || c.test_case_id || '')}">${esc(c.test_case_id || '?')}</td>`;
+        tableHtml += `<td class="px-3 py-1.5 text-zinc-400">${esc(c.expected_tool || '-')}</td>`;
+        tableHtml += `<td class="px-3 py-1.5" style="color:${toolColor}">${esc(c.actual_tool || '-')}</td>`;
+        tableHtml += `<td class="px-3 py-1.5 text-right" style="color:${toolColor}">${toolMatch ? '1.0' : '0.0'}</td>`;
+        tableHtml += `<td class="px-3 py-1.5 text-right" style="color:${paramColor}">${paramPct}</td>`;
+        tableHtml += `<td class="px-3 py-1.5 text-right font-semibold" style="color:${overallColor}">${overallPct.toFixed(0)}%</td>`;
+        tableHtml += `<td class="px-3 py-1.5 text-right text-zinc-500">${c.latency_ms ? c.latency_ms + 'ms' : '-'}</td>`;
+        tableHtml += `</tr>`;
+
+        // Expandable param comparison row (show if params differ)
+        if (c.expected_params && c.actual_params && c.param_accuracy !== null && c.param_accuracy < 1.0) {
+          tableHtml += `<tr style="border-bottom:1px solid rgba(255,255,255,0.02);">`;
+          tableHtml += `<td colspan="7" class="px-3 py-1 text-[10px]">`;
+          tableHtml += `<div class="flex gap-6 ml-4">`;
+          tableHtml += `<div><span class="text-zinc-600">Expected:</span> <span class="text-zinc-500">${esc(JSON.stringify(c.expected_params))}</span></div>`;
+          tableHtml += `<div><span class="text-zinc-600">Actual:</span> <span class="text-amber-500/70">${esc(JSON.stringify(c.actual_params))}</span></div>`;
+          tableHtml += `</div></td></tr>`;
+        }
+
+        // Error message row
+        if (!c.success && c.error) {
+          tableHtml += `<tr style="border-bottom:1px solid rgba(255,255,255,0.02);">`;
+          tableHtml += `<td colspan="7" class="px-3 py-1 text-[10px] text-red-400/70 ml-4" style="padding-left:28px;">${esc(c.error)}</td>`;
+          tableHtml += `</tr>`;
+        }
+      }
+      tableHtml += `</tbody></table>`;
+
+      // Summary line
+      const passed = cases.filter(c => c.success && c.overall_score === 1.0).length;
+      const failed = cases.filter(c => !c.success).length;
+      const summaryColor = passed === cases.length ? 'var(--lime)' : passed > 0 ? '#EAB308' : 'var(--coral)';
+
+      // Build modal
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = `<div class="modal-box" style="max-width:800px;min-width:600px;">
+        <div class="flex items-center justify-between mb-3">
+          <div class="modal-title" style="margin:0;">Case Results</div>
+          <button class="text-zinc-500 hover:text-zinc-300 transition-colors" data-action="close" style="font-size:18px;line-height:1;padding:4px;">&times;</button>
+        </div>
+        <div class="text-xs font-body text-zinc-400 mb-2">${esc(result.model_name || result.model_id)} &mdash; Combo #${comboIndex + 1}</div>
+        <div class="text-[10px] font-mono mb-4" style="color:#71717A;">${cfgLine}</div>
+        <div class="flex items-center gap-4 mb-4 text-xs font-body">
+          <span style="color:${summaryColor}">${passed}/${cases.length} passed</span>
+          ${failed ? `<span class="text-red-400">${failed} errors</span>` : ''}
+          <span class="text-zinc-500">Score: <span style="color:${_ptScoreColor((result.overall_score || 0) * 100)}">${((result.overall_score || 0) * 100).toFixed(1)}%</span></span>
+        </div>
+        <div style="max-height:400px;overflow-y:auto;scrollbar-width:thin;">
+          ${tableHtml}
+        </div>
+        <div class="flex justify-end mt-4">
+          <button class="modal-btn modal-btn-cancel" data-action="close">Close</button>
+        </div>
+      </div>`;
+
+      overlay.querySelectorAll('[data-action="close"]').forEach(btn => { btn.onclick = () => _closeModal(overlay); });
+      overlay.onclick = (e) => { if (e.target === overlay) _closeModal(overlay); };
+      document.body.appendChild(overlay);
     }
 
     // -------------------------------------------------------------------
@@ -10532,6 +11462,246 @@
       for (const [id, val] of Object.entries(prtFields)) {
         const el = document.getElementById(id);
         if (el && val !== undefined) el.value = val;
+      }
+
+      // Param Support config
+      psInit();
+    }
+
+    // -------------------------------------------------------------------
+    // Param Support Configuration (ps prefix)
+    // -------------------------------------------------------------------
+    let _psCurrentProvider = null;
+
+    function psInit() {
+      // Called after p10Load — check if param_support exists
+      const ps = _p10Settings?.param_support;
+      if (ps && ps.provider_defaults && Object.keys(ps.provider_defaults).length > 0) {
+        document.getElementById('psNotSeeded')?.classList.add('hidden');
+        document.getElementById('psConfigured')?.classList.remove('hidden');
+        psPopulateProviderDropdown();
+        psRenderProvider();
+      } else {
+        // Auto-seed on first visit
+        document.getElementById('psNotSeeded')?.classList.remove('hidden');
+        document.getElementById('psConfigured')?.classList.add('hidden');
+        psSeedAndLoad(); // auto-trigger seed
+      }
+    }
+
+    async function psSeedAndLoad() {
+      try {
+        const res = await apiFetch('/api/param-support/seed', { method: 'POST' });
+        if (!res.ok) { showToast('Failed to seed param support', 'error'); return; }
+        const data = await res.json();
+        // Save to settings
+        if (!_p10Settings) _p10Settings = {};
+        _p10Settings.param_support = data;
+        await _psSaveParamSupport(data);
+        psInit();
+        showToast('Parameter support initialized', 'success');
+      } catch {
+        showToast('Failed to seed param support', 'error');
+      }
+    }
+
+    async function psResetToDefaults() {
+      showModal('Reset Parameter Support', 'Reset all provider parameter configs to defaults from the registry? User presets will be preserved.', async () => {
+        await psSeedAndLoad();
+      }, { confirmLabel: 'Reset' });
+    }
+
+    function psPopulateProviderDropdown() {
+      const sel = document.getElementById('psProviderSelect');
+      if (!sel) return;
+      const ps = _p10Settings?.param_support;
+      if (!ps?.provider_defaults) return;
+      const current = sel.value || _psCurrentProvider;
+      sel.innerHTML = '';
+      const providers = Object.keys(ps.provider_defaults).sort();
+      for (const pk of providers) {
+        const displayName = ps.provider_defaults[pk]?.display_name || pk;
+        sel.innerHTML += `<option value="${pk}" ${pk === current ? 'selected' : ''}>${_teEsc(displayName)}</option>`;
+      }
+      if (!current && providers.length > 0) {
+        _psCurrentProvider = providers[0];
+      } else {
+        _psCurrentProvider = current;
+      }
+    }
+
+    function psRenderProvider() {
+      const sel = document.getElementById('psProviderSelect');
+      if (!sel) return;
+      _psCurrentProvider = sel.value;
+      const ps = _p10Settings?.param_support;
+      if (!ps?.provider_defaults || !_psCurrentProvider) return;
+
+      const provData = ps.provider_defaults[_psCurrentProvider];
+      if (!provData) return;
+      const params = provData.params || {};
+      const container = document.getElementById('psParamTable');
+      if (!container) return;
+
+      if (Object.keys(params).length === 0) {
+        container.innerHTML = '<div class="text-xs text-zinc-600 font-body text-center py-3">No parameters configured for this provider.</div>';
+        psRenderOverrides();
+        return;
+      }
+
+      // Build table
+      let html = `<div class="overflow-x-auto"><table class="w-full text-xs">
+        <thead><tr style="border-bottom:1px solid var(--border-subtle)">
+          <th class="px-2 py-1.5 text-left text-[10px] font-display tracking-wider uppercase text-zinc-500">Param</th>
+          <th class="px-2 py-1.5 text-center text-[10px] font-display tracking-wider uppercase text-zinc-500">Enabled</th>
+          <th class="px-2 py-1.5 text-center text-[10px] font-display tracking-wider uppercase text-zinc-500">Type</th>
+          <th class="px-2 py-1.5 text-right text-[10px] font-display tracking-wider uppercase text-zinc-500">Min</th>
+          <th class="px-2 py-1.5 text-right text-[10px] font-display tracking-wider uppercase text-zinc-500">Max</th>
+          <th class="px-2 py-1.5 text-right text-[10px] font-display tracking-wider uppercase text-zinc-500">Step</th>
+          <th class="px-2 py-1.5 text-right text-[10px] font-display tracking-wider uppercase text-zinc-500">Default</th>
+          <th class="px-2 py-1.5 text-center text-[10px] font-display tracking-wider uppercase text-zinc-500"></th>
+        </tr></thead><tbody>`;
+
+      const _inp = 'px-2 py-1 rounded-sm text-xs font-mono text-zinc-200';
+      const _inpS = 'background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;width:70px;';
+
+      for (const [pname, spec] of Object.entries(params)) {
+        const isNum = spec.type === 'float' || spec.type === 'int';
+        const isEnum = spec.type === 'enum';
+        html += `<tr data-ps-param="${_teEsc(pname)}" style="border-bottom:1px solid rgba(255,255,255,0.03)">
+          <td class="px-2 py-2 font-mono text-zinc-300">${_teEsc(pname)}</td>
+          <td class="px-2 py-2 text-center">
+            <input type="checkbox" ${spec.enabled !== false ? 'checked' : ''} onchange="psOnParamChange('${_teEsc(pname)}','enabled',this.checked)" class="accent-lime-accent">
+          </td>
+          <td class="px-2 py-2 text-center text-zinc-500">${spec.type || '-'}</td>
+          <td class="px-2 py-2 text-right">${isNum ? `<input type="number" value="${spec.min ?? ''}" class="${_inp}" style="${_inpS}" onchange="psOnParamChange('${_teEsc(pname)}','min',parseFloat(this.value))">` : '-'}</td>
+          <td class="px-2 py-2 text-right">${isNum ? `<input type="number" value="${spec.max ?? ''}" class="${_inp}" style="${_inpS}" onchange="psOnParamChange('${_teEsc(pname)}','max',parseFloat(this.value))">` : '-'}</td>
+          <td class="px-2 py-2 text-right">${isNum ? `<input type="number" value="${spec.step ?? ''}" class="${_inp}" style="${_inpS}" onchange="psOnParamChange('${_teEsc(pname)}','step',parseFloat(this.value))">` : '-'}</td>
+          <td class="px-2 py-2 text-right">${spec.default !== undefined ? `<input type="${isNum ? 'number' : 'text'}" value="${spec.default ?? ''}" class="${_inp}" style="${_inpS}" onchange="psOnParamChange('${_teEsc(pname)}','default',${isNum ? 'parseFloat(this.value)' : 'this.value'})">` : '-'}</td>
+          <td class="px-2 py-2 text-center">
+            <button onclick="psRemoveParam('${_teEsc(pname)}')" class="text-zinc-700 hover:text-red-400 transition-colors" title="Remove">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </td>
+        </tr>`;
+      }
+
+      html += '</tbody></table></div>';
+      container.innerHTML = html;
+
+      psRenderOverrides();
+    }
+
+    function psRenderOverrides() {
+      const container = document.getElementById('psOverridesTable');
+      if (!container) return;
+      const ps = _p10Settings?.param_support;
+      if (!ps?.model_overrides || !_psCurrentProvider) { container.innerHTML = ''; return; }
+      const overrides = ps.model_overrides[_psCurrentProvider] || {};
+
+      if (Object.keys(overrides).length === 0) {
+        container.innerHTML = '<div class="text-xs text-zinc-600 font-body text-center py-2">No model-specific overrides.</div>';
+        return;
+      }
+
+      let html = '<div class="space-y-2">';
+      for (const [modelPattern, modelOverride] of Object.entries(overrides)) {
+        html += `<div class="rounded-sm p-2" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);">
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-xs font-mono text-zinc-400">${_teEsc(modelPattern)}</span>
+            <button onclick="psRemoveOverride('${_teEsc(modelPattern)}')" class="text-zinc-700 hover:text-red-400 transition-colors" title="Remove override">
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="text-[10px] font-mono text-zinc-600">${_teEsc(JSON.stringify(modelOverride))}</div>
+        </div>`;
+      }
+      html += '</div>';
+      container.innerHTML = html;
+    }
+
+    function psOnParamChange(paramName, field, value) {
+      const ps = _p10Settings?.param_support;
+      if (!ps?.provider_defaults?.[_psCurrentProvider]?.params?.[paramName]) return;
+      ps.provider_defaults[_psCurrentProvider].params[paramName][field] = value;
+      _psSaveDebounced();
+    }
+
+    function psRemoveParam(paramName) {
+      const ps = _p10Settings?.param_support;
+      if (!ps?.provider_defaults?.[_psCurrentProvider]?.params) return;
+      delete ps.provider_defaults[_psCurrentProvider].params[paramName];
+      psRenderProvider();
+      _psSaveDebounced();
+    }
+
+    function psAddParam() {
+      showInputModal('Add Parameter', 'Parameter name (e.g. top_k)', (name) => {
+        if (!name || !name.trim()) return;
+        name = name.trim();
+        const ps = _p10Settings?.param_support;
+        if (!ps?.provider_defaults?.[_psCurrentProvider]) return;
+        if (!ps.provider_defaults[_psCurrentProvider].params) ps.provider_defaults[_psCurrentProvider].params = {};
+        if (ps.provider_defaults[_psCurrentProvider].params[name]) {
+          showToast('Parameter already exists', 'error');
+          return;
+        }
+        ps.provider_defaults[_psCurrentProvider].params[name] = {
+          enabled: true, type: 'float', min: 0, max: 1, step: 0.1, default: 0,
+        };
+        psRenderProvider();
+        _psSaveDebounced();
+        showToast(`Parameter "${name}" added`, 'success');
+      });
+    }
+
+    function psAddOverride() {
+      showInputModal('Add Model Override', 'Model ID pattern (e.g. gpt-4o, *-mini)', (pattern) => {
+        if (!pattern || !pattern.trim()) return;
+        pattern = pattern.trim();
+        const ps = _p10Settings?.param_support;
+        if (!ps) return;
+        if (!ps.model_overrides) ps.model_overrides = {};
+        if (!ps.model_overrides[_psCurrentProvider]) ps.model_overrides[_psCurrentProvider] = {};
+        if (ps.model_overrides[_psCurrentProvider][pattern]) {
+          showToast('Override already exists for this model', 'error');
+          return;
+        }
+        ps.model_overrides[_psCurrentProvider][pattern] = {};
+        psRenderOverrides();
+        _psSaveDebounced();
+        showToast(`Override for "${pattern}" added`, 'success');
+      });
+    }
+
+    function psRemoveOverride(pattern) {
+      const ps = _p10Settings?.param_support;
+      if (!ps?.model_overrides?.[_psCurrentProvider]) return;
+      delete ps.model_overrides[_psCurrentProvider][pattern];
+      if (Object.keys(ps.model_overrides[_psCurrentProvider]).length === 0) {
+        delete ps.model_overrides[_psCurrentProvider];
+      }
+      psRenderOverrides();
+      _psSaveDebounced();
+    }
+
+    let _psSaveTimer = null;
+    function _psSaveDebounced() {
+      if (_psSaveTimer) clearTimeout(_psSaveTimer);
+      _psSaveTimer = setTimeout(() => {
+        _psSaveParamSupport(_p10Settings.param_support);
+      }, 600);
+    }
+
+    async function _psSaveParamSupport(data) {
+      try {
+        await apiFetch('/api/settings/phase10', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ param_support: data }),
+        });
+      } catch {
+        showToast('Failed to save param support config', 'error');
       }
     }
 
