@@ -1128,6 +1128,11 @@
               <label class="text-[10px] font-display tracking-wider uppercase text-zinc-500 block mb-1">Judge Max Tokens</label>
               <input id="p10JudgeMaxTokens" type="number" min="256" max="32768" step="256" value="4096" onchange="p10Save()" class="w-full px-3 py-2 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
             </div>
+            <div>
+              <label class="text-[10px] font-display tracking-wider uppercase text-zinc-500 block mb-1">Judge Concurrency</label>
+              <input id="p10JudgeConcurrency" type="number" min="1" max="16" step="1" value="4" onchange="p10Save()" class="w-full px-3 py-2 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
+              <p class="text-[9px] text-zinc-700 font-body mt-1">Parallel judge calls. Auto-capped to 1 for local models.</p>
+            </div>
           </div>
           <!-- Custom Instructions -->
           <div class="mt-5 pt-4" style="border-top:1px solid var(--border-subtle)">
@@ -12276,6 +12281,8 @@
       if (jEnabled) jEnabled.checked = !!j.enabled;
       const jInstr = document.getElementById('p10JudgeInstructions');
       if (jInstr && j.custom_instructions) jInstr.value = j.custom_instructions;
+      const jConc = document.getElementById('p10JudgeConcurrency');
+      if (jConc && j.concurrency) jConc.value = j.concurrency;
 
       // Parameter Tuner
       const ptFields = {
@@ -12551,6 +12558,7 @@
           temperature: parseFloat(document.getElementById('p10JudgeTemp')?.value) || 0.0,
           max_tokens: parseInt(document.getElementById('p10JudgeMaxTokens')?.value) || 4096,
           custom_instructions: document.getElementById('p10JudgeInstructions')?.value || '',
+          concurrency: parseInt(document.getElementById('p10JudgeConcurrency')?.value) || 4,
         },
         param_tuner: {
           max_combinations: parseInt(document.getElementById('p10PtMaxCombos')?.value) || 50,
