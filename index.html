@@ -1959,69 +1959,7 @@
         <div class="card rounded-md p-5 mb-6">
           <label class="section-label mb-4 block">Search Space</label>
           <div id="ptSearchSpace" class="space-y-4">
-            <!-- Temperature -->
-            <div class="flex items-start gap-3">
-              <label class="relative inline-flex items-center cursor-pointer mt-1.5">
-                <input type="checkbox" id="ptToggleTemp" checked class="sr-only peer" onchange="ptUpdatePreview()">
-                <div class="w-8 h-4 rounded-full peer bg-zinc-700 peer-checked:bg-lime-accent/40 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-400 after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4 peer-checked:after:bg-[var(--lime)]"></div>
-              </label>
-              <div class="flex-1">
-                <div class="text-xs text-zinc-400 font-body mb-2">Temperature</div>
-                <div class="grid grid-cols-3 gap-2 mb-2">
-                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Min</label><input id="ptTempMin" type="number" min="0" max="2" step="0.1" value="0.0" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
-                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Max</label><input id="ptTempMax" type="number" min="0" max="2" step="0.1" value="1.0" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
-                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Step</label><input id="ptTempStep" type="number" min="0.1" max="2" step="0.1" value="0.5" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
-                </div>
-                <div id="ptTempPills" class="flex flex-wrap gap-1"></div>
-              </div>
-            </div>
-            <!-- Top P -->
-            <div class="flex items-start gap-3">
-              <label class="relative inline-flex items-center cursor-pointer mt-1.5">
-                <input type="checkbox" id="ptToggleTopP" class="sr-only peer" onchange="ptUpdatePreview()">
-                <div class="w-8 h-4 rounded-full peer bg-zinc-700 peer-checked:bg-lime-accent/40 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-400 after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4 peer-checked:after:bg-[var(--lime)]"></div>
-              </label>
-              <div class="flex-1">
-                <div class="text-xs text-zinc-400 font-body mb-2">Top P</div>
-                <div class="grid grid-cols-3 gap-2 mb-2">
-                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Min</label><input id="ptTopPMin" type="number" min="0" max="1" step="0.05" value="0.8" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
-                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Max</label><input id="ptTopPMax" type="number" min="0" max="1" step="0.05" value="1.0" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
-                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Step</label><input id="ptTopPStep" type="number" min="0.05" max="1" step="0.05" value="0.1" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
-                </div>
-                <div id="ptTopPPills" class="flex flex-wrap gap-1"></div>
-              </div>
-            </div>
-            <!-- Max Tokens -->
-            <div class="flex items-start gap-3">
-              <label class="relative inline-flex items-center cursor-pointer mt-1.5">
-                <input type="checkbox" id="ptToggleMaxTok" class="sr-only peer" onchange="ptUpdatePreview()">
-                <div class="w-8 h-4 rounded-full peer bg-zinc-700 peer-checked:bg-lime-accent/40 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-400 after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4 peer-checked:after:bg-[var(--lime)]"></div>
-              </label>
-              <div class="flex-1">
-                <div class="text-xs text-zinc-400 font-body mb-2">Max Tokens</div>
-                <div class="grid grid-cols-3 gap-2 mb-2">
-                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Min</label><input id="ptMaxTokMin" type="number" min="1" max="16384" step="256" value="512" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
-                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Max</label><input id="ptMaxTokMax" type="number" min="1" max="16384" step="256" value="1024" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
-                  <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Step</label><input id="ptMaxTokStep" type="number" min="1" max="16384" step="256" value="512" class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="ptUpdatePreview()"></div>
-                </div>
-                <div id="ptMaxTokPills" class="flex flex-wrap gap-1"></div>
-              </div>
-            </div>
-            <!-- Tool Choice -->
-            <div class="flex items-start gap-3">
-              <label class="relative inline-flex items-center cursor-pointer mt-1.5">
-                <input type="checkbox" id="ptToggleToolChoice" checked class="sr-only peer" onchange="ptUpdatePreview()">
-                <div class="w-8 h-4 rounded-full peer bg-zinc-700 peer-checked:bg-lime-accent/40 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-400 after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4 peer-checked:after:bg-[var(--lime)]"></div>
-              </label>
-              <div class="flex-1">
-                <div class="text-xs text-zinc-400 font-body mb-2">Tool Choice</div>
-                <div class="flex gap-4">
-                  <label class="flex items-center gap-2 text-xs text-zinc-400 font-body cursor-pointer"><input type="checkbox" id="ptTcAuto" checked class="accent-lime-accent" onchange="ptUpdatePreview()"> auto</label>
-                  <label class="flex items-center gap-2 text-xs text-zinc-400 font-body cursor-pointer"><input type="checkbox" id="ptTcRequired" checked class="accent-lime-accent" onchange="ptUpdatePreview()"> required</label>
-                  <label class="flex items-center gap-2 text-xs text-zinc-400 font-body cursor-pointer"><input type="checkbox" id="ptTcNone" class="accent-lime-accent" onchange="ptUpdatePreview()"> none</label>
-                </div>
-              </div>
-            </div>
+            <div class="text-xs text-zinc-600 font-body text-center py-4">Select models to configure parameters</div>
           </div>
 
           <!-- Grid Preview Bar -->
@@ -2112,20 +2050,7 @@
               </div>
             </div>
             <table class="w-full text-sm results-table">
-              <thead>
-                <tr style="border-bottom:1px solid var(--border-subtle)">
-                  <th class="px-4 py-2 text-left section-label cursor-pointer" onclick="ptSortResults('rank')">#</th>
-                  <th class="px-4 py-2 text-left section-label cursor-pointer" onclick="ptSortResults('model_name')">Model</th>
-                  <th class="px-4 py-2 text-right section-label cursor-pointer" onclick="ptSortResults('temperature')">Temp</th>
-                  <th class="px-4 py-2 text-right section-label cursor-pointer" onclick="ptSortResults('top_p')">Top P</th>
-                  <th class="px-4 py-2 text-center section-label cursor-pointer" onclick="ptSortResults('tool_choice')">Tool Choice</th>
-                  <th class="px-4 py-2 text-right section-label cursor-pointer" onclick="ptSortResults('max_tokens')">Max Tok</th>
-                  <th class="px-4 py-2 text-right section-label cursor-pointer" onclick="ptSortResults('overall_score')">Score</th>
-                  <th class="px-4 py-2 text-right section-label cursor-pointer" onclick="ptSortResults('tool_accuracy')">Tool %</th>
-                  <th class="px-4 py-2 text-right section-label cursor-pointer" onclick="ptSortResults('param_accuracy')">Param %</th>
-                  <th class="px-4 py-2 text-right section-label cursor-pointer" onclick="ptSortResults('latency_avg_ms')">Latency</th>
-                </tr>
-              </thead>
+              <thead id="ptResultsHead"></thead>
               <tbody id="ptResultsBody"></tbody>
             </table>
           </div>
@@ -7044,6 +6969,325 @@
     let ptHistory = [];
     let ptTotalCombos = 0;
     let _ptSSETimeout = null;
+    let _ptDefaults = {};      // stored defaults from Phase 10 settings, applied on render
+
+    // --- Task #2: Registry access (uses existing ppRegistry from ppLoadRegistry) ---
+    function _ptGetRegistry() { return ppRegistry || PP_REGISTRY; }
+
+    // --- Task #3: Client-side provider identification ---
+    const PT_PREFIX_MAP = {
+      'anthropic/': 'anthropic',
+      'gemini/': 'gemini',
+      'vertex_ai/': 'gemini',
+      'ollama/': 'ollama',
+      'ollama_chat/': 'ollama',
+      'lm_studio/': 'lm_studio',
+      'mistral/': 'mistral',
+      'deepseek/': 'deepseek',
+      'cohere/': 'cohere',
+      'cohere_chat/': 'cohere',
+      'xai/': 'xai',
+      'vllm/': 'vllm',
+      'openai/': 'openai',
+    };
+
+    function ptIdentifyProvider(modelId, providerKey) {
+      const reg = _ptGetRegistry();
+      if (providerKey && reg[providerKey]) return providerKey;
+      const lower = (modelId || '').toLowerCase();
+      for (const [prefix, prov] of Object.entries(PT_PREFIX_MAP)) {
+        if (lower.startsWith(prefix)) return prov;
+      }
+      // No prefix match — default to openai (bare model IDs like "gpt-4")
+      return '_unknown';
+    }
+
+    function ptGetRegistryKey(configProvKey, configProvData) {
+      const reg = _ptGetRegistry();
+      const prefix = configProvData?.model_id_prefix;
+      if (prefix && reg[prefix]) return prefix;
+      // Try resolve via ppResolveProvider (reuse existing alias logic)
+      const resolved = ppResolveProvider(configProvKey);
+      if (resolved !== '_unknown') return resolved;
+      // Fallback: check first model's prefix
+      const models = getProviderModels(configProvData) || [];
+      if (models.length) return ptIdentifyProvider(models[0].model_id, null);
+      return '_unknown';
+    }
+
+    function _ptMatchesGlob(modelId, pattern) {
+      return pattern.split('|').some(p => {
+        const regex = new RegExp('^' + p.replace(/[.*+?^${}()|[\]\\]/g, m => m === '*' ? '.*' : '\\' + m) + '$', 'i');
+        return regex.test(modelId);
+      });
+    }
+
+    // --- Task #4: Compute available params for selected models ---
+    function ptComputeAvailableParams() {
+      const reg = _ptGetRegistry();
+      if (!reg || ptSelectedModels.size === 0 || !config?.providers) return [];
+
+      // Build model→registryKey mapping
+      const modelProvMap = new Map(); // modelId → registryKey
+      for (const [ck, pd] of Object.entries(config.providers)) {
+        const rk = ptGetRegistryKey(ck, pd);
+        const models = getProviderModels(pd);
+        for (const m of models) {
+          if (ptSelectedModels.has(m.model_id)) {
+            modelProvMap.set(m.model_id, rk);
+          }
+        }
+      }
+
+      const totalModels = modelProvMap.size;
+      if (totalModels === 0) return [];
+
+      // Collect all params across selected providers
+      const paramMap = new Map(); // paramName → merged def
+
+      for (const [modelId, rk] of modelProvMap) {
+        const provReg = reg[rk] || reg._unknown;
+        if (!provReg) continue;
+
+        const allParams = { ...(provReg.tier1 || {}), ...(provReg.tier2 || {}) };
+
+        for (const [pname, pdef] of Object.entries(allParams)) {
+          // Check model overrides
+          let override = null;
+          if (provReg.model_overrides) {
+            for (const [pattern, overrides] of Object.entries(provReg.model_overrides)) {
+              if (_ptMatchesGlob(modelId.split('/').pop(), pattern)) {
+                if (overrides[pname]) override = overrides[pname];
+              }
+            }
+          }
+
+          const isSupported = override?.supported !== false && pdef.supported !== false;
+          const isLocked = override?.locked === true;
+
+          if (!paramMap.has(pname)) {
+            // First time seeing this param
+            const tier = provReg.tier1?.[pname] ? 1 : 2;
+            paramMap.set(pname, {
+              name: pname,
+              type: pdef.type || 'float',
+              tier: tier,
+              min: pdef.min ?? null,
+              max: pdef.max ?? null,
+              step: pdef.step ?? null,
+              default: pdef.default ?? null,
+              values: pdef.values ? [...pdef.values] : null,
+              supportedBy: isSupported ? 1 : 0,
+              totalModels: totalModels,
+              locked: isLocked,
+              lockedValue: isLocked ? override.value : null,
+              lockedCount: isLocked ? 1 : 0,
+              notes: pdef.note ? [pdef.note] : [],
+              deprecated: pdef.deprecated || false,
+            });
+          } else {
+            // Merge with existing
+            const existing = paramMap.get(pname);
+            if (isSupported) existing.supportedBy++;
+            if (isLocked) existing.lockedCount++;
+
+            // Widen range (union)
+            if (pdef.min !== undefined && pdef.min !== null) {
+              existing.min = existing.min === null ? pdef.min : Math.min(existing.min, pdef.min);
+            }
+            if (pdef.max !== undefined && pdef.max !== null) {
+              existing.max = existing.max === null ? pdef.max : Math.max(existing.max, pdef.max);
+            }
+            // Smallest step (most granular)
+            if (pdef.step !== undefined && pdef.step !== null) {
+              existing.step = existing.step === null ? pdef.step : Math.min(existing.step, pdef.step);
+            }
+            // Default: keep first
+            if (existing.default === null && pdef.default !== undefined) {
+              existing.default = pdef.default;
+            }
+            // Enum values: union
+            if (pdef.values && Array.isArray(pdef.values)) {
+              if (!existing.values) existing.values = [];
+              for (const v of pdef.values) {
+                if (!existing.values.includes(v)) existing.values.push(v);
+              }
+            }
+            // Notes: accumulate unique
+            if (pdef.note && !existing.notes.includes(pdef.note)) {
+              existing.notes.push(pdef.note);
+            }
+          }
+        }
+      }
+
+      // Finalize locked state: locked only if ALL models lock it
+      for (const p of paramMap.values()) {
+        p.locked = p.lockedCount > 0 && p.lockedCount >= totalModels;
+        if (!p.locked) p.lockedValue = null;
+        delete p.lockedCount;
+      }
+
+      // Skip params with 0 support (not available on any selected model)
+      const result = [...paramMap.values()].filter(p => p.supportedBy > 0);
+
+      // Sort: tier 1 first, then tier 2, then alphabetical
+      result.sort((a, b) => {
+        if (a.tier !== b.tier) return a.tier - b.tier;
+        return a.name.localeCompare(b.name);
+      });
+
+      return result;
+    }
+
+    // --- Task #5: Render dynamic param controls ---
+    function _ptDisplayName(name) {
+      const nameMap = {
+        temperature: 'Temperature', max_tokens: 'Max Tokens', top_p: 'Top P',
+        top_k: 'Top K', frequency_penalty: 'Frequency Penalty',
+        presence_penalty: 'Presence Penalty', seed: 'Seed',
+        reasoning_effort: 'Reasoning Effort', tool_choice: 'Tool Choice',
+        stop: 'Stop Sequences',
+      };
+      return nameMap[name] || name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    }
+
+    function _ptSupportBadge(supportedBy, totalModels) {
+      const full = supportedBy >= totalModels;
+      const bg = full ? 'rgba(191,255,0,0.1)' : 'rgba(234,179,8,0.1)';
+      const color = full ? 'var(--lime)' : '#EAB308';
+      return `<span class="text-[10px] font-mono px-1.5 py-0.5 rounded-sm" style="background:${bg};color:${color}">${supportedBy}/${totalModels}</span>`;
+    }
+
+    function _ptToggleStyle() {
+      return 'w-8 h-4 rounded-full peer bg-zinc-700 peer-checked:bg-lime-accent/40 after:content-[\'\'] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-400 after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4 peer-checked:after:bg-[var(--lime)]';
+    }
+
+    function _ptInputStyle() {
+      return 'w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200';
+    }
+
+    function _ptInputInline() {
+      return 'background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;';
+    }
+
+    function ptRenderDynamicParams(paramDefs) {
+      const container = document.getElementById('ptSearchSpace');
+      if (!container) return;
+
+      if (!paramDefs || paramDefs.length === 0) {
+        container.innerHTML = '<div class="text-xs text-zinc-600 font-body text-center py-4">Select models to configure parameters</div>';
+        return;
+      }
+
+      container.innerHTML = '';
+
+      // Determine which params should be auto-enabled (defaults from settings or standard defaults)
+      const autoEnable = new Set(['temperature', 'tool_choice']);
+
+      for (const p of paramDefs) {
+        const row = document.createElement('div');
+        row.className = 'flex items-start gap-3';
+        row.dataset.paramName = p.name;
+        row.dataset.paramType = p.type;
+
+        const isLocked = p.locked;
+        const shouldEnable = !isLocked && (autoEnable.has(p.name) || _ptDefaults[p.name + '_min'] !== undefined);
+
+        if (p.type === 'float' || p.type === 'int') {
+          const parseFunc = p.type === 'float' ? 'parseFloat' : 'parseInt';
+          // Apply defaults from settings if available
+          let dMin = p.min ?? 0;
+          let dMax = p.max ?? 1;
+          let dStep = p.step ?? (p.type === 'float' ? 0.1 : 1);
+          if (_ptDefaults[p.name + '_min'] !== undefined) dMin = _ptDefaults[p.name + '_min'];
+          if (_ptDefaults[p.name + '_max'] !== undefined) dMax = _ptDefaults[p.name + '_max'];
+          if (_ptDefaults[p.name + '_step'] !== undefined) dStep = _ptDefaults[p.name + '_step'];
+
+          row.innerHTML = `
+            <label class="relative inline-flex items-center cursor-pointer mt-1.5">
+              <input type="checkbox" id="ptToggle_${p.name}" ${shouldEnable ? 'checked' : ''} ${isLocked ? 'disabled' : ''} class="sr-only peer" onchange="ptUpdatePreview()">
+              <div class="${_ptToggleStyle()}"></div>
+            </label>
+            <div class="flex-1">
+              <div class="flex items-center gap-2 mb-2">
+                <span class="text-xs text-zinc-400 font-body">${_ptDisplayName(p.name)}</span>
+                ${_ptSupportBadge(p.supportedBy, p.totalModels)}
+                ${isLocked ? `<span class="text-[10px] text-zinc-600 font-mono">locked: ${p.lockedValue}</span>` : ''}
+                ${p.notes.length ? `<span class="text-[10px] text-zinc-600 font-body" title="${_teEsc(p.notes.join('; '))}">${_teEsc(p.notes[0].length > 40 ? p.notes[0].slice(0,37)+'...' : p.notes[0])}</span>` : ''}
+              </div>
+              ${isLocked ? `<div class="text-xs font-mono text-zinc-500">${p.lockedValue}</div>` : `
+              <div class="grid grid-cols-3 gap-2 mb-2">
+                <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Min</label><input id="pt_${p.name}_min" type="number" min="${p.min ?? ''}" max="${p.max ?? ''}" step="${dStep}" value="${dMin}" class="${_ptInputStyle()}" style="${_ptInputInline()}" onchange="ptUpdatePreview()"></div>
+                <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Max</label><input id="pt_${p.name}_max" type="number" min="${p.min ?? ''}" max="${p.max ?? ''}" step="${dStep}" value="${dMax}" class="${_ptInputStyle()}" style="${_ptInputInline()}" onchange="ptUpdatePreview()"></div>
+                <div><label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Step</label><input id="pt_${p.name}_step" type="number" min="${p.type === 'float' ? '0.01' : '1'}" step="${p.type === 'float' ? '0.01' : '1'}" value="${dStep}" class="${_ptInputStyle()}" style="${_ptInputInline()}" onchange="ptUpdatePreview()"></div>
+              </div>
+              <div id="pt_${p.name}_pills" class="flex flex-wrap gap-1"></div>`}
+            </div>`;
+        } else if (p.type === 'enum') {
+          const vals = p.values || [];
+          // For tool_choice, auto-check 'auto' and 'required' by default
+          const autoCheck = p.name === 'tool_choice' ? new Set(['auto', 'required']) : new Set(vals);
+          const checkboxes = vals.map(v =>
+            `<label class="flex items-center gap-2 text-xs text-zinc-400 font-body cursor-pointer"><input type="checkbox" id="pt_${p.name}_val_${v}" class="pt-enum-${p.name} accent-lime-accent" ${autoCheck.has(v) ? 'checked' : ''} onchange="ptUpdatePreview()"> ${v}</label>`
+          ).join('\n                  ');
+
+          row.innerHTML = `
+            <label class="relative inline-flex items-center cursor-pointer mt-1.5">
+              <input type="checkbox" id="ptToggle_${p.name}" ${shouldEnable ? 'checked' : ''} ${isLocked ? 'disabled' : ''} class="sr-only peer" onchange="ptUpdatePreview()">
+              <div class="${_ptToggleStyle()}"></div>
+            </label>
+            <div class="flex-1">
+              <div class="flex items-center gap-2 mb-2">
+                <span class="text-xs text-zinc-400 font-body">${_ptDisplayName(p.name)}</span>
+                ${_ptSupportBadge(p.supportedBy, p.totalModels)}
+                ${isLocked ? `<span class="text-[10px] text-zinc-600 font-mono">locked: ${p.lockedValue}</span>` : ''}
+              </div>
+              ${isLocked ? `<div class="text-xs font-mono text-zinc-500">${p.lockedValue}</div>` : `
+              <div class="flex flex-wrap gap-4">
+                  ${checkboxes}
+              </div>`}
+            </div>`;
+        } else if (p.type === 'bool') {
+          row.innerHTML = `
+            <label class="relative inline-flex items-center cursor-pointer mt-1.5">
+              <input type="checkbox" id="ptToggle_${p.name}" ${isLocked ? 'disabled' : ''} class="sr-only peer" onchange="ptUpdatePreview()">
+              <div class="${_ptToggleStyle()}"></div>
+            </label>
+            <div class="flex-1">
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-zinc-400 font-body">${_ptDisplayName(p.name)}</span>
+                ${_ptSupportBadge(p.supportedBy, p.totalModels)}
+              </div>
+            </div>`;
+        } else {
+          // string_array or other non-sweepable types — show as info-only
+          row.innerHTML = `
+            <label class="relative inline-flex items-center cursor-pointer mt-1.5 opacity-40">
+              <input type="checkbox" disabled class="sr-only peer">
+              <div class="${_ptToggleStyle()}"></div>
+            </label>
+            <div class="flex-1">
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-zinc-500 font-body">${_ptDisplayName(p.name)}</span>
+                ${_ptSupportBadge(p.supportedBy, p.totalModels)}
+                <span class="text-[10px] text-zinc-600 font-body">(not sweepable)</span>
+              </div>
+            </div>`;
+        }
+
+        container.appendChild(row);
+      }
+
+      // After rendering, update the preview
+      ptUpdatePreview();
+    }
+
+    // --- Task #7: Wire model selection changes ---
+    function ptOnModelsChanged() {
+      const paramDefs = ptComputeAvailableParams();
+      ptRenderDynamicParams(paramDefs);
+    }
 
     function ptGenerateValues(min, max, step) {
       const vals = [];
@@ -7058,57 +7302,54 @@
     function ptUpdatePreview() {
       const dims = [];
       const breakdown = [];
+      const rows = document.querySelectorAll('#ptSearchSpace [data-param-name]');
 
-      if (document.getElementById('ptToggleTemp').checked) {
-        const vals = ptGenerateValues(
-          parseFloat(document.getElementById('ptTempMin').value) || 0,
-          parseFloat(document.getElementById('ptTempMax').value) || 1,
-          parseFloat(document.getElementById('ptTempStep').value) || 0.5
-        );
-        ptRenderPills('ptTempPills', vals);
-        if (vals.length) { dims.push(vals.length); breakdown.push(vals.length + ' temp'); }
-      } else { document.getElementById('ptTempPills').innerHTML = ''; }
+      for (const row of rows) {
+        const name = row.dataset.paramName;
+        const type = row.dataset.paramType;
+        const toggle = document.getElementById('ptToggle_' + name);
+        if (!toggle || !toggle.checked) {
+          // Clear pills for disabled params
+          const pills = document.getElementById('pt_' + name + '_pills');
+          if (pills) pills.innerHTML = '';
+          continue;
+        }
 
-      if (document.getElementById('ptToggleTopP').checked) {
-        const vals = ptGenerateValues(
-          parseFloat(document.getElementById('ptTopPMin').value) || 0,
-          parseFloat(document.getElementById('ptTopPMax').value) || 1,
-          parseFloat(document.getElementById('ptTopPStep').value) || 0.1
-        );
-        ptRenderPills('ptTopPPills', vals);
-        if (vals.length) { dims.push(vals.length); breakdown.push(vals.length + ' top_p'); }
-      } else { document.getElementById('ptTopPPills').innerHTML = ''; }
-
-      if (document.getElementById('ptToggleMaxTok').checked) {
-        const vals = ptGenerateValues(
-          parseInt(document.getElementById('ptMaxTokMin').value) || 512,
-          parseInt(document.getElementById('ptMaxTokMax').value) || 1024,
-          parseInt(document.getElementById('ptMaxTokStep').value) || 512
-        );
-        ptRenderPills('ptMaxTokPills', vals.map(v => Math.round(v)));
-        if (vals.length) { dims.push(vals.length); breakdown.push(vals.length + ' max_tok'); }
-      } else { document.getElementById('ptMaxTokPills').innerHTML = ''; }
-
-      if (document.getElementById('ptToggleToolChoice').checked) {
-        const choices = [];
-        if (document.getElementById('ptTcAuto').checked) choices.push('auto');
-        if (document.getElementById('ptTcRequired').checked) choices.push('required');
-        if (document.getElementById('ptTcNone').checked) choices.push('none');
-        if (choices.length) { dims.push(choices.length); breakdown.push(choices.length + ' tool_choice'); }
+        if (type === 'float' || type === 'int') {
+          const pf = type === 'float' ? parseFloat : parseInt;
+          const minVal = pf(document.getElementById('pt_' + name + '_min')?.value) || 0;
+          const maxVal = pf(document.getElementById('pt_' + name + '_max')?.value) || 1;
+          const stepVal = pf(document.getElementById('pt_' + name + '_step')?.value) || (type === 'float' ? 0.1 : 1);
+          const vals = ptGenerateValues(minVal, maxVal, stepVal);
+          const displayVals = type === 'int' ? vals.map(v => Math.round(v)) : vals;
+          ptRenderPills('pt_' + name + '_pills', displayVals);
+          if (vals.length) { dims.push(vals.length); breakdown.push(vals.length + ' ' + name); }
+        } else if (type === 'enum') {
+          const checks = document.querySelectorAll('.pt-enum-' + name + ':checked');
+          const count = checks.length;
+          if (count) { dims.push(count); breakdown.push(count + ' ' + name); }
+        } else if (type === 'bool') {
+          dims.push(2);
+          breakdown.push('2 ' + name);
+        }
       }
 
       const total = dims.length ? dims.reduce((a, b) => a * b, 1) : 0;
       ptTotalCombos = total;
 
-      document.getElementById('ptGridCount').textContent = total;
-      document.getElementById('ptGridBreakdown').textContent = dims.length > 1 ? '= ' + dims.join(' x ') : '';
+      const countEl = document.getElementById('ptGridCount');
+      const breakEl = document.getElementById('ptGridBreakdown');
+      if (countEl) countEl.textContent = total;
+      if (breakEl) breakEl.textContent = dims.length > 1 ? '= ' + dims.join(' x ') : '';
 
       const badge = document.getElementById('ptGridBadge');
-      if (total === 0) { badge.textContent = ''; badge.style.background = 'transparent'; badge.style.color = 'transparent'; }
-      else if (total < 20) { badge.textContent = 'QUICK'; badge.style.background = 'rgba(191,255,0,0.1)'; badge.style.color = 'var(--lime)'; }
-      else if (total < 50) { badge.textContent = 'MODERATE'; badge.style.background = 'rgba(234,179,8,0.1)'; badge.style.color = '#EAB308'; }
-      else if (total <= 100) { badge.textContent = 'LARGE'; badge.style.background = 'rgba(249,115,22,0.1)'; badge.style.color = '#F97316'; }
-      else { badge.textContent = 'WARNING'; badge.style.background = 'rgba(255,59,92,0.1)'; badge.style.color = 'var(--coral)'; }
+      if (badge) {
+        if (total === 0) { badge.textContent = ''; badge.style.background = 'transparent'; badge.style.color = 'transparent'; }
+        else if (total < 20) { badge.textContent = 'QUICK'; badge.style.background = 'rgba(191,255,0,0.1)'; badge.style.color = 'var(--lime)'; }
+        else if (total < 50) { badge.textContent = 'MODERATE'; badge.style.background = 'rgba(234,179,8,0.1)'; badge.style.color = '#EAB308'; }
+        else if (total <= 100) { badge.textContent = 'LARGE'; badge.style.background = 'rgba(249,115,22,0.1)'; badge.style.color = '#F97316'; }
+        else { badge.textContent = 'WARNING'; badge.style.background = 'rgba(255,59,92,0.1)'; badge.style.color = 'var(--coral)'; }
+      }
     }
 
     function ptRenderPills(containerId, values) {
@@ -7119,33 +7360,27 @@
 
     function ptBuildSearchSpace() {
       const space = {};
-      if (document.getElementById('ptToggleTemp').checked) {
-        space.temperature = {
-          min: parseFloat(document.getElementById('ptTempMin').value) || 0,
-          max: parseFloat(document.getElementById('ptTempMax').value) || 1,
-          step: parseFloat(document.getElementById('ptTempStep').value) || 0.5
-        };
-      }
-      if (document.getElementById('ptToggleTopP').checked) {
-        space.top_p = {
-          min: parseFloat(document.getElementById('ptTopPMin').value) || 0,
-          max: parseFloat(document.getElementById('ptTopPMax').value) || 1,
-          step: parseFloat(document.getElementById('ptTopPStep').value) || 0.1
-        };
-      }
-      if (document.getElementById('ptToggleMaxTok').checked) {
-        space.max_tokens = {
-          min: parseInt(document.getElementById('ptMaxTokMin').value) || 512,
-          max: parseInt(document.getElementById('ptMaxTokMax').value) || 1024,
-          step: parseInt(document.getElementById('ptMaxTokStep').value) || 512
-        };
-      }
-      if (document.getElementById('ptToggleToolChoice').checked) {
-        const choices = [];
-        if (document.getElementById('ptTcAuto').checked) choices.push('auto');
-        if (document.getElementById('ptTcRequired').checked) choices.push('required');
-        if (document.getElementById('ptTcNone').checked) choices.push('none');
-        if (choices.length) space.tool_choice = choices;
+      const rows = document.querySelectorAll('#ptSearchSpace [data-param-name]');
+
+      for (const row of rows) {
+        const name = row.dataset.paramName;
+        const type = row.dataset.paramType;
+        const toggle = document.getElementById('ptToggle_' + name);
+        if (!toggle || !toggle.checked) continue;
+
+        if (type === 'float' || type === 'int') {
+          const pf = type === 'float' ? parseFloat : parseInt;
+          space[name] = {
+            min: pf(document.getElementById('pt_' + name + '_min')?.value) || 0,
+            max: pf(document.getElementById('pt_' + name + '_max')?.value) || 1,
+            step: pf(document.getElementById('pt_' + name + '_step')?.value) || (type === 'float' ? 0.1 : 1)
+          };
+        } else if (type === 'enum') {
+          const checked = [...document.querySelectorAll('.pt-enum-' + name + ':checked')].map(cb => cb.id.replace('pt_' + name + '_val_', ''));
+          if (checked.length) space[name] = checked;
+        } else if (type === 'bool') {
+          space[name] = [true, false];
+        }
       }
       return space;
     }
@@ -7190,6 +7425,7 @@
             if (allSel) { ptSelectedModels.delete(c.dataset.modelId); c.classList.remove('selected'); }
             else { ptSelectedModels.add(c.dataset.modelId); c.classList.add('selected'); }
           });
+          ptOnModelsChanged();
         };
         group.appendChild(header);
 
@@ -7203,6 +7439,7 @@
             e.stopPropagation();
             if (ptSelectedModels.has(m.model_id)) { ptSelectedModels.delete(m.model_id); card.classList.remove('selected'); }
             else { ptSelectedModels.add(m.model_id); card.classList.add('selected'); }
+            ptOnModelsChanged();
           };
           card.innerHTML = `<div class="check-dot flex-shrink-0"></div><div class="flex-1 min-w-0"><div class="text-[13px] font-medium text-zinc-200 truncate font-body">${m.display_name}</div></div>`;
           subgrid.appendChild(card);
@@ -7232,6 +7469,7 @@
       document.getElementById('ptBestCard').classList.add('hidden');
       document.getElementById('ptResultsSection').classList.remove('hidden');
       document.getElementById('ptApplyBestBtn').classList.add('hidden');
+      document.getElementById('ptResultsHead').innerHTML = '';
       document.getElementById('ptResultsBody').innerHTML = '';
       document.getElementById('ptProgressBar').style.width = '0%';
       document.getElementById('ptProgressLabel').textContent = 'Initializing...';
@@ -7333,11 +7571,61 @@
       }
     }
 
+    // Collect unique config param keys from results for dynamic columns
+    function _ptConfigKeys() {
+      const keys = new Set();
+      for (const r of ptResults) {
+        for (const k of Object.keys(r.config || {})) keys.add(k);
+      }
+      // Stable order: common params first, then alphabetical remainder
+      const priority = ['temperature','top_p','top_k','tool_choice','max_tokens','frequency_penalty','presence_penalty','reasoning_effort','seed'];
+      const ordered = priority.filter(k => keys.has(k));
+      for (const k of [...keys].sort()) {
+        if (!ordered.includes(k)) ordered.push(k);
+      }
+      return ordered;
+    }
+
+    function _ptParamHeader(key) {
+      const map = { temperature: 'Temp', top_p: 'Top P', top_k: 'Top K', tool_choice: 'Tool Choice',
+        max_tokens: 'Max Tok', frequency_penalty: 'Freq Pen', presence_penalty: 'Pres Pen',
+        reasoning_effort: 'Reasoning', seed: 'Seed' };
+      return map[key] || key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    }
+
     function ptRenderResultsTable() {
+      const head = document.getElementById('ptResultsHead');
       const body = document.getElementById('ptResultsBody');
-      // Sort results
+      const cfgKeys = _ptConfigKeys();
+
+      // Build dynamic header
+      const thStyle = 'px-4 py-2 section-label cursor-pointer';
+      let headHtml = `<tr style="border-bottom:1px solid var(--border-subtle)">`;
+      headHtml += `<th class="${thStyle} text-left" onclick="ptSortResults('rank')">#</th>`;
+      headHtml += `<th class="${thStyle} text-left" onclick="ptSortResults('model_name')">Model</th>`;
+      for (const k of cfgKeys) {
+        const align = (k === 'tool_choice' || k === 'reasoning_effort') ? 'text-center' : 'text-right';
+        headHtml += `<th class="${thStyle} ${align}" onclick="ptSortResults('cfg:${k}')">${_ptParamHeader(k)}</th>`;
+      }
+      headHtml += `<th class="${thStyle} text-right" onclick="ptSortResults('overall_score')">Score</th>`;
+      headHtml += `<th class="${thStyle} text-right" onclick="ptSortResults('tool_accuracy')">Tool %</th>`;
+      headHtml += `<th class="${thStyle} text-right" onclick="ptSortResults('param_accuracy')">Param %</th>`;
+      headHtml += `<th class="${thStyle} text-right" onclick="ptSortResults('latency_avg_ms')">Latency</th>`;
+      headHtml += `</tr>`;
+      head.innerHTML = headHtml;
+
+      // Sort results — handle cfg: prefix for config param sorting
       const sorted = [...ptResults].sort((a, b) => {
-        let va = a[ptSortKey], vb = b[ptSortKey];
+        let va, vb;
+        if (ptSortKey.startsWith('cfg:')) {
+          const ck = ptSortKey.slice(4);
+          va = (a.config || {})[ck]; vb = (b.config || {})[ck];
+        } else {
+          va = a[ptSortKey]; vb = b[ptSortKey];
+        }
+        if (va == null && vb == null) return 0;
+        if (va == null) return 1;
+        if (vb == null) return -1;
         if (typeof va === 'string') { va = va.toLowerCase(); vb = (vb || '').toLowerCase(); }
         if (va < vb) return ptSortAsc ? -1 : 1;
         if (va > vb) return ptSortAsc ? 1 : -1;
@@ -7347,34 +7635,44 @@
       body.innerHTML = sorted.map((r, i) => {
         const cfg = r.config || {};
         const isBest = ptBestConfig && r.overall_score === ptBestScore &&
-          cfg.temperature === ptBestConfig.temperature && cfg.top_p === ptBestConfig.top_p;
+          r.model_id === ptBestConfig.model_id && JSON.stringify(cfg) === JSON.stringify(_ptBestCfgOnly());
         const rowStyle = isBest ? 'border:1px solid rgba(234,179,8,0.3);background:rgba(234,179,8,0.03);' : '';
         const boldCls = isBest ? 'font-bold' : '';
         const scoreColor = _ptScoreColor((r.overall_score || 0) * 100);
-        return `<tr style="${rowStyle}">
-          <td class="px-4 py-2 text-xs font-mono text-zinc-600">${i + 1}</td>
-          <td class="px-4 py-2 text-xs font-body text-zinc-300 ${boldCls}">${_teEsc(r.model_name || r.model_id || '')}</td>
-          <td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${cfg.temperature ?? '-'}</td>
-          <td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${cfg.top_p ?? '-'}</td>
-          <td class="px-4 py-2 text-center text-xs font-mono text-zinc-400">${cfg.tool_choice ?? '-'}</td>
-          <td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${cfg.max_tokens ?? '-'}</td>
-          <td class="px-4 py-2 text-right text-xs font-mono ${boldCls}" style="color:${scoreColor}">${((r.overall_score || 0) * 100).toFixed(1)}%</td>
-          <td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${((r.tool_accuracy || 0) * 100).toFixed(1)}%</td>
-          <td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${((r.param_accuracy || 0) * 100).toFixed(1)}%</td>
-          <td class="px-4 py-2 text-right text-xs font-mono text-zinc-500">${r.latency_avg_ms ? r.latency_avg_ms + 'ms' : '-'}</td>
-        </tr>`;
+
+        let rowHtml = `<tr style="${rowStyle}">`;
+        rowHtml += `<td class="px-4 py-2 text-xs font-mono text-zinc-600">${i + 1}</td>`;
+        rowHtml += `<td class="px-4 py-2 text-xs font-body text-zinc-300 ${boldCls}">${_teEsc(r.model_name || r.model_id || '')}</td>`;
+        for (const k of cfgKeys) {
+          const align = (k === 'tool_choice' || k === 'reasoning_effort') ? 'text-center' : 'text-right';
+          rowHtml += `<td class="px-4 py-2 ${align} text-xs font-mono text-zinc-400">${cfg[k] ?? '-'}</td>`;
+        }
+        rowHtml += `<td class="px-4 py-2 text-right text-xs font-mono ${boldCls}" style="color:${scoreColor}">${((r.overall_score || 0) * 100).toFixed(1)}%</td>`;
+        rowHtml += `<td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${((r.tool_accuracy || 0) * 100).toFixed(1)}%</td>`;
+        rowHtml += `<td class="px-4 py-2 text-right text-xs font-mono text-zinc-400">${((r.param_accuracy || 0) * 100).toFixed(1)}%</td>`;
+        rowHtml += `<td class="px-4 py-2 text-right text-xs font-mono text-zinc-500">${r.latency_avg_ms ? r.latency_avg_ms + 'ms' : '-'}</td>`;
+        rowHtml += `</tr>`;
+        return rowHtml;
       }).join('');
+    }
+
+    // Extract config-only keys from ptBestConfig (excluding model_name, model_id)
+    function _ptBestCfgOnly() {
+      if (!ptBestConfig) return {};
+      const { model_name, model_id, ...cfg } = ptBestConfig;
+      return cfg;
     }
 
     function ptUpdateBestCard() {
       if (!ptBestConfig) return;
       const card = document.getElementById('ptBestCard');
       card.classList.remove('hidden');
+      const skip = new Set(['model_name', 'model_id']);
       const parts = [];
-      if (ptBestConfig.temperature !== undefined) parts.push('temp=' + ptBestConfig.temperature);
-      if (ptBestConfig.top_p !== undefined) parts.push('top_p=' + ptBestConfig.top_p);
-      if (ptBestConfig.tool_choice) parts.push('tool_choice=' + ptBestConfig.tool_choice);
-      if (ptBestConfig.max_tokens) parts.push('max_tokens=' + ptBestConfig.max_tokens);
+      for (const [k, v] of Object.entries(ptBestConfig)) {
+        if (skip.has(k) || v === undefined || v === null) continue;
+        parts.push(k + '=' + v);
+      }
       document.getElementById('ptBestConfigText').textContent = parts.join(', ');
       document.getElementById('ptBestScoreText').textContent =
         (ptBestConfig.model_name ? ptBestConfig.model_name + ' -- ' : '') +
@@ -7383,7 +7681,7 @@
 
     function ptSortResults(key) {
       if (ptSortKey === key) ptSortAsc = !ptSortAsc;
-      else { ptSortKey = key; ptSortAsc = key === 'model_name' || key === 'tool_choice'; }
+      else { ptSortKey = key; ptSortAsc = key === 'model_name' || key === 'cfg:tool_choice'; }
       ptRenderResultsTable();
     }
 
@@ -7410,14 +7708,17 @@
 
     function ptExportCSV() {
       if (!ptResults.length) { showToast('No results to export', 'error'); return; }
-      const headers = ['model_id','model_name','temperature','top_p','tool_choice','max_tokens','overall_score','tool_accuracy','param_accuracy','latency_avg_ms'];
+      const cfgKeys = _ptConfigKeys();
+      const headers = ['model_id', 'model_name', ...cfgKeys, 'overall_score', 'tool_accuracy', 'param_accuracy', 'latency_avg_ms'];
+      const esc = v => { const s = String(v ?? ''); return s.includes(',') || s.includes('"') ? '"' + s.replace(/"/g, '""') + '"' : s; };
       const rows = ptResults.map(r => {
         const c = r.config || {};
-        return [r.model_id, r.model_name, c.temperature, c.top_p, c.tool_choice, c.max_tokens,
+        const vals = [r.model_id, r.model_name, ...cfgKeys.map(k => c[k] ?? ''),
           ((r.overall_score || 0) * 100).toFixed(1), ((r.tool_accuracy || 0) * 100).toFixed(1),
-          ((r.param_accuracy || 0) * 100).toFixed(1), r.latency_avg_ms || ''].join(',');
+          ((r.param_accuracy || 0) * 100).toFixed(1), r.latency_avg_ms || ''];
+        return vals.map(esc).join(',');
       });
-      const csv = [headers.join(','), ...rows].join('\n');
+      const csv = [headers.map(esc).join(','), ...rows].join('\n');
       const blob = new Blob([csv], { type: 'text/csv' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -9534,12 +9835,17 @@
     function _ptApplyDefaults() {
       if (!_p10Settings) return;
       const pt = _p10Settings.param_tuner || {};
-      const fields = {
-        ptTempMin: pt.temp_min, ptTempMax: pt.temp_max, ptTempStep: pt.temp_step,
-        ptTopPMin: pt.top_p_min, ptTopPMax: pt.top_p_max, ptTopPStep: pt.top_p_step,
-      };
-      for (const [id, val] of Object.entries(fields)) {
-        const el = document.getElementById(id);
+      // Store defaults for dynamic rendering — ptRenderDynamicParams reads _ptDefaults
+      _ptDefaults = {};
+      if (pt.temp_min !== undefined) _ptDefaults.temperature_min = pt.temp_min;
+      if (pt.temp_max !== undefined) _ptDefaults.temperature_max = pt.temp_max;
+      if (pt.temp_step !== undefined) _ptDefaults.temperature_step = pt.temp_step;
+      if (pt.top_p_min !== undefined) _ptDefaults.top_p_min = pt.top_p_min;
+      if (pt.top_p_max !== undefined) _ptDefaults.top_p_max = pt.top_p_max;
+      if (pt.top_p_step !== undefined) _ptDefaults.top_p_step = pt.top_p_step;
+      // If params are already rendered, re-apply to existing DOM elements
+      for (const [key, val] of Object.entries(_ptDefaults)) {
+        const el = document.getElementById('pt_' + key);
         if (el && val !== undefined) el.value = val;
       }
     }
