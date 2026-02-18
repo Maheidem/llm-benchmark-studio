@@ -2669,6 +2669,7 @@
           // Restore param tuner tracking if there's an active param_tune job
           if (job.job_type === 'param_tune' && (job.status === 'running' || job.status === 'pending' || job.status === 'queued')) {
             _activeParamTuneJobId = job.id;
+            _ptJobStartedAt = job.started_at || null;
             // Restore tune_id from result_ref (set early by backend) or sessionStorage
             if (job.result_ref) {
               _activeParamTuneRunId = job.result_ref;
@@ -2789,6 +2790,7 @@
           // Restore param tuner tracking from hydrated jobs
           if (job.job_type === 'param_tune' && ACTIVE_STATUSES.has(job.status)) {
             _activeParamTuneJobId = job.id;
+            _ptJobStartedAt = job.started_at || null;
             if (job.result_ref) {
               _activeParamTuneRunId = job.result_ref;
               try { sessionStorage.setItem('_ptRunId', job.result_ref); } catch {}
@@ -7249,6 +7251,7 @@
     let _ptDefaults = {};      // stored defaults from Phase 10 settings, applied on render
     let _ptTuneStartTime = null;  // Date.now() when tune starts, for ETA calculation
     let _ptEtaBaseCount = 0;      // combo count at start/reconnection, for accurate rate calc
+    let _ptJobStartedAt = null;   // ISO string from job.started_at, for accurate ETA on reconnect
 
     // --- Preset management (Phase 3) ---
     function _ptGetPresets() {
@@ -8500,6 +8503,7 @@
     function _ptClearETA() {
       _ptTuneStartTime = null;
       _ptEtaBaseCount = 0;
+      _ptJobStartedAt = null;
       const etaEl = document.getElementById('ptETA');
       if (etaEl) etaEl.textContent = '';
     }
@@ -8536,6 +8540,7 @@
           _ptSeenCombos = new Set();
           _ptTuneStartTime = Date.now();
           _ptEtaBaseCount = 0;
+          _ptJobStartedAt = new Date().toISOString();
           document.getElementById('ptProgressLabel').textContent = `Tuning ${msg.models?.length || 0} model(s), ${ptTotalCombos} combinations`;
           document.getElementById('ptProgressCount').textContent = `0/${ptTotalCombos}`;
           break;
@@ -8980,9 +8985,9 @@
           document.getElementById('ptProgressLabel').textContent = `Reconnected — tuning in progress`;
           document.getElementById('ptProgressCount').textContent = `${ptResults.length}/${ptTotalCombos}`;
 
-          // Start ETA from reconnection point
-          _ptTuneStartTime = Date.now();
-          _ptEtaBaseCount = ptResults.length;
+          // Start ETA using the real job start time (from DB) for accurate rate calc
+          _ptTuneStartTime = _ptJobStartedAt ? new Date(_ptJobStartedAt).getTime() : Date.now();
+          _ptEtaBaseCount = 0;  // measure from actual start, not reconnection point
           const etaEl = document.getElementById('ptETA');
           if (etaEl) etaEl.textContent = ptResults.length > 0 ? 'Estimating...' : '';
 
