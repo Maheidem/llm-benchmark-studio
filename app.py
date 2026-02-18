@@ -3404,15 +3404,29 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
         judge_custom_instructions = judge_config.get("custom_instructions", "")
         if judge_mode in ("live_inline", "post_eval") and judge_model_id:
             judge_enabled = True
-            jt_list = [t for t in all_targets if t.model_id == judge_model_id]
+            # Prefer already-injected eval targets (keys already set)
+            jt_list = [t for t in targets if t.model_id == judge_model_id]
             if jt_list:
                 judge_target = jt_list[0]
-                if judge_target.provider_key:
-                    enc = await db.get_user_key_for_provider(user_id, judge_target.provider_key)
-                    if enc:
-                        judge_target = inject_user_keys([judge_target], {judge_target.provider_key: enc})[0]
+                logger.debug("Judge target found in eval set (key already injected): %s", judge_model_id)
             else:
-                judge_enabled = False
+                # Judge model not in eval set — fall back to all_targets + inject
+                jt_list = [t for t in all_targets if t.model_id == judge_model_id]
+                if jt_list:
+                    judge_target = jt_list[0]
+                    if judge_target.provider_key:
+                        enc = await db.get_user_key_for_provider(user_id, judge_target.provider_key)
+                        if enc:
+                            judge_target = inject_user_keys([judge_target], {judge_target.provider_key: enc})[0]
+                    logger.debug("Judge target from all_targets (separate injection): %s", judge_model_id)
+                else:
+                    judge_enabled = False
+            if judge_target:
+                logger.debug(
+                    "Judge target ready: model=%s api_base=%s has_key=%s",
+                    judge_target.model_id, judge_target.api_base,
+                    bool(judge_target.api_key),
+                )
 
     # Auto-cap judge concurrency when judge shares an endpoint with eval models.
     # Local models (LM Studio, Ollama) can't handle many concurrent requests;
@@ -4981,30 +4995,72 @@ def _parse_judge_json(text: str) -> dict:
     return {}
 
 
+_JUDGE_RETRYABLE_ERRORS = (
+    litellm.exceptions.BadGatewayError,
+    litellm.exceptions.ServiceUnavailableError,
+    litellm.exceptions.InternalServerError,
+    litellm.exceptions.APIConnectionError,
+    litellm.exceptions.Timeout,
+)
+
 async def _call_judge_model(
     judge_target: Target,
     prompt: str,
+    *,
+    _max_retries: int = 3,
+    _base_delay: float = 2.0,
 ) -> dict:
-    """Call the judge model with a prompt, return parsed JSON dict."""
+    """Call the judge model with a prompt, return parsed JSON dict.
+
+    Retries transient errors (502/503/500/connection/timeout) with exponential
+    backoff.  Non-transient errors (auth, 400, 404, rate-limit) propagate
+    immediately.
+    """
     kwargs = {
         "model": judge_target.model_id,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 2048,
         "timeout": 120,
-        "num_retries": 1,
+        "num_retries": 0,  # We handle retries ourselves with backoff
     }
-    # Respect skip_params (e.g. some models don't support temperature)
-    if "temperature" not in (judge_target.skip_params or []):
-        kwargs["temperature"] = 0.0  # AD-6: reproducible judge assessments
     if judge_target.api_base:
         kwargs["api_base"] = judge_target.api_base
     if judge_target.api_key:
         kwargs["api_key"] = judge_target.api_key
+    # Use build_litellm_kwargs for provider-aware param handling (skip_params, clamping)
+    extra = build_litellm_kwargs(
+        judge_target, temperature=0.0, max_tokens=2048,
+    )
+    if extra:
+        kwargs.update(extra)
+    else:
+        # Fallback: no provider_params resolved — apply judge defaults directly
+        if "temperature" not in (judge_target.skip_params or []):
+            kwargs["temperature"] = 0.0  # AD-6: reproducible judge assessments
+        kwargs["max_tokens"] = 2048
 
     logger.debug("Judge call: model=%s api_base=%s prompt_len=%d", judge_target.model_id, judge_target.api_base, len(prompt))
-    response = await litellm.acompletion(**kwargs)
-    content = response.choices[0].message.content or ""
-    return _parse_judge_json(content)
+
+    last_exc: Exception | None = None
+    for attempt in range(1, _max_retries + 1):
+        try:
+            response = await litellm.acompletion(**kwargs)
+            content = response.choices[0].message.content or ""
+            return _parse_judge_json(content)
+        except _JUDGE_RETRYABLE_ERRORS as exc:
+            last_exc = exc
+            if attempt < _max_retries:
+                delay = _base_delay * (2 ** (attempt - 1))  # 2s, 4s, 8s
+                logger.info(
+                    "Judge call transient error (attempt %d/%d): %s — retrying in %.1fs",
+                    attempt, _max_retries, exc, delay,
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.warning(
+                    "Judge call failed after %d attempts: %s",
+                    _max_retries, exc,
+                )
+    raise last_exc  # type: ignore[misc]
 
 
 def _build_tool_definitions_text(tools: list[dict]) -> str:
@@ -5143,6 +5199,11 @@ async def _judge_handler(job_id: str, params: dict, cancel_event, progress_cb) -
         encrypted = await db.get_user_key_for_provider(user_id, judge_target.provider_key)
         if encrypted:
             judge_target = inject_user_keys([judge_target], {judge_target.provider_key: encrypted})[0]
+    logger.debug(
+        "Standalone judge target ready: model=%s api_base=%s has_key=%s",
+        judge_target.model_id, judge_target.api_base,
+        bool(judge_target.api_key),
+    )
 
     # Helper to send WebSocket messages
     async def _ws_send(payload: dict):
