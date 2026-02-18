@@ -3257,7 +3257,7 @@
       for (const [provider, provData] of Object.entries(config.providers)) {
         const models = getProviderModels(provData);
         for (const m of models) {
-          if (!selectedModels.has(_bmCompoundKey(provider, m.model_id))) continue;
+          if (!selectedModels.has(_bmCompoundKey(provData.provider_key || provider, m.model_id))) continue;
           if (m.context_window && maxTier > m.context_window) {
             warnings.push(`<div class="text-[10px] font-body" style="color:#FBBF24;">${m.display_name}: ${formatCtxSize(maxTier).replace(' ctx','')} &gt; ${formatCtxSize(m.context_window)}</div>`);
           }
@@ -3346,13 +3346,13 @@
         const subgrid = document.createElement('div');
         subgrid.className = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pl-3';
         for (const m of models) {
-          const ck = _bmCompoundKey(provider, m.model_id);
+          const ck = _bmCompoundKey(provData.provider_key || provider, m.model_id);
           selectedModels.add(ck);
           const card = document.createElement('div');
           card.className = 'model-card selected rounded-sm px-4 py-3 flex items-center gap-3';
           card.dataset.modelId = m.model_id;
           card.dataset.compoundKey = ck;
-          card.dataset.providerKey = provider;
+          card.dataset.providerKey = provData.provider_key || provider;
           card.onclick = (e) => { e.stopPropagation(); toggleModel(ck, card); };
           card.innerHTML = `
             <div class="check-dot flex-shrink-0"></div>
@@ -3626,8 +3626,9 @@
 
       for (const [provider, provData] of Object.entries(config.providers)) {
         const models = getProviderModels(provData);
+        const pk = provData.provider_key || provider;
         const selectedInProvider = body.targets
-          ? models.filter(m => selectedSet.has(provider + '::' + m.model_id))
+          ? models.filter(m => selectedSet.has(pk + '::' + m.model_id))
           : models.filter(m => selectedSet.has(m.model_id));
         if (selectedInProvider.length === 0) continue;
 
@@ -6737,14 +6738,15 @@
       const provs = new Map(); // registryKey -> {configKey, displayName, models[]}
       for (const [ck, pd] of Object.entries(config.providers)) {
         const models = getProviderModels(pd);
-        const selected = models.filter(m => sel.has(ck + '::' + m.model_id));
+        const pk = pd.provider_key || ck;
+        const selected = models.filter(m => sel.has(pk + '::' + m.model_id));
         if (!selected.length) continue;
-        const rk = ppResolveProvider(ck);
+        const rk = ppResolveProvider(pk);
         const displayName = pd.display_name || ppRegistry[rk]?.display_name || ck;
         if (provs.has(rk)) {
           provs.get(rk).models.push(...selected);
         } else {
-          provs.set(rk, { configKey: ck, displayName, models: selected });
+          provs.set(rk, { configKey: pk, displayName, models: selected });
         }
       }
       return [...provs.entries()].map(([rk, info]) => ({ registryKey: rk, ...info }));
@@ -7446,7 +7448,7 @@
         const rk = ptGetRegistryKey(ck, pd);
         const models = getProviderModels(pd);
         for (const m of models) {
-          const compound = _ptCompoundKey(ck, m.model_id);
+          const compound = _ptCompoundKey(pd.provider_key || ck, m.model_id);
           if (ptSelectedModels.has(compound)) {
             modelProvMap.set(compound, rk);
           }
@@ -7731,7 +7733,7 @@
         const provReg = reg[rk] || reg._unknown;
         if (!provReg?.tier3_examples) continue;
         const models = getProviderModels(pd);
-        const hasSelected = models.some(m => ptSelectedModels.has(_ptCompoundKey(ck, m.model_id)));
+        const hasSelected = models.some(m => ptSelectedModels.has(_ptCompoundKey(pd.provider_key || ck, m.model_id)));
         if (!hasSelected) continue;
         for (const [pname, pdef] of Object.entries(provReg.tier3_examples)) {
           if (!seen.has(pname)) {
@@ -7963,9 +7965,9 @@
       for (const [ck, pd] of Object.entries(config.providers)) {
         const rk = ptGetRegistryKey(ck, pd);
         for (const m of getProviderModels(pd)) {
-          if (ptSelectedModels.has(_ptCompoundKey(ck, m.model_id))) {
+          if (ptSelectedModels.has(_ptCompoundKey(pd.provider_key || ck, m.model_id))) {
             const shortName = m.display_name || m.model_id.split('/').pop();
-            models.push({ id: m.model_id, shortName, rk, providerKey: ck });
+            models.push({ id: m.model_id, shortName, rk, providerKey: pd.provider_key || ck });
           }
         }
       }
@@ -8206,8 +8208,8 @@
       const perModel = {};
       for (const compoundKey of ptSelectedModels) {
         const { provider_key: pk, model_id: modelId } = _ptParseCompoundKey(compoundKey);
-        // Resolve registry key from provider config
-        const pd = config.providers[pk];
+        // Resolve registry key from provider config (pk is config key, providers keyed by display_name)
+        const pd = config.providers[pk] || Object.values(config.providers).find(p => p.provider_key === pk);
         const rk = pd ? ptGetRegistryKey(pk, pd) : '_unknown';
 
         const provPS = ps.provider_defaults[rk];
@@ -8326,12 +8328,12 @@
         const subgrid = document.createElement('div');
         subgrid.className = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pl-3';
         for (const m of models) {
-          const ck = _ptCompoundKey(provider, m.model_id);
+          const ck = _ptCompoundKey(provData.provider_key || provider, m.model_id);
           const card = document.createElement('div');
           card.className = 'model-card rounded-sm px-4 py-3 flex items-center gap-3';
           card.dataset.modelId = m.model_id;
           card.dataset.compoundKey = ck;
-          card.dataset.providerKey = provider;
+          card.dataset.providerKey = provData.provider_key || provider;
           card.onclick = (e) => {
             e.stopPropagation();
             if (ptSelectedModels.has(ck)) { ptSelectedModels.delete(ck); card.classList.remove('selected'); }
@@ -11306,12 +11308,12 @@
         const subgrid = document.createElement('div');
         subgrid.className = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pl-3';
         for (const m of models) {
-          const ck = provider + '::' + m.model_id;
+          const ck = (provData.provider_key || provider) + '::' + m.model_id;
           const card = document.createElement('div');
           card.className = 'model-card rounded-sm px-4 py-3 flex items-center gap-3';
           card.dataset.modelId = m.model_id;
           card.dataset.compoundKey = ck;
-          card.dataset.providerKey = provider;
+          card.dataset.providerKey = provData.provider_key || provider;
           card.onclick = (e) => {
             e.stopPropagation();
             if (teSelectedModels.has(ck)) {
