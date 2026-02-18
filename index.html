@@ -4935,6 +4935,7 @@
                   ${runId ? `<button onclick="toggleHistoryCheckbox(this, '${runId}')" class="w-4 h-4 rounded-sm border flex items-center justify-center transition-all flex-shrink-0" style="border-color:var(--border-subtle)" title="Select for comparison" data-checked="false"></button>` : ''}
                   <span class="text-[11px] text-zinc-600 font-mono">${ts}</span>
                   ${winner ? `<span class="badge" style="background:var(--lime-dim);color:var(--lime);border:1px solid rgba(191,255,0,0.2)">P1: ${winner.model}</span>` : ''}
+                  ${(h.context_tiers && h.context_tiers.length) ? `<span class="badge" style="background:rgba(161,161,170,0.1);color:rgb(161,161,170);border:1px solid rgba(161,161,170,0.2)" title="Context tiers tested">CTX ${h.context_tiers.map(t => t === 0 ? '0' : t >= 1000 ? (t/1000) + 'K' : String(t)).join(' / ')}</span>` : ''}
                 </div>
                 <div class="flex items-center gap-3">
                   ${winner ? `<span class="font-mono text-sm" style="color:var(--lime)">${winner.avg_tokens_per_second} tok/s</span>` : ''}
