@@ -163,6 +163,13 @@ async def lifespan(app_instance):
     stale_count = await db.cleanup_stale_judge_reports(minutes=30)
     if stale_count:
         logger.info("Cleaned up %d stale judge report(s)", stale_count)
+    # Clean up orphaned param/prompt tune runs stuck in "running" from prior crashes
+    stale_param = await db.cleanup_stale_param_tune_runs(minutes=30)
+    if stale_param:
+        logger.info("Cleaned up %d stale param tune run(s)", stale_param)
+    stale_prompt = await db.cleanup_stale_prompt_tune_runs(minutes=30)
+    if stale_prompt:
+        logger.info("Cleaned up %d stale prompt tune run(s)", stale_prompt)
     # Initialize job registry (startup recovery + watchdog)
     job_registry.set_ws_manager(ws_manager)
     await job_registry.startup()
@@ -3793,6 +3800,29 @@ async def run_param_tune(request: Request, user: dict = Depends(auth.get_current
             )
             yield _sse({"type": "error", "message": sanitize_error(str(e))})
         finally:
+            # Safety net: if run is still "running" (e.g. client disconnected,
+            # CancelledError, deploy killed the process), save partial results
+            # and mark as "interrupted" so it doesn't stay stuck forever.
+            try:
+                run = await db.get_param_tune_run(tune_id, user["id"])
+                if run and run.get("status") == "running":
+                    duration = time.perf_counter() - start_time
+                    logger.warning(
+                        "Param tune run %s still 'running' in finally block — "
+                        "saving %d partial results and marking as interrupted",
+                        tune_id, len(all_results),
+                    )
+                    await db.update_param_tune_run(
+                        tune_id, user["id"],
+                        results_json=json.dumps(all_results),
+                        completed_combos=completed,
+                        best_config_json=json.dumps(_find_best_config(all_results)),
+                        best_score=_find_best_score(all_results),
+                        status="interrupted",
+                        duration_s=round(duration, 2),
+                    )
+            except Exception:
+                logger.exception("Failed to clean up param tune run %s in finally block", tune_id)
             user_lock.release()
 
     return StreamingResponse(
@@ -4292,6 +4322,29 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
             )
             yield _sse({"type": "error", "message": sanitize_error(str(e))})
         finally:
+            # Safety net: if run is still "running" (e.g. client disconnected,
+            # CancelledError, deploy killed the process), save partial generations
+            # and mark as "interrupted" so it doesn't stay stuck forever.
+            try:
+                run = await db.get_prompt_tune_run(tune_id, user["id"])
+                if run and run.get("status") == "running":
+                    duration = time.perf_counter() - start_time
+                    logger.warning(
+                        "Prompt tune run %s still 'running' in finally block — "
+                        "saving %d partial generations and marking as interrupted",
+                        tune_id, len(all_generations),
+                    )
+                    await db.update_prompt_tune_run(
+                        tune_id, user["id"],
+                        generations_json=json.dumps(all_generations),
+                        best_prompt=best_prompt,
+                        best_score=best_score,
+                        completed_prompts=completed_prompts,
+                        status="interrupted",
+                        duration_s=round(duration, 2),
+                    )
+            except Exception:
+                logger.exception("Failed to clean up prompt tune run %s in finally block", tune_id)
             user_lock.release()
 
     return StreamingResponse(

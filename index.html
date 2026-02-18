@@ -7446,7 +7446,7 @@
         const models = r.models_json ? (typeof r.models_json === 'string' ? JSON.parse(r.models_json) : r.models_json) : [];
         const modelStr = models.length <= 2 ? models.join(', ') : models.length + ' models';
         const scoreColor = r.best_score ? _ptScoreColor(r.best_score * 100) : '#85858F';
-        const statusColor = r.status === 'completed' ? 'var(--lime)' : r.status === 'cancelled' ? '#EAB308' : r.status === 'error' ? 'var(--coral)' : '#85858F';
+        const statusColor = r.status === 'completed' ? 'var(--lime)' : r.status === 'cancelled' ? '#EAB308' : r.status === 'interrupted' ? '#FB923C' : r.status === 'error' ? 'var(--coral)' : '#85858F';
         return `<tr>
           <td class="px-5 py-3 text-xs text-zinc-500 font-body">${_teTimeAgo(r.timestamp)}</td>
           <td class="px-5 py-3 text-sm font-body text-zinc-300">${_teEsc(r.suite_name || '')}</td>
@@ -7467,7 +7467,7 @@
         const res = await apiFetch(`/api/tool-eval/param-tune/history/${tuneId}`);
         if (!res.ok) { showToast('Failed to load run', 'error'); return; }
         const run = await res.json();
-        ptResults = typeof run.results_json === 'string' ? JSON.parse(run.results_json) : (run.results_json || []);
+        ptResults = run.results_json ? (typeof run.results_json === 'string' ? JSON.parse(run.results_json) : run.results_json) : [];
         ptBestConfig = typeof run.best_config_json === 'string' ? JSON.parse(run.best_config_json) : run.best_config_json;
         ptBestScore = run.best_score || 0;
 
@@ -7475,6 +7475,24 @@
         document.getElementById('ptProgressSection').classList.add('hidden');
         document.getElementById('ptResultsSection').classList.remove('hidden');
         document.getElementById('ptApplyBestBtn').classList.remove('hidden');
+
+        // Show interrupted banner if applicable
+        const ptInterruptedBanner = document.getElementById('ptInterruptedBanner');
+        if (ptInterruptedBanner) ptInterruptedBanner.remove();
+        if (run.status === 'interrupted') {
+          const banner = document.createElement('div');
+          banner.id = 'ptInterruptedBanner';
+          banner.className = 'mb-4 px-4 py-3 rounded-md text-sm font-body';
+          banner.style.cssText = 'background:rgba(251,146,60,0.08);border:1px solid rgba(251,146,60,0.25);color:#FB923C;';
+          if (ptResults.length > 0) {
+            const total = run.total_combos || '?';
+            banner.textContent = `This run was interrupted. Showing ${ptResults.length} of ${total} partial results.`;
+          } else {
+            banner.textContent = 'This run was interrupted before any results were saved.';
+          }
+          document.getElementById('ptResultsSection').insertAdjacentElement('beforebegin', banner);
+        }
+
         ptUpdateBestCard();
         ptRenderResultsTable();
       } catch (e) {
@@ -8023,7 +8041,7 @@
       tbody.innerHTML = prtHistory.map(r => {
         const models = (() => { try { return JSON.parse(r.target_models_json || '[]'); } catch { return []; } })();
         const modelNames = models.map(m => m.split('/').pop()).join(', ');
-        const statusColor = r.status === 'completed' ? 'var(--lime)' : r.status === 'cancelled' ? '#EAB308' : r.status === 'error' ? 'var(--coral)' : '#A855F7';
+        const statusColor = r.status === 'completed' ? 'var(--lime)' : r.status === 'cancelled' ? '#EAB308' : r.status === 'interrupted' ? '#FB923C' : r.status === 'error' ? 'var(--coral)' : '#A855F7';
         const scorePct = Math.round((r.best_score || 0) * 100);
         return `<tr style="border-bottom:1px solid var(--border-subtle)" class="hover:bg-white/[0.02] transition-colors">
           <td class="px-5 py-3 text-xs font-mono text-zinc-500">${(r.timestamp || '').slice(0, 16)}</td>
@@ -8054,7 +8072,7 @@
         prtMode = run.mode || 'quick';
         prtTotalGenerations = 1;
 
-        // Parse generations
+        // Parse generations safely (may be NULL for interrupted runs)
         const generations = (() => { try { return JSON.parse(run.generations_json || '[]'); } catch { return []; } })();
         prtTotalGenerations = generations.length || 1;
 
@@ -8080,6 +8098,23 @@
         // Switch to run view and render
         showToolEvalView('prt-run');
         document.getElementById('prtProgressSection').classList.add('hidden');
+
+        // Show interrupted banner if applicable
+        const prtInterruptedBanner = document.getElementById('prtInterruptedBanner');
+        if (prtInterruptedBanner) prtInterruptedBanner.remove();
+        if (run.status === 'interrupted') {
+          const banner = document.createElement('div');
+          banner.id = 'prtInterruptedBanner';
+          banner.className = 'mb-4 px-4 py-3 rounded-md text-sm font-body';
+          banner.style.cssText = 'background:rgba(251,146,60,0.08);border:1px solid rgba(251,146,60,0.25);color:#FB923C;';
+          if (prtPrompts.length > 0) {
+            banner.textContent = `This run was interrupted. Showing ${prtPrompts.length} partial prompt${prtPrompts.length === 1 ? '' : 's'} from ${generations.length} generation${generations.length === 1 ? '' : 's'}.`;
+          } else {
+            banner.textContent = 'This run was interrupted before any results were saved.';
+          }
+          // Insert after the (hidden) progress section
+          document.getElementById('prtProgressSection').insertAdjacentElement('afterend', banner);
+        }
 
         // Timeline
         if (prtMode === 'evolutionary' && prtTotalGenerations > 1) {

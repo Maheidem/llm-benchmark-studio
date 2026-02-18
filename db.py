@@ -226,7 +226,7 @@ async def init_db():
                 best_score REAL DEFAULT 0.0,
                 total_combos INTEGER NOT NULL,
                 completed_combos INTEGER DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','cancelled','error')),
+                status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','cancelled','error','interrupted')),
                 duration_s REAL,
                 timestamp TEXT NOT NULL DEFAULT (datetime('now'))
             )
@@ -251,7 +251,7 @@ async def init_db():
                 generations_json TEXT NOT NULL DEFAULT '[]',
                 best_prompt TEXT,
                 best_score REAL DEFAULT 0.0,
-                status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','cancelled','error')),
+                status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','cancelled','error','interrupted')),
                 total_prompts INTEGER DEFAULT 0,
                 completed_prompts INTEGER DEFAULT 0,
                 duration_s REAL,
@@ -333,6 +333,37 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_timeout ON jobs(status, timeout_at)")
         await db.commit()
+
+        # --- Migration: add 'interrupted' status to param_tune_runs / prompt_tune_runs ---
+        # SQLite CHECK constraints can't be altered, so we recreate the tables.
+        # Only runs if the existing schema still uses the old 4-value CHECK.
+        for table_name in ("param_tune_runs", "prompt_tune_runs"):
+            try:
+                cursor = await db.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                    (table_name,),
+                )
+                row = await cursor.fetchone()
+                if row:
+                    ddl = row[0] if isinstance(row, (tuple, list)) else row["sql"]
+                    if "'interrupted'" not in ddl:
+                        logger.info("Migrating %s: adding 'interrupted' to status CHECK", table_name)
+                        new_ddl = ddl.replace(
+                            "('running','completed','cancelled','error')",
+                            "('running','completed','cancelled','error','interrupted')",
+                        )
+                        # Standard SQLite table-rebuild migration
+                        await db.execute(f"ALTER TABLE {table_name} RENAME TO _{table_name}_old")
+                        await db.execute(new_ddl)
+                        cols = [c.strip().split()[0] for c in ddl.split("(", 1)[1].rsplit(")", 1)[0].split(",")
+                                if c.strip() and not c.strip().upper().startswith(("PRIMARY", "FOREIGN", "CHECK", "UNIQUE"))]
+                        # Simpler: just copy all data
+                        await db.execute(f"INSERT INTO {table_name} SELECT * FROM _{table_name}_old")
+                        await db.execute(f"DROP TABLE _{table_name}_old")
+                        await db.commit()
+                        logger.info("Migration complete for %s", table_name)
+            except Exception:
+                logger.exception("Failed to migrate %s CHECK constraint", table_name)
 
 
 # --- User CRUD ---
@@ -1098,6 +1129,36 @@ async def cleanup_stale_judge_reports(minutes: int = 30) -> int:
     async with aiosqlite.connect(str(DB_PATH)) as conn:
         cursor = await conn.execute(
             "UPDATE judge_reports SET status = 'error' "
+            "WHERE status = 'running' AND timestamp < datetime('now', ?)",
+            (f"-{minutes} minutes",),
+        )
+        await conn.commit()
+        return cursor.rowcount
+
+
+async def cleanup_stale_param_tune_runs(minutes: int = 30) -> int:
+    """Mark any 'running' param tune runs older than `minutes` as 'interrupted'.
+
+    Returns number of rows updated. Called on startup to recover orphaned runs.
+    """
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        cursor = await conn.execute(
+            "UPDATE param_tune_runs SET status = 'interrupted' "
+            "WHERE status = 'running' AND timestamp < datetime('now', ?)",
+            (f"-{minutes} minutes",),
+        )
+        await conn.commit()
+        return cursor.rowcount
+
+
+async def cleanup_stale_prompt_tune_runs(minutes: int = 30) -> int:
+    """Mark any 'running' prompt tune runs older than `minutes` as 'interrupted'.
+
+    Returns number of rows updated. Called on startup to recover orphaned runs.
+    """
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        cursor = await conn.execute(
+            "UPDATE prompt_tune_runs SET status = 'interrupted' "
             "WHERE status = 'running' AND timestamp < datetime('now', ?)",
             (f"-{minutes} minutes",),
         )
