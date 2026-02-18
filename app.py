@@ -3370,6 +3370,7 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
         job_id, user_id, len(model_ids) if model_ids else 0,
     )
 
+
     # Load suite + test cases
     suite = await db.get_tool_suite(suite_id, user_id)
     cases = await db.get_test_cases(suite_id)
@@ -3412,6 +3413,15 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
                         judge_target = inject_user_keys([judge_target], {judge_target.provider_key: enc})[0]
             else:
                 judge_enabled = False
+
+    # Auto-cap judge concurrency when judge shares an endpoint with eval models.
+    # Local models (LM Studio, Ollama) can't handle many concurrent requests;
+    # firing 4 judge calls while eval is running overwhelms the server (502).
+    if judge_enabled and judge_target and judge_mode == "live_inline":
+        eval_bases = {t.api_base for t in targets if t.api_base}
+        if judge_target.api_base and judge_target.api_base in eval_bases:
+            judge_concurrency = min(judge_concurrency, 1)
+            logger.info("Judge shares endpoint with eval model — capping concurrency to 1")
 
     total = len(targets) * len(cases)
     results_queue = asyncio.Queue()
