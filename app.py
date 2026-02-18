@@ -3416,8 +3416,8 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
 
     # Auto-cap judge concurrency when judge shares an endpoint with eval models.
     # Local models (LM Studio, Ollama) can't handle many concurrent requests;
-    # firing 4 judge calls while eval is running overwhelms the server (502).
-    if judge_enabled and judge_target and judge_mode == "live_inline":
+    # firing 4+ judge calls overwhelms the server (502).
+    if judge_enabled and judge_target and judge_mode in ("live_inline", "post_eval"):
         eval_bases = {t.api_base for t in targets if t.api_base}
         if judge_target.api_base and judge_target.api_base in eval_bases:
             judge_concurrency = min(judge_concurrency, 1)
@@ -3598,6 +3598,10 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
     judge_report_id = None
     if judge_enabled and judge_mode == "post_eval" and judge_target and all_results:
         try:
+            # Brief pause to let cloudflared/local server release eval connections
+            await asyncio.sleep(2)
+            logger.info("Post-eval judge starting: model=%s api_base=%s concurrency=%d cases=%d",
+                        judge_target.model_id, judge_target.api_base, judge_concurrency, len(all_results))
             judge_report_id = await db.save_judge_report(
                 user_id=user_id,
                 judge_model=judge_target.model_id,
@@ -3634,19 +3638,25 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
                         return v
 
                 judge_batch = [asyncio.create_task(_judge_one(r)) for r in mres]
-                for coro in asyncio.as_completed(judge_batch):
-                    if cancel_event.is_set():
-                        for bt in judge_batch:
-                            bt.cancel()
-                        break
-                    v = await coro
-                    pe_verdicts.append(v)
-                    model_vds.append(v)
-                    judge_completed += 1
-                    await _ws_send({"type": "judge_verdict", "job_id": job_id, **v})
-                    # Update progress for judge phase
-                    j_pct = int((judge_completed / judge_total) * 100) if judge_total > 0 else 0
-                    await progress_cb(j_pct, f"Judge: {judge_completed}/{judge_total}")
+                try:
+                    for coro in asyncio.as_completed(judge_batch):
+                        if cancel_event.is_set():
+                            for bt in judge_batch:
+                                bt.cancel()
+                            break
+                        v = await coro
+                        pe_verdicts.append(v)
+                        model_vds.append(v)
+                        judge_completed += 1
+                        await _ws_send({"type": "judge_verdict", "job_id": job_id, **v})
+                        # Update progress for judge phase
+                        j_pct = int((judge_completed / judge_total) * 100) if judge_total > 0 else 0
+                        await progress_cb(j_pct, f"Judge: {judge_completed}/{judge_total}")
+                except Exception:
+                    # Cancel remaining judge tasks to avoid orphaned "Task exception was never retrieved"
+                    for bt in judge_batch:
+                        bt.cancel()
+                    raise
 
                 if cancel_event.is_set():
                     break
@@ -4980,15 +4990,18 @@ async def _call_judge_model(
         "model": judge_target.model_id,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 2048,
-        "temperature": 0.0,  # AD-6: reproducible judge assessments
         "timeout": 120,
         "num_retries": 1,
     }
+    # Respect skip_params (e.g. some models don't support temperature)
+    if "temperature" not in (judge_target.skip_params or []):
+        kwargs["temperature"] = 0.0  # AD-6: reproducible judge assessments
     if judge_target.api_base:
         kwargs["api_base"] = judge_target.api_base
     if judge_target.api_key:
         kwargs["api_key"] = judge_target.api_key
 
+    logger.debug("Judge call: model=%s api_base=%s prompt_len=%d", judge_target.model_id, judge_target.api_base, len(prompt))
     response = await litellm.acompletion(**kwargs)
     content = response.choices[0].message.content or ""
     return _parse_judge_json(content)
