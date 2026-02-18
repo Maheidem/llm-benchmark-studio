@@ -10,6 +10,7 @@ services:
       - FERNET_KEY=${FERNET_KEY}
       - COOKIE_SECURE=true
       - LOG_LEVEL=info
+      - LOG_ACCESS_TOKEN=${LOG_ACCESS_TOKEN:-}
       - BENCHMARK_RATE_LIMIT=${BENCHMARK_RATE_LIMIT:-2000}
       - ADMIN_EMAIL=${ADMIN_EMAIL:-}
     extra_hosts:

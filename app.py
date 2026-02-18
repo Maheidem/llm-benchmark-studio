@@ -887,18 +887,35 @@ async def admin_delete_user(user_id: str, request: Request, current_user: dict =
 
 @app.get("/api/admin/logs")
 async def admin_get_logs(
+    request: Request,
     lines: int = 100,
     level: str | None = None,
     search: str | None = None,
-    current_user: dict = Depends(auth.require_admin),
+    token: str | None = None,
 ):
     """Return recent application log entries from in-memory ring buffer.
+
+    Auth: either admin JWT (via cookie/header) OR LOG_ACCESS_TOKEN query param.
 
     Query params:
         lines  - max entries to return (default 100, max 2000)
         level  - filter by level: DEBUG, INFO, WARNING, ERROR, CRITICAL
         search - substring filter on log message
+        token  - static LOG_ACCESS_TOKEN for CLI access without JWT
     """
+    # Auth: static token OR admin JWT
+    log_token = os.environ.get("LOG_ACCESS_TOKEN", "")
+    if token and log_token and token == log_token:
+        pass  # static token auth OK
+    else:
+        # Fall back to JWT admin auth
+        try:
+            user = await auth.get_current_user(request)
+            if user.get("role") != "admin":
+                return JSONResponse({"error": "Admin required"}, status_code=403)
+        except Exception:
+            return JSONResponse({"error": "Set LOG_ACCESS_TOKEN env var or use admin JWT"}, status_code=401)
+
     lines = min(max(1, lines), 2000)
     entries = list(_log_buffer)
     if level:
