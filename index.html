@@ -4926,6 +4926,7 @@
           })).sort((a, b) => b.avg_tokens_per_second - a.avg_tokens_per_second);
           const winner = sorted[0];
           const hasMultiRun = sorted.some(r => (r.runs || 1) > 1);
+          const hasMultiCtx = new Set(sorted.map(r => r.context_tokens ?? 0)).size > 1;
           const runId = h.id;
 
           return `
@@ -4946,6 +4947,7 @@
                 <table class="w-full text-xs">
                   <thead><tr class="text-zinc-700">
                     <th class="px-3 py-1.5 text-left section-label">Model</th>
+                    ${hasMultiCtx ? '<th class="px-3 py-1.5 text-right section-label">Context</th>' : ''}
                     <th class="px-3 py-1.5 text-right section-label">Tok/s</th>
                     ${hasMultiRun ? '<th class="px-3 py-1.5 text-right section-label">Std Dev</th>' : ''}
                     <th class="px-3 py-1.5 text-right section-label">TTFT</th>
@@ -4955,6 +4957,7 @@
                     ${sorted.map((r, i) => `
                       <tr style="border-top: 1px solid var(--border-subtle)">
                         <td class="px-3 py-2 text-zinc-400 font-body">${r.provider} / ${r.model}</td>
+                        ${hasMultiCtx ? `<td class="px-3 py-2 text-right font-mono text-zinc-600">${((r.context_tokens ?? 0) === 0) ? 'Base' : (r.context_tokens >= 1000 ? (r.context_tokens/1000) + 'K' : r.context_tokens)}</td>` : ''}
                         <td class="px-3 py-2 text-right font-mono ${i === 0 ? '' : 'text-zinc-500'}" ${i === 0 ? 'style="color:var(--lime)"' : ''}>${r.avg_tokens_per_second}</td>
                         ${hasMultiRun ? `<td class="px-3 py-2 text-right font-mono text-zinc-600">${r.std_dev_tps > 0 ? '\u00B1' + r.std_dev_tps.toFixed(1) : '-'}</td>` : ''}
                         <td class="px-3 py-2 text-right font-mono text-zinc-600">${r.avg_ttft_ms}ms</td>
