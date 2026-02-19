@@ -3569,7 +3569,7 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
     temperature = float(params.get("temperature", 0.0))
     tool_choice = params.get("tool_choice", "required")
     provider_params = params.get("provider_params")
-    system_prompt = params.get("system_prompt")
+    system_prompt_raw = params.get("system_prompt")  # string | dict | None
     judge_config = params.get("judge")
     judge_concurrency = int(params.get("judge_concurrency", 4))
     experiment_id = params.get("experiment_id")
@@ -3672,9 +3672,19 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
     for target in targets:
         provider_groups.setdefault(target.provider, []).append(target)
 
+    def _resolve_system_prompt(target):
+        """Resolve per-model system prompt from dict, string, or None."""
+        if isinstance(system_prompt_raw, dict):
+            target_key = f"{target.provider_key}::{target.model_id}"
+            return system_prompt_raw.get(target_key) or system_prompt_raw.get("_global") or None
+        elif isinstance(system_prompt_raw, str):
+            return system_prompt_raw
+        return None
+
     async def run_provider(prov_targets):
         """Run all test cases for models in this provider."""
         for target in prov_targets:
+            system_prompt = _resolve_system_prompt(target)
             for case in cases:
                 if cancel_event.is_set():
                     return

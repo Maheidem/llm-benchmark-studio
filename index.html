@@ -1901,6 +1901,7 @@
             </div>
           </div>
           <div id="teSystemPromptSection" class="hidden">
+            <div id="teSystemPromptTabs" class="flex flex-wrap gap-1.5 mb-2" style="display:none;"></div>
             <textarea id="teSystemPromptText" rows="5" class="w-full px-3 py-2 rounded-sm text-sm text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;font-family:'Space Mono',monospace;font-size:12px;resize:vertical;" placeholder="Enter a system prompt to prepend to eval calls..."></textarea>
           </div>
         </div>
@@ -7617,7 +7618,7 @@
       });
       _teUpdateContextBar();
 
-      if (view === 'run') { jgLoadDefaults(); teUpdateSystemPromptUI(); teUpdateAppliedBadge(); }
+      if (view === 'run') { teRenderEvalModelGrid(); jgLoadDefaults(); teUpdateSystemPromptUI(); teUpdateAppliedBadge(); }
       if (view === 'pt-config') { ptLoadSuiteSelector(); ptRenderModelGrid(); _ptApplyDefaults(); ptPopulatePresetDropdown(); ptUpdatePreview(); _ptCheckRunningBanner(); }
       if (view === 'pt-history') { ptLoadHistory(); }
       if (view === 'prt-config') {
@@ -7706,10 +7707,23 @@
         newExpBtn.classList.toggle('hidden', !hasSuite || !!hasExp);
       }
 
-      // Gap 4: System Prompt pill
+      // Gap 4: System Prompt pill (supports dict or string)
       const spPill = document.getElementById('ctxSystemPromptPill');
       if (spPill) {
-        spPill.classList.toggle('hidden', !_sharedContext.system_prompt);
+        const sp = _sharedContext.system_prompt;
+        let hasAny = false;
+        let perModelCount = 0;
+        if (sp && typeof sp === 'object') {
+          for (const [k, v] of Object.entries(sp)) {
+            if (v && v.trim()) { hasAny = true; if (k !== '_global') perModelCount++; }
+          }
+        } else if (typeof sp === 'string' && sp.trim()) {
+          hasAny = true;
+        }
+        spPill.classList.toggle('hidden', !hasAny);
+        if (hasAny) {
+          spPill.textContent = perModelCount > 0 ? `System Prompt (${perModelCount} model${perModelCount > 1 ? 's' : ''})` : 'System Prompt';
+        }
       }
 
       // Gap 4: Applied From pill
@@ -7853,7 +7867,10 @@
       setTimeout(function() { document.getElementById('teNewExpName')?.focus(); }, 50);
     }
 
-    // --- Gap 2: System Prompt UI ---
+    // --- Gap 2: System Prompt UI (Per-Model Tabbed) ---
+    let _teSystemPromptData = {};          // { "_global": "...", "prov::model": "..." }
+    let _teSystemPromptActiveTab = '_global';
+
     function teToggleSystemPrompt() {
       const section = document.getElementById('teSystemPromptSection');
       const chevron = document.getElementById('teSystemPromptChevron');
@@ -7861,6 +7878,131 @@
       const isHidden = section.classList.contains('hidden');
       section.classList.toggle('hidden');
       if (chevron) chevron.style.transform = isHidden ? 'rotate(180deg)' : '';
+    }
+
+    /** Look up display name for a compound key from the model grid DOM */
+    function _teModelDisplayName(compoundKey) {
+      const card = document.querySelector(`#teModelGrid .model-card[data-compound-key="${CSS.escape(compoundKey)}"]`);
+      if (card) {
+        const nameEl = card.querySelector('.text-zinc-200');
+        if (nameEl) return nameEl.textContent.trim();
+      }
+      // Fallback: extract model_id from compound key
+      const idx = compoundKey.indexOf('::');
+      return idx >= 0 ? compoundKey.substring(idx + 2) : compoundKey;
+    }
+
+    /** Build tab pills from selected models */
+    function teRenderSystemPromptTabs() {
+      const container = document.getElementById('teSystemPromptTabs');
+      if (!container) return;
+      container.innerHTML = '';
+
+      if (teSelectedModels.size === 0) {
+        container.style.display = 'none';
+        return;
+      }
+      container.style.display = 'flex';
+
+      // "All Models" tab
+      const globalPill = _teCreateTabPill('_global', 'All Models');
+      container.appendChild(globalPill);
+
+      // Per-model tabs
+      for (const ck of teSelectedModels) {
+        const name = _teModelDisplayName(ck);
+        const truncName = name.length > 22 ? name.substring(0, 20) + '...' : name;
+        const pill = _teCreateTabPill(ck, truncName);
+        container.appendChild(pill);
+      }
+
+      // Ensure active tab is valid
+      if (_teSystemPromptActiveTab !== '_global' && !teSelectedModels.has(_teSystemPromptActiveTab)) {
+        _teSystemPromptActiveTab = '_global';
+      }
+      _teHighlightActiveTab();
+    }
+
+    function _teCreateTabPill(key, label) {
+      const pill = document.createElement('button');
+      pill.className = 'text-[10px] font-display tracking-wider uppercase px-2.5 py-1 rounded-sm transition-colors relative';
+      pill.style.cssText = 'border:1px solid var(--border-subtle);background:none;color:#A1A1AA;cursor:pointer;';
+      pill.dataset.tabKey = key;
+      pill.onclick = () => teSelectSystemPromptTab(key);
+
+      // Dot indicator for non-empty prompts
+      const dot = document.createElement('span');
+      dot.className = 'te-sp-dot';
+      dot.style.cssText = 'position:absolute;top:-2px;right:-2px;width:6px;height:6px;border-radius:50%;background:var(--lime);display:none;';
+      if (_teSystemPromptData[key]?.trim()) dot.style.display = 'block';
+
+      pill.textContent = label;
+      pill.appendChild(dot);
+      return pill;
+    }
+
+    function _teHighlightActiveTab() {
+      const container = document.getElementById('teSystemPromptTabs');
+      if (!container) return;
+      container.querySelectorAll('button').forEach(btn => {
+        const isActive = btn.dataset.tabKey === _teSystemPromptActiveTab;
+        btn.style.borderColor = isActive ? 'var(--lime)' : 'var(--border-subtle)';
+        btn.style.color = isActive ? 'var(--lime)' : '#A1A1AA';
+      });
+    }
+
+    /** Switch active system prompt tab */
+    function teSelectSystemPromptTab(key) {
+      const textarea = document.getElementById('teSystemPromptText');
+      if (!textarea) return;
+
+      // Save current tab's content
+      const current = textarea.value.trim();
+      if (current) {
+        _teSystemPromptData[_teSystemPromptActiveTab] = current;
+      } else {
+        delete _teSystemPromptData[_teSystemPromptActiveTab];
+      }
+
+      // Switch to new tab
+      _teSystemPromptActiveTab = key;
+      textarea.value = _teSystemPromptData[key] || '';
+
+      // Update placeholder
+      if (key === '_global') {
+        textarea.placeholder = 'System prompt for all models (fallback)...';
+      } else {
+        const name = _teModelDisplayName(key);
+        textarea.placeholder = 'System prompt for ' + name + ' (overrides global)...';
+      }
+
+      _teHighlightActiveTab();
+      // Update dot indicators
+      const container = document.getElementById('teSystemPromptTabs');
+      if (container) {
+        container.querySelectorAll('button').forEach(btn => {
+          const dot = btn.querySelector('.te-sp-dot');
+          if (dot) dot.style.display = _teSystemPromptData[btn.dataset.tabKey]?.trim() ? 'block' : 'none';
+        });
+      }
+    }
+
+    /** Collect system prompt data from textarea into _teSystemPromptData, returns dict or null */
+    function _teCollectSystemPromptData() {
+      // Save current tab content first
+      const textarea = document.getElementById('teSystemPromptText');
+      if (textarea) {
+        const val = textarea.value.trim();
+        if (val) _teSystemPromptData[_teSystemPromptActiveTab] = val;
+        else delete _teSystemPromptData[_teSystemPromptActiveTab];
+      }
+      // Filter out empty entries
+      const result = {};
+      for (const [k, v] of Object.entries(_teSystemPromptData)) {
+        if (v && v.trim()) result[k] = v.trim();
+      }
+      if (Object.keys(result).length === 0) return null;
+      return result;
     }
 
     function teUpdateSystemPromptUI() {
@@ -7872,10 +8014,27 @@
       const chevron = document.getElementById('teSystemPromptChevron');
       if (!card) return;
 
-      const prompt = _sharedContext.system_prompt;
+      // Populate _teSystemPromptData from shared context
+      const sp = _sharedContext.system_prompt;
+      if (sp && typeof sp === 'object') {
+        _teSystemPromptData = { ...sp };
+      } else if (typeof sp === 'string' && sp.trim()) {
+        _teSystemPromptData = { '_global': sp };
+      } else {
+        _teSystemPromptData = {};
+      }
+      _teSystemPromptActiveTab = '_global';
+
       card.classList.remove('hidden');
-      if (textarea) textarea.value = prompt || '';
-      const hasPrompt = !!prompt;
+      teRenderSystemPromptTabs();
+
+      // Load active tab content
+      if (textarea) {
+        textarea.value = _teSystemPromptData['_global'] || '';
+        textarea.placeholder = 'System prompt for all models (fallback)...';
+      }
+
+      const hasPrompt = Object.values(_teSystemPromptData).some(v => v && v.trim());
       if (badge) badge.classList.toggle('hidden', !hasPrompt);
       if (clearBtn) clearBtn.classList.toggle('hidden', !hasPrompt);
       // Auto-expand when prompt is set
@@ -7886,12 +8045,18 @@
     }
 
     function teClearSystemPrompt() {
+      _teSystemPromptData = {};
+      _teSystemPromptActiveTab = '_global';
       _sharedContext.system_prompt = null;
       _scSave();
       const textarea = document.getElementById('teSystemPromptText');
-      if (textarea) textarea.value = '';
+      if (textarea) {
+        textarea.value = '';
+        textarea.placeholder = 'System prompt for all models (fallback)...';
+      }
       document.getElementById('teSystemPromptBadge')?.classList.add('hidden');
       document.getElementById('teSystemPromptClearBtn')?.classList.add('hidden');
+      teRenderSystemPromptTabs();
       showToast('System prompt cleared');
     }
 
@@ -12331,6 +12496,7 @@
           });
           _scSetModels(teSelectedModels);
           ppOnModelSelectionChange('tooleval');
+          teRenderSystemPromptTabs();
         };
         group.appendChild(header);
 
@@ -12359,6 +12525,7 @@
             }
             _scSetModels(teSelectedModels);
             ppOnModelSelectionChange('tooleval');
+            teRenderSystemPromptTabs();
           };
           card.innerHTML = `
             <div class="check-dot flex-shrink-0"></div>
@@ -12383,12 +12550,14 @@
         c.classList.add('selected');
       });
       ppOnModelSelectionChange('tooleval');
+      teRenderSystemPromptTabs();
     }
 
     function teClearModels() {
       teSelectedModels.clear();
       document.querySelectorAll('#teModelGrid .model-card').forEach(c => c.classList.remove('selected'));
       ppOnModelSelectionChange('tooleval');
+      teRenderSystemPromptTabs();
     }
 
     function _teResetRunView() {
@@ -12442,12 +12611,9 @@
       const judgeConcurrency = _p10Settings?.judge?.concurrency || 4;
       const teTemp = parseFloat(document.getElementById('teTemperature').value) || 0.0;
       const teTC = document.getElementById('teToolChoice').value;
-      // Gap 2b: Read system prompt from textarea back into shared context
-      const spText = document.getElementById('teSystemPromptText');
-      if (spText) {
-        const spVal = spText.value.trim();
-        _sharedContext.system_prompt = spVal || null;
-      }
+      // Gap 2b: Collect per-model system prompts into shared context
+      const spDict = _teCollectSystemPromptData();
+      _sharedContext.system_prompt = spDict;
       // Gap 3b: Clear applied badge on manual eval start
       _sharedContext.last_updated_by = null;
       // Write current config to shared context
@@ -13035,7 +13201,15 @@
       if (config.provider_params) {
         Object.entries(config.provider_params).sort().forEach(([k, v]) => parts.push(k + '=' + v));
       }
-      if (config.system_prompt) parts.push("prompt='" + config.system_prompt.slice(0, 30) + "...'");
+      if (config.system_prompt) {
+        const sp = config.system_prompt;
+        if (typeof sp === 'object') {
+          const keys = Object.keys(sp).filter(k => sp[k]?.trim());
+          if (keys.length) parts.push('prompt=' + keys.length + ' entry' + (keys.length > 1 ? 's' : ''));
+        } else if (typeof sp === 'string') {
+          parts.push("prompt='" + sp.slice(0, 30) + "...'");
+        }
+      }
       return parts.join(', ') || 'defaults';
     }
 
@@ -13135,7 +13309,7 @@
       if (!prtBestPrompt) { showToast('No best prompt available', 'error'); return; }
       showModal('Apply & Re-Eval', 'Re-run eval with the best prompt as system prompt?',
         async () => {
-          _sharedContext.system_prompt = prtBestPrompt;
+          _sharedContext.system_prompt = { '_global': prtBestPrompt };
           _sharedContext.last_updated_by = 'prompt_tuner';
           _scSave();
           showToolEvalView('run');
