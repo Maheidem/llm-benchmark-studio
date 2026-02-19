@@ -4519,6 +4519,17 @@ async def _generate_prompts_meta(
             raise
         except _META_RETRYABLE_ERRORS as exc:
             last_exc = exc
+            # Some models (e.g. LM Studio) crash on response_format instead
+            # of returning a clean 400 — strip it on first transient failure
+            if _json_mode_supported and "response_format" in kwargs:
+                logger.info(
+                    "Meta model transient error with JSON mode (attempt %d/%d): %s — disabling response_format and retrying",
+                    attempt, _max_retries, exc,
+                )
+                _json_mode_supported = False
+                kwargs.pop("response_format", None)
+                await asyncio.sleep(_base_delay)
+                continue  # Don't count this as a retry attempt
             if attempt < _max_retries:
                 delay = _base_delay * (2 ** (attempt - 1))
                 logger.info(
