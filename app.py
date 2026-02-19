@@ -4476,7 +4476,32 @@ async def _generate_prompts_meta(
         "messages": [{"role": "user", "content": formatted}],
         "timeout": 120,
         "num_retries": 0,  # We handle retries ourselves with backoff
-        "response_format": {"type": "json_object"},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "prompt_list",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "prompts": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "style": {"type": "string"},
+                                    "prompt": {"type": "string"},
+                                },
+                                "required": ["style", "prompt"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": ["prompts"],
+                    "additionalProperties": False,
+                },
+            },
+        },
     }
     if meta_target.api_base:
         kwargs["api_base"] = meta_target.api_base
