@@ -3267,6 +3267,30 @@
             }
           }
           break;
+        case 'prompt_tune':
+          showTab('tool-eval');
+          // Reconnect to the running prompt tune — try multiple sources for tune_id
+          {
+            let tuneId = _activePromptTuneRunId;
+            if (!tuneId && _activePromptTuneJobId) {
+              tuneId = _jobStore[_activePromptTuneJobId]?.result_ref;
+            }
+            if (!tuneId) {
+              const prtJob = Object.values(_jobStore).find(
+                j => j.job_type === 'prompt_tune' && ACTIVE_STATUSES.has(j.status) && j.result_ref
+              );
+              if (prtJob) tuneId = prtJob.result_ref;
+            }
+            if (!tuneId) {
+              try { tuneId = sessionStorage.getItem('_prtRunId'); } catch {}
+            }
+            if (tuneId) {
+              prtViewHistoryRun(tuneId);
+            } else {
+              showToolEvalView('prt-history');
+            }
+          }
+          break;
         case 'tool_eval':
           showTab('tool-eval');
           // showTab already handles active tool eval job restoration via _teRestoreRunningEval
@@ -7622,7 +7646,7 @@
       if (view === 'pt-config') { ptLoadSuiteSelector(); ptRenderModelGrid(); _ptApplyDefaults(); ptPopulatePresetDropdown(); ptUpdatePreview(); _ptCheckRunningBanner(); }
       if (view === 'pt-history') { ptLoadHistory(); }
       if (view === 'prt-config') {
-        prtLoadSuiteSelector(); prtRenderModelGrid(); prtPopulateMetaModel(); _prtApplyDefaults(); prtUpdateEstimate();
+        prtLoadSuiteSelector(); prtRenderModelGrid(); prtPopulateMetaModel(); _prtApplyDefaults(); prtUpdateEstimate(); _prtCheckRunningBanner();
         // Bridge D: consume judge hint if available
         if (_sharedContext.prompt_tuner_hint) {
           const basePrompt = document.getElementById('prtBasePrompt');
@@ -10857,11 +10881,45 @@
 
         // Switch to run view and render
         showToolEvalView('prt-run');
-        document.getElementById('prtProgressSection').classList.add('hidden');
 
-        // Show interrupted banner if applicable
+        // Remove any stale banners
         const prtInterruptedBanner = document.getElementById('prtInterruptedBanner');
         if (prtInterruptedBanner) prtInterruptedBanner.remove();
+        const prtReconnectedBanner = document.getElementById('prtReconnectedBanner');
+        if (prtReconnectedBanner) prtReconnectedBanner.remove();
+
+        if (run.status === 'running') {
+          // Reconnect to the running job
+          const matchJob = Object.values(_jobStore).find(
+            j => j.job_type === 'prompt_tune' && ACTIVE_STATUSES.has(j.status)
+          );
+          if (matchJob) {
+            _activePromptTuneJobId = matchJob.id;
+          }
+          _activePromptTuneRunId = tuneId;
+          try { sessionStorage.setItem('_prtRunId', tuneId); } catch {}
+
+          // SHOW progress section with backfilled data
+          document.getElementById('prtProgressSection').classList.remove('hidden');
+          const pct = matchJob?.progress_pct || 0;
+          document.getElementById('prtProgressBar').style.width = pct + '%';
+          document.getElementById('prtProgressLabel').textContent = matchJob?.progress_detail || 'Reconnected — tuning in progress';
+
+          // Show reconnection banner
+          const rBanner = document.createElement('div');
+          rBanner.id = 'prtReconnectedBanner';
+          rBanner.className = 'mb-4 px-4 py-3 rounded-md text-sm font-body';
+          rBanner.style.cssText = 'background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.25);color:#A855F7;';
+          rBanner.textContent = 'Reconnected — tuning in progress. Live updates will appear below.';
+          document.getElementById('prtProgressSection').insertAdjacentElement('afterend', rBanner);
+
+          prtRunning = true;
+        } else {
+          // Not running — hide progress
+          document.getElementById('prtProgressSection').classList.add('hidden');
+        }
+
+        // Show interrupted banner if applicable
         if (run.status === 'interrupted') {
           const banner = document.createElement('div');
           banner.id = 'prtInterruptedBanner';
@@ -10923,6 +10981,37 @@
       btn.disabled = false;
       btn.classList.remove('opacity-50');
       btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg> Start Prompt Tuning';
+    }
+
+    // Show a banner on prt-config if a prompt tune is currently running
+    function _prtCheckRunningBanner() {
+      const existingBanner = document.getElementById('prtRunningBanner');
+      if (existingBanner) existingBanner.remove();
+
+      if (!_activePromptTuneJobId) return;
+      const job = _jobStore[_activePromptTuneJobId];
+      if (!job || !['running','pending','queued'].includes(job.status)) return;
+
+      const configView = document.getElementById('prt-config-view');
+      if (!configView) return;
+
+      const banner = document.createElement('div');
+      banner.id = 'prtRunningBanner';
+      banner.className = 'mb-4 px-4 py-3 rounded-md text-sm font-body cursor-pointer';
+      banner.style.cssText = 'background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.25);color:#A855F7;';
+      const pct = job.progress_pct || 0;
+      const detail = job.progress_detail || 'Running...';
+      banner.innerHTML = `<div class="flex items-center justify-between"><span>Prompt tuning in progress (${pct}%) — ${detail}</span><span class="text-[10px] font-display tracking-wider uppercase">Click to view</span></div>`;
+      banner.onclick = () => {
+        let tuneId = _activePromptTuneRunId || job.result_ref;
+        if (!tuneId) { try { tuneId = sessionStorage.getItem('_prtRunId'); } catch {} }
+        if (tuneId) {
+          prtViewHistoryRun(tuneId);
+        } else {
+          showToolEvalView('prt-history');
+        }
+      };
+      configView.prepend(banner);
     }
 
     // WebSocket event bridge for inline prompt tuner progress
@@ -11914,11 +12003,48 @@
       if (!teCurrentSuite) return;
       document.getElementById('teSuiteName').value = teCurrentSuite.name || '';
       document.getElementById('teSuiteDesc').value = teCurrentSuite.description || '';
+
+      // System prompt indicator
+      const existingSpBadge = document.getElementById('teSuiteSystemPromptBadge');
+      if (existingSpBadge) existingSpBadge.remove();
+      if (teCurrentSuite.system_prompt) {
+        const sp = teCurrentSuite.system_prompt;
+        const truncated = sp.length > 80 ? sp.slice(0, 80) + '...' : sp;
+        const badge = document.createElement('div');
+        badge.id = 'teSuiteSystemPromptBadge';
+        badge.className = 'flex items-center gap-3 px-4 py-2.5 rounded-md mb-6';
+        badge.style.cssText = 'background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);';
+        badge.innerHTML = `<span class="text-[10px] font-display font-medium tracking-wider uppercase px-2 py-0.5 rounded-sm" style="background:rgba(168,85,247,0.15);color:#A855F7;">System Prompt</span>
+          <span class="text-xs font-body text-zinc-400 flex-1 truncate">${_teEsc(truncated)}</span>
+          <button onclick="teClearSuiteSystemPrompt()" class="text-[10px] font-display tracking-wider uppercase text-zinc-600 hover:text-red-400 flex-shrink-0">Clear</button>`;
+        // Insert after the name/description card
+        const nameCard = document.getElementById('teSuiteName').closest('.card');
+        if (nameCard) nameCard.insertAdjacentElement('afterend', badge);
+      }
+
       teRenderToolsList();
       teRenderCasesList();
       // Hide editors
       document.getElementById('teToolEditor').classList.add('hidden');
       document.getElementById('teCaseEditor').classList.add('hidden');
+    }
+
+    async function teClearSuiteSystemPrompt() {
+      if (!teCurrentSuite) return;
+      try {
+        const res = await apiFetch(`/api/tool-suites/${teCurrentSuite.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ system_prompt: '' }),
+        });
+        if (res.ok) {
+          teCurrentSuite.system_prompt = null;
+          teRenderEditor();
+          showToast('System prompt cleared', 'success');
+        } else {
+          showToast('Failed to clear system prompt', 'error');
+        }
+      } catch (e) { showToast('Error: ' + e.message, 'error'); }
     }
 
     async function teSaveSuiteMeta() {
@@ -12393,6 +12519,12 @@
       if (!tools.length) { showToast('Add at least one tool first', 'error'); return; }
       teRunSuiteId = teCurrentSuite.id;
       _scSetSuite(teCurrentSuite.id, teCurrentSuite.name);
+      // Auto-populate system prompt from suite if shared context doesn't already have one
+      if (teCurrentSuite.system_prompt && !_sharedContext.system_prompt) {
+        _sharedContext.system_prompt = { '_global': teCurrentSuite.system_prompt };
+        _sharedContext.last_updated_by = 'prompt_tuner';
+        _scSave();
+      }
       document.getElementById('teRunTitle').textContent = 'Run Eval: ' + (teCurrentSuite.name || 'Untitled');
       teRenderEvalModelGrid();
       _teResetRunView();
@@ -13223,6 +13355,10 @@
       });
       _sharedContext.last_updated_by = 'tool_eval';
       _scSave();
+      // Inform user that system prompt is not used during parameter tuning
+      if (_sharedContext.system_prompt) {
+        setTimeout(() => showToast('Note: System prompt is not applied during parameter tuning', ''), 500);
+      }
       showToolEvalView('pt-config');
     }
 
@@ -13297,7 +13433,7 @@
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ system_prompt: prtBestPrompt }),
             });
-            if (res.ok) { showToast('Prompt saved to suite', 'success'); }
+            if (res.ok) { showToast('Prompt saved to suite — will auto-apply next time you run this suite', 'success'); }
             else { const err = await res.json().catch(() => ({})); showToast(err.error || 'Failed', 'error'); }
           } catch (e) { showToast('Error: ' + e.message, 'error'); }
         },
