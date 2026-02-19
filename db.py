@@ -16,6 +16,84 @@ logger = logging.getLogger(__name__)
 DB_PATH = Path(__file__).parent / "data" / "benchmark_studio.db"
 
 
+class DatabaseManager:
+    """Centralized database connection management.
+
+    Eliminates repeated connect/row_factory/commit patterns across ~80 functions.
+    Uses the module-level DB_PATH so that monkeypatching DB_PATH in tests
+    automatically applies to all queries.
+    """
+
+    def _path(self) -> str:
+        return str(DB_PATH)
+
+    async def fetch_one(self, query: str, params: tuple = ()) -> dict | None:
+        """Execute query and return one row as dict, or None."""
+        async with aiosqlite.connect(self._path()) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(query, params)
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def fetch_all(self, query: str, params: tuple = ()) -> list[dict]:
+        """Execute query and return all rows as list of dicts."""
+        async with aiosqlite.connect(self._path()) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(query, params)
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def execute(self, query: str, params: tuple = ()) -> None:
+        """Execute a write query (INSERT/UPDATE/DELETE) with auto-commit."""
+        async with aiosqlite.connect(self._path()) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA foreign_keys=ON")
+            await conn.execute(query, params)
+            await conn.commit()
+
+    async def execute_returning_id(self, query: str, params: tuple = (), *, id_query: str, id_params: tuple = ()) -> str:
+        """Execute INSERT, then fetch a generated ID with a follow-up SELECT."""
+        async with aiosqlite.connect(self._path()) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA foreign_keys=ON")
+            cursor = await conn.execute(query, params)
+            await conn.commit()
+            row = await (await conn.execute(id_query, id_params or (cursor.lastrowid,))).fetchone()
+            return row[0]
+
+    async def execute_returning_row(self, queries: list[tuple[str, tuple]], fetch_query: str, fetch_params: tuple) -> dict | None:
+        """Execute write queries then fetch a row in the same connection."""
+        async with aiosqlite.connect(self._path()) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA foreign_keys=ON")
+            for query, params in queries:
+                await conn.execute(query, params)
+            await conn.commit()
+            cursor = await conn.execute(fetch_query, fetch_params)
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def execute_returning_rowcount(self, query: str, params: tuple = ()) -> int:
+        """Execute a write query and return cursor.rowcount."""
+        async with aiosqlite.connect(self._path()) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA foreign_keys=ON")
+            cursor = await conn.execute(query, params)
+            await conn.commit()
+            return cursor.rowcount
+
+    async def execute_returning_scalar(self, query: str, params: tuple = ()):
+        """Execute query and return the first column of the first row."""
+        async with aiosqlite.connect(self._path()) as conn:
+            cursor = await conn.execute(query, params)
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+
+# Module-level singleton
+_db = DatabaseManager()
+
+
 async def get_db() -> aiosqlite.Connection:
     """Get a database connection. Caller must close or use as context manager."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -142,6 +220,33 @@ async def init_db():
             )
         """)
 
+        # --- Experiments (M2) --- (created before eval/tune/judge tables that reference it)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS experiments (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                suite_id TEXT NOT NULL,
+                suite_snapshot_json TEXT,
+                baseline_eval_id TEXT,
+                baseline_score REAL,
+                best_config_json TEXT,
+                best_score REAL DEFAULT 0.0,
+                best_source TEXT,
+                best_source_id TEXT,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active', 'archived')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (suite_id) REFERENCES tool_suites(id) ON DELETE CASCADE
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_experiments_user ON experiments(user_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_experiments_suite ON experiments(suite_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_experiments_status ON experiments(user_id, status)")
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS tool_eval_runs (
                 id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -152,7 +257,11 @@ async def init_db():
                 results_json TEXT NOT NULL,
                 summary_json TEXT NOT NULL,
                 temperature REAL DEFAULT 0.0,
-                timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                config_json TEXT,
+                experiment_id TEXT,
+                FOREIGN KEY (suite_id) REFERENCES tool_suites(id) ON DELETE CASCADE,
+                FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE SET NULL
             )
         """)
 
@@ -211,13 +320,6 @@ async def init_db():
         except Exception:
             logger.debug("Column multi_turn_config already exists")
 
-        # M1: config_json on tool_eval_runs (full reproducible config)
-        try:
-            await db.execute("ALTER TABLE tool_eval_runs ADD COLUMN config_json TEXT")
-            await db.commit()
-        except Exception:
-            logger.debug("Column tool_eval_runs.config_json already exists")
-
         # S3: scoring_config_json on tool_test_cases (fuzzy scoring modes)
         try:
             await db.execute("ALTER TABLE tool_test_cases ADD COLUMN scoring_config_json TEXT")
@@ -242,7 +344,10 @@ async def init_db():
                 completed_combos INTEGER DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','cancelled','error','interrupted')),
                 duration_s REAL,
-                timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                experiment_id TEXT,
+                FOREIGN KEY (suite_id) REFERENCES tool_suites(id) ON DELETE CASCADE,
+                FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE SET NULL
             )
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_param_tune_runs_user ON param_tune_runs(user_id)")
@@ -269,7 +374,10 @@ async def init_db():
                 total_prompts INTEGER DEFAULT 0,
                 completed_prompts INTEGER DEFAULT 0,
                 duration_s REAL,
-                timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                experiment_id TEXT,
+                FOREIGN KEY (suite_id) REFERENCES tool_suites(id) ON DELETE CASCADE,
+                FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE SET NULL
             )
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_prompt_tune_runs_user ON prompt_tune_runs(user_id)")
@@ -291,7 +399,10 @@ async def init_db():
                 overall_grade TEXT,
                 overall_score REAL,
                 status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','error')),
-                timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                experiment_id TEXT,
+                FOREIGN KEY (eval_run_id) REFERENCES tool_eval_runs(id) ON DELETE SET NULL,
+                FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE SET NULL
             )
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_user ON judge_reports(user_id)")
@@ -348,59 +459,7 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_timeout ON jobs(status, timeout_at)")
         await db.commit()
 
-        # --- Experiments (M2) ---
-
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS experiments (
-                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                description TEXT DEFAULT '',
-                suite_id TEXT NOT NULL,
-                suite_snapshot_json TEXT,
-                baseline_eval_id TEXT,
-                baseline_score REAL,
-                best_config_json TEXT,
-                best_score REAL DEFAULT 0.0,
-                best_source TEXT,
-                best_source_id TEXT,
-                status TEXT NOT NULL DEFAULT 'active'
-                    CHECK(status IN ('active', 'archived')),
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )
-        """)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_experiments_user ON experiments(user_id)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_experiments_suite ON experiments(suite_id)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_experiments_status ON experiments(user_id, status)")
-        await db.commit()
-
-        # --- M2: Experiment integration (experiment_id FK on 4 tables) ---
-
-        try:
-            await db.execute("ALTER TABLE tool_eval_runs ADD COLUMN experiment_id TEXT")
-            await db.commit()
-        except Exception:
-            logger.debug("Column tool_eval_runs.experiment_id already exists")
-
-        try:
-            await db.execute("ALTER TABLE param_tune_runs ADD COLUMN experiment_id TEXT")
-            await db.commit()
-        except Exception:
-            logger.debug("Column param_tune_runs.experiment_id already exists")
-
-        try:
-            await db.execute("ALTER TABLE prompt_tune_runs ADD COLUMN experiment_id TEXT")
-            await db.commit()
-        except Exception:
-            logger.debug("Column prompt_tune_runs.experiment_id already exists")
-
-        try:
-            await db.execute("ALTER TABLE judge_reports ADD COLUMN experiment_id TEXT")
-            await db.commit()
-        except Exception:
-            logger.debug("Column judge_reports.experiment_id already exists")
-
+        # experiment_id indexes (columns now in CREATE TABLE above)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_tool_eval_runs_experiment ON tool_eval_runs(experiment_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_param_tune_runs_experiment ON param_tune_runs(experiment_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_prompt_tune_runs_experiment ON prompt_tune_runs(experiment_id)")
@@ -451,133 +510,100 @@ async def init_db():
 async def create_user(email: str, password_hash: str, role: str = "user") -> dict:
     """Insert a new user. Returns the user dict."""
     user_id = uuid.uuid4().hex
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        await db.execute(
-            "INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, ?)",
-            (user_id, email, password_hash, role),
-        )
-        await db.commit()
-        cursor = await db.execute("SELECT id, email, role, created_at FROM users WHERE id = ?", (user_id,))
-        row = await cursor.fetchone()
-        return dict(row)
+    row = await _db.execute_returning_row(
+        [("INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, ?)",
+          (user_id, email, password_hash, role))],
+        "SELECT id, email, role, created_at FROM users WHERE id = ?",
+        (user_id,),
+    )
+    return row
 
 
 async def get_user_by_email(email: str) -> dict | None:
     """Look up user by email (case-insensitive). Returns full row including password_hash."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute("SELECT * FROM users WHERE email = ? COLLATE NOCASE", (email,))
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+    return await _db.fetch_one("SELECT * FROM users WHERE email = ? COLLATE NOCASE", (email,))
 
 
 async def get_user_by_id(user_id: str) -> dict | None:
     """Look up user by ID. Returns row without password_hash."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT id, email, role, created_at, updated_at, onboarding_completed FROM users WHERE id = ?",
-            (user_id,),
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+    return await _db.fetch_one(
+        "SELECT id, email, role, created_at, updated_at, onboarding_completed FROM users WHERE id = ?",
+        (user_id,),
+    )
 
 
 async def set_onboarding_completed(user_id: str):
     """Mark onboarding as completed for a user."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        await conn.execute("UPDATE users SET onboarding_completed = 1 WHERE id = ?", (user_id,))
-        await conn.commit()
+    await _db.execute("UPDATE users SET onboarding_completed = 1 WHERE id = ?", (user_id,))
 
 
 async def count_users() -> int:
     """Return total user count."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        cursor = await db.execute("SELECT COUNT(*) FROM users")
-        row = await cursor.fetchone()
-        return row[0]
+    return await _db.execute_returning_scalar("SELECT COUNT(*) FROM users")
 
 
 # --- Refresh token CRUD ---
 
 async def store_refresh_token(user_id: str, token_hash: str, expires_at: str):
     """Store a hashed refresh token."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute(
-            "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(token_hash) DO UPDATE SET user_id=excluded.user_id, expires_at=excluded.expires_at",
-            (user_id, token_hash, expires_at),
-        )
-        await db.commit()
+    await _db.execute(
+        "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(token_hash) DO UPDATE SET user_id=excluded.user_id, expires_at=excluded.expires_at",
+        (user_id, token_hash, expires_at),
+    )
 
 
 async def get_refresh_token(token_hash: str) -> dict | None:
     """Look up a refresh token by its hash."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM refresh_tokens WHERE token_hash = ?", (token_hash,)
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+    return await _db.fetch_one(
+        "SELECT * FROM refresh_tokens WHERE token_hash = ?", (token_hash,)
+    )
 
 
 async def delete_refresh_token(token_hash: str):
     """Delete a specific refresh token (logout)."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute("DELETE FROM refresh_tokens WHERE token_hash = ?", (token_hash,))
-        await db.commit()
+    await _db.execute("DELETE FROM refresh_tokens WHERE token_hash = ?", (token_hash,))
 
 
 async def delete_user_refresh_tokens(user_id: str):
     """Delete all refresh tokens for a user (logout everywhere)."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute("DELETE FROM refresh_tokens WHERE user_id = ?", (user_id,))
-        await db.commit()
+    await _db.execute("DELETE FROM refresh_tokens WHERE user_id = ?", (user_id,))
 
 
 async def cleanup_expired_tokens():
     """Remove expired refresh tokens. Call periodically."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute("DELETE FROM refresh_tokens WHERE expires_at < datetime('now')")
-        await db.commit()
+    await _db.execute("DELETE FROM refresh_tokens WHERE expires_at < datetime('now')")
 
 
 # --- User API keys CRUD ---
 
 async def get_user_keys(user_id: str) -> list[dict]:
     """List all API keys for a user (encrypted values NOT returned)."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT id, provider_key, key_name, created_at, updated_at "
-            "FROM user_api_keys WHERE user_id = ? ORDER BY provider_key",
-            (user_id,),
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        "SELECT id, provider_key, key_name, created_at, updated_at "
+        "FROM user_api_keys WHERE user_id = ? ORDER BY provider_key",
+        (user_id,),
+    )
 
 
 async def get_user_key_for_provider(user_id: str, provider_key: str) -> Optional[str]:
     """Return the encrypted_value for a specific user+provider, or None."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT encrypted_value FROM user_api_keys "
-            "WHERE user_id = ? AND provider_key = ?",
-            (user_id, provider_key),
-        )
-        row = await cursor.fetchone()
-        return row["encrypted_value"] if row else None
+    row = await _db.fetch_one(
+        "SELECT encrypted_value FROM user_api_keys "
+        "WHERE user_id = ? AND provider_key = ?",
+        (user_id, provider_key),
+    )
+    return row["encrypted_value"] if row else None
 
 
 async def upsert_user_key(
     user_id: str, provider_key: str, key_name: str, encrypted_value: str
 ) -> str:
     """Insert or update a user's API key for a provider. Returns the key ID."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    # Multi-step logic requires raw connection (conditional INSERT vs UPDATE)
+    async with aiosqlite.connect(_db._path()) as db:
         db.row_factory = aiosqlite.Row
+        await db.execute("PRAGMA foreign_keys=ON")
         cursor = await db.execute(
             "SELECT id FROM user_api_keys WHERE user_id = ? AND provider_key = ?",
             (user_id, provider_key),
@@ -605,40 +631,33 @@ async def upsert_user_key(
 
 async def get_user_config(user_id: str) -> dict | None:
     """Get user's config YAML as dict. Returns None if not set."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT config_yaml FROM user_configs WHERE user_id = ?", (user_id,)
-        )
-        row = await cursor.fetchone()
-        if row:
-            import yaml
-            return yaml.safe_load(row["config_yaml"])
-        return None
+    row = await _db.fetch_one(
+        "SELECT config_yaml FROM user_configs WHERE user_id = ?", (user_id,)
+    )
+    if row:
+        import yaml
+        return yaml.safe_load(row["config_yaml"])
+    return None
 
 
 async def save_user_config(user_id: str, config_dict: dict):
     """Save user's config dict as YAML to DB."""
     import yaml
     config_yaml = yaml.dump(config_dict, default_flow_style=False, sort_keys=False, allow_unicode=True)
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute(
-            "INSERT INTO user_configs (id, user_id, config_yaml) VALUES (lower(hex(randomblob(16))), ?, ?) "
-            "ON CONFLICT(user_id) DO UPDATE SET config_yaml = excluded.config_yaml, updated_at = datetime('now')",
-            (user_id, config_yaml),
-        )
-        await db.commit()
+    await _db.execute(
+        "INSERT INTO user_configs (id, user_id, config_yaml) VALUES (lower(hex(randomblob(16))), ?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET config_yaml = excluded.config_yaml, updated_at = datetime('now')",
+        (user_id, config_yaml),
+    )
 
 
 async def delete_user_key(user_id: str, provider_key: str) -> bool:
     """Delete a user's API key for a provider. Returns True if deleted."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        cursor = await db.execute(
-            "DELETE FROM user_api_keys WHERE user_id = ? AND provider_key = ?",
-            (user_id, provider_key),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        "DELETE FROM user_api_keys WHERE user_id = ? AND provider_key = ?",
+        (user_id, provider_key),
+    )
+    return count > 0
 
 
 # --- Benchmark runs CRUD ---
@@ -648,50 +667,38 @@ async def save_benchmark_run(
 ) -> str:
     """Save a benchmark run. Returns the run ID."""
     run_id = uuid.uuid4().hex
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute(
-            "INSERT INTO benchmark_runs (id, user_id, prompt, context_tiers, results_json, metadata) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (run_id, user_id, prompt, context_tiers, results_json, metadata),
-        )
-        await db.commit()
+    await _db.execute(
+        "INSERT INTO benchmark_runs (id, user_id, prompt, context_tiers, results_json, metadata) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (run_id, user_id, prompt, context_tiers, results_json, metadata),
+    )
     return run_id
 
 
 async def get_user_benchmark_runs(user_id: str, limit: int = 50, offset: int = 0) -> list[dict]:
     """Get benchmark runs for a user, newest first."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT id, timestamp, prompt, context_tiers, results_json, metadata "
-            "FROM benchmark_runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-            (user_id, limit, offset),
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        "SELECT id, timestamp, prompt, context_tiers, results_json, metadata "
+        "FROM benchmark_runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+        (user_id, limit, offset),
+    )
 
 
 async def get_benchmark_run(run_id: str, user_id: str) -> dict | None:
     """Get a specific benchmark run (scoped to user)."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM benchmark_runs WHERE id = ? AND user_id = ?",
-            (run_id, user_id),
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+    return await _db.fetch_one(
+        "SELECT * FROM benchmark_runs WHERE id = ? AND user_id = ?",
+        (run_id, user_id),
+    )
 
 
 async def delete_benchmark_run(run_id: str, user_id: str) -> bool:
     """Delete a benchmark run (scoped to user)."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        cursor = await db.execute(
-            "DELETE FROM benchmark_runs WHERE id = ? AND user_id = ?",
-            (run_id, user_id),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        "DELETE FROM benchmark_runs WHERE id = ? AND user_id = ?",
+        (run_id, user_id),
+    )
+    return count > 0
 
 
 # --- Audit Log ---
@@ -708,23 +715,21 @@ async def log_audit(
 ):
     """Write an audit log entry. Fire-and-forget, never raises."""
     try:
-        async with aiosqlite.connect(str(DB_PATH)) as conn:
-            await conn.execute(
-                """INSERT INTO audit_log
-                   (user_id, username, action, resource_type, resource_id, detail, ip_address, user_agent)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    user_id,
-                    username,
-                    action,
-                    resource_type,
-                    resource_id,
-                    json.dumps(detail) if detail else None,
-                    ip_address,
-                    user_agent,
-                ),
-            )
-            await conn.commit()
+        await _db.execute(
+            """INSERT INTO audit_log
+               (user_id, username, action, resource_type, resource_id, detail, ip_address, user_agent)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                user_id,
+                username,
+                action,
+                resource_type,
+                resource_id,
+                json.dumps(detail) if detail else None,
+                ip_address,
+                user_agent,
+            ),
+        )
     except Exception:
         logger.exception("Audit logging failed (action=%s, user_id=%s)", action, user_id)
 
@@ -734,40 +739,30 @@ async def log_audit(
 async def create_tool_suite(user_id: str, name: str, description: str, tools_json: str) -> str:
     """Create a tool suite. Returns suite_id."""
     suite_id = uuid.uuid4().hex
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute(
-            "INSERT INTO tool_suites (id, user_id, name, description, tools_json) VALUES (?, ?, ?, ?, ?)",
-            (suite_id, user_id, name, description, tools_json),
-        )
-        await db.commit()
+    await _db.execute(
+        "INSERT INTO tool_suites (id, user_id, name, description, tools_json) VALUES (?, ?, ?, ?, ?)",
+        (suite_id, user_id, name, description, tools_json),
+    )
     return suite_id
 
 
 async def get_tool_suites(user_id: str) -> list[dict]:
     """List user's tool suites with tool_count and test_case_count."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            """SELECT ts.*,
-                json_array_length(ts.tools_json) as tool_count,
-                (SELECT COUNT(*) FROM tool_test_cases WHERE suite_id = ts.id) as test_case_count
-            FROM tool_suites ts WHERE ts.user_id = ? ORDER BY ts.updated_at DESC""",
-            (user_id,),
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        """SELECT ts.*,
+            json_array_length(ts.tools_json) as tool_count,
+            (SELECT COUNT(*) FROM tool_test_cases WHERE suite_id = ts.id) as test_case_count
+        FROM tool_suites ts WHERE ts.user_id = ? ORDER BY ts.updated_at DESC""",
+        (user_id,),
+    )
 
 
 async def get_tool_suite(suite_id: str, user_id: str) -> dict | None:
     """Get full suite with tools_json. Scoped to user."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM tool_suites WHERE id = ? AND user_id = ?",
-            (suite_id, user_id),
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+    return await _db.fetch_one(
+        "SELECT * FROM tool_suites WHERE id = ? AND user_id = ?",
+        (suite_id, user_id),
+    )
 
 
 async def update_tool_suite(suite_id: str, user_id: str, name: str = None, description: str = None, tools_json: str = None, system_prompt: str = None) -> bool:
@@ -790,51 +785,40 @@ async def update_tool_suite(suite_id: str, user_id: str, name: str = None, descr
         return False
     fields.append("updated_at = datetime('now')")
     params.extend([suite_id, user_id])
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        cursor = await db.execute(
-            f"UPDATE tool_suites SET {', '.join(fields)} WHERE id = ? AND user_id = ?",
-            params,
-        )
-        await db.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        f"UPDATE tool_suites SET {', '.join(fields)} WHERE id = ? AND user_id = ?",
+        params,
+    )
+    return count > 0
 
 
 async def delete_tool_suite(suite_id: str, user_id: str) -> bool:
     """Delete suite (CASCADE deletes test cases). Returns True if deleted."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute("PRAGMA foreign_keys=ON")
-        cursor = await db.execute(
-            "DELETE FROM tool_suites WHERE id = ? AND user_id = ?",
-            (suite_id, user_id),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        "DELETE FROM tool_suites WHERE id = ? AND user_id = ?",
+        (suite_id, user_id),
+    )
+    return count > 0
 
 
 # --- Tool Test Cases CRUD ---
 
 async def get_test_cases(suite_id: str) -> list[dict]:
     """List all test cases for a suite."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM tool_test_cases WHERE suite_id = ? ORDER BY created_at",
-            (suite_id,),
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        "SELECT * FROM tool_test_cases WHERE suite_id = ? ORDER BY created_at",
+        (suite_id,),
+    )
 
 
 async def create_test_case(suite_id: str, prompt: str, expected_tool: str | None, expected_params: str | None, param_scoring: str = "exact", multi_turn_config: str | None = None, scoring_config_json: str | None = None) -> str:
     """Create a single test case. Returns case_id."""
     case_id = uuid.uuid4().hex
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute(
-            "INSERT INTO tool_test_cases (id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config, scoring_config_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (case_id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config, scoring_config_json),
-        )
-        await db.commit()
+    await _db.execute(
+        "INSERT INTO tool_test_cases (id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config, scoring_config_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (case_id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config, scoring_config_json),
+    )
     return case_id
 
 
@@ -863,24 +847,20 @@ async def update_test_case(case_id: str, suite_id: str, prompt: str = None, expe
     if not fields:
         return False
     params.extend([case_id, suite_id])
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        cursor = await db.execute(
-            f"UPDATE tool_test_cases SET {', '.join(fields)} WHERE id = ? AND suite_id = ?",
-            params,
-        )
-        await db.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        f"UPDATE tool_test_cases SET {', '.join(fields)} WHERE id = ? AND suite_id = ?",
+        params,
+    )
+    return count > 0
 
 
 async def delete_test_case(case_id: str, suite_id: str) -> bool:
     """Delete a test case. Returns True if deleted."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        cursor = await db.execute(
-            "DELETE FROM tool_test_cases WHERE id = ? AND suite_id = ?",
-            (case_id, suite_id),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        "DELETE FROM tool_test_cases WHERE id = ? AND suite_id = ?",
+        (case_id, suite_id),
+    )
+    return count > 0
 
 
 # --- Tool Eval Runs CRUD ---
@@ -888,13 +868,11 @@ async def delete_test_case(case_id: str, suite_id: str) -> bool:
 async def save_tool_eval_run(user_id: str, suite_id: str, suite_name: str, models_json: str, results_json: str, summary_json: str, temperature: float, config_json: str | None = None, experiment_id: str | None = None) -> str:
     """Save eval run. Returns run_id."""
     run_id = uuid.uuid4().hex
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute(
-            "INSERT INTO tool_eval_runs (id, user_id, suite_id, suite_name, models_json, results_json, summary_json, temperature, config_json, experiment_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (run_id, user_id, suite_id, suite_name, models_json, results_json, summary_json, temperature, config_json, experiment_id),
-        )
-        await db.commit()
+    await _db.execute(
+        "INSERT INTO tool_eval_runs (id, user_id, suite_id, suite_name, models_json, results_json, summary_json, temperature, config_json, experiment_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, user_id, suite_id, suite_name, models_json, results_json, summary_json, temperature, config_json, experiment_id),
+    )
     return run_id
 
 
@@ -904,46 +882,36 @@ async def get_tool_eval_runs(user_id: str, limit: int = 50) -> list[dict]:
     Includes the most recent completed judge report's grade/score for each run
     via a LEFT JOIN on judge_reports (M5).
     """
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT r.id, r.suite_id, r.suite_name, r.models_json, r.summary_json, "
-            "r.temperature, r.timestamp, r.config_json, "
-            "j.overall_grade AS judge_grade, j.overall_score AS judge_score "
-            "FROM tool_eval_runs r "
-            "LEFT JOIN ("
-            "  SELECT eval_run_id, overall_grade, overall_score, "
-            "    ROW_NUMBER() OVER (PARTITION BY eval_run_id ORDER BY timestamp DESC) AS rn "
-            "  FROM judge_reports WHERE status = 'completed'"
-            ") j ON j.eval_run_id = r.id AND j.rn = 1 "
-            "WHERE r.user_id = ? ORDER BY r.timestamp DESC LIMIT ?",
-            (user_id, limit),
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        "SELECT r.id, r.suite_id, r.suite_name, r.models_json, r.summary_json, "
+        "r.temperature, r.timestamp, r.config_json, "
+        "j.overall_grade AS judge_grade, j.overall_score AS judge_score "
+        "FROM tool_eval_runs r "
+        "LEFT JOIN ("
+        "  SELECT eval_run_id, overall_grade, overall_score, "
+        "    ROW_NUMBER() OVER (PARTITION BY eval_run_id ORDER BY timestamp DESC) AS rn "
+        "  FROM judge_reports WHERE status = 'completed'"
+        ") j ON j.eval_run_id = r.id AND j.rn = 1 "
+        "WHERE r.user_id = ? ORDER BY r.timestamp DESC LIMIT ?",
+        (user_id, limit),
+    )
 
 
 async def get_tool_eval_run(run_id: str, user_id: str) -> dict | None:
     """Get full eval run including results_json."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM tool_eval_runs WHERE id = ? AND user_id = ?",
-            (run_id, user_id),
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+    return await _db.fetch_one(
+        "SELECT * FROM tool_eval_runs WHERE id = ? AND user_id = ?",
+        (run_id, user_id),
+    )
 
 
 async def delete_tool_eval_run(run_id: str, user_id: str) -> bool:
     """Delete eval run. Returns True if deleted."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        cursor = await db.execute(
-            "DELETE FROM tool_eval_runs WHERE id = ? AND user_id = ?",
-            (run_id, user_id),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        "DELETE FROM tool_eval_runs WHERE id = ? AND user_id = ?",
+        (run_id, user_id),
+    )
+    return count > 0
 
 
 # --- Parameter Tuner CRUD ---
@@ -955,13 +923,11 @@ async def save_param_tune_run(
 ) -> str:
     """Create a new param tune run (status=running). Returns run_id."""
     run_id = uuid.uuid4().hex
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute(
-            "INSERT INTO param_tune_runs (id, user_id, suite_id, suite_name, models_json, search_space_json, total_combos, experiment_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (run_id, user_id, suite_id, suite_name, models_json, search_space_json, total_combos, experiment_id),
-        )
-        await db.commit()
+    await _db.execute(
+        "INSERT INTO param_tune_runs (id, user_id, suite_id, suite_name, models_json, search_space_json, total_combos, experiment_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, user_id, suite_id, suite_name, models_json, search_space_json, total_combos, experiment_id),
+    )
     return run_id
 
 
@@ -998,50 +964,38 @@ async def update_param_tune_run(
     if not updates:
         return False
     values.extend([run_id, user_id])
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        cursor = await db.execute(
-            f"UPDATE param_tune_runs SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
-            values,
-        )
-        await db.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        f"UPDATE param_tune_runs SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
+        values,
+    )
+    return count > 0
 
 
 async def get_param_tune_runs(user_id: str, limit: int = 50) -> list[dict]:
     """List user's param tune runs (exclude full results_json for list view)."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT id, suite_id, suite_name, models_json, total_combos, completed_combos, "
-            "best_score, status, duration_s, timestamp "
-            "FROM param_tune_runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
-            (user_id, limit),
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        "SELECT id, suite_id, suite_name, models_json, total_combos, completed_combos, "
+        "best_score, status, duration_s, timestamp "
+        "FROM param_tune_runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+        (user_id, limit),
+    )
 
 
 async def get_param_tune_run(run_id: str, user_id: str) -> dict | None:
     """Get full param tune run including results_json."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM param_tune_runs WHERE id = ? AND user_id = ?",
-            (run_id, user_id),
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+    return await _db.fetch_one(
+        "SELECT * FROM param_tune_runs WHERE id = ? AND user_id = ?",
+        (run_id, user_id),
+    )
 
 
 async def delete_param_tune_run(run_id: str, user_id: str) -> bool:
     """Delete param tune run. Returns True if deleted."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        cursor = await db.execute(
-            "DELETE FROM param_tune_runs WHERE id = ? AND user_id = ?",
-            (run_id, user_id),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        "DELETE FROM param_tune_runs WHERE id = ? AND user_id = ?",
+        (run_id, user_id),
+    )
+    return count > 0
 
 
 # --- Prompt Tuner CRUD ---
@@ -1054,15 +1008,13 @@ async def save_prompt_tune_run(
 ) -> str:
     """Create a new prompt tune run (status=running). Returns run_id."""
     run_id = uuid.uuid4().hex
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute(
-            "INSERT INTO prompt_tune_runs (id, user_id, suite_id, suite_name, mode, "
-            "target_models_json, meta_model, base_prompt, config_json, total_prompts, experiment_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (run_id, user_id, suite_id, suite_name, mode,
-             target_models_json, meta_model, base_prompt, config_json, total_prompts, experiment_id),
-        )
-        await db.commit()
+    await _db.execute(
+        "INSERT INTO prompt_tune_runs (id, user_id, suite_id, suite_name, mode, "
+        "target_models_json, meta_model, base_prompt, config_json, total_prompts, experiment_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, user_id, suite_id, suite_name, mode,
+         target_models_json, meta_model, base_prompt, config_json, total_prompts, experiment_id),
+    )
     return run_id
 
 
@@ -1099,50 +1051,38 @@ async def update_prompt_tune_run(
     if not updates:
         return False
     values.extend([run_id, user_id])
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        cursor = await db.execute(
-            f"UPDATE prompt_tune_runs SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
-            values,
-        )
-        await db.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        f"UPDATE prompt_tune_runs SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
+        values,
+    )
+    return count > 0
 
 
 async def get_prompt_tune_runs(user_id: str, limit: int = 50) -> list[dict]:
     """List user's prompt tune runs (exclude large JSON for list view)."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT id, suite_id, suite_name, mode, target_models_json, meta_model, "
-            "best_score, status, total_prompts, completed_prompts, duration_s, timestamp "
-            "FROM prompt_tune_runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
-            (user_id, limit),
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        "SELECT id, suite_id, suite_name, mode, target_models_json, meta_model, "
+        "best_score, status, total_prompts, completed_prompts, duration_s, timestamp "
+        "FROM prompt_tune_runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+        (user_id, limit),
+    )
 
 
 async def get_prompt_tune_run(run_id: str, user_id: str) -> dict | None:
     """Get full prompt tune run including generations_json."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM prompt_tune_runs WHERE id = ? AND user_id = ?",
-            (run_id, user_id),
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+    return await _db.fetch_one(
+        "SELECT * FROM prompt_tune_runs WHERE id = ? AND user_id = ?",
+        (run_id, user_id),
+    )
 
 
 async def delete_prompt_tune_run(run_id: str, user_id: str) -> bool:
     """Delete prompt tune run. Returns True if deleted."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        cursor = await db.execute(
-            "DELETE FROM prompt_tune_runs WHERE id = ? AND user_id = ?",
-            (run_id, user_id),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        "DELETE FROM prompt_tune_runs WHERE id = ? AND user_id = ?",
+        (run_id, user_id),
+    )
+    return count > 0
 
 
 # --- Judge Reports CRUD ---
@@ -1157,17 +1097,12 @@ async def save_judge_report(
     experiment_id: str | None = None,
 ) -> str:
     """Create a new judge report (status=running). Returns report id."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        cursor = await conn.execute(
-            "INSERT INTO judge_reports (user_id, eval_run_id, eval_run_id_b, judge_model, mode, experiment_id) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, eval_run_id, eval_run_id_b, judge_model, mode, experiment_id),
-        )
-        await conn.commit()
-        row = await (await conn.execute(
-            "SELECT id FROM judge_reports WHERE rowid = ?", (cursor.lastrowid,)
-        )).fetchone()
-        return row[0]
+    return await _db.execute_returning_id(
+        "INSERT INTO judge_reports (user_id, eval_run_id, eval_run_id_b, judge_model, mode, experiment_id) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, eval_run_id, eval_run_id_b, judge_model, mode, experiment_id),
+        id_query="SELECT id FROM judge_reports WHERE rowid = ?",
+    )
 
 
 async def update_judge_report(report_id: str, **fields) -> None:
@@ -1178,48 +1113,34 @@ async def update_judge_report(report_id: str, **fields) -> None:
         return
     set_clause = ", ".join(f"{k} = ?" for k in updates)
     values = list(updates.values()) + [report_id]
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        await conn.execute(
-            f"UPDATE judge_reports SET {set_clause} WHERE id = ?", values
-        )
-        await conn.commit()
+    await _db.execute(f"UPDATE judge_reports SET {set_clause} WHERE id = ?", values)
 
 
 async def get_judge_reports(user_id: str, limit: int = 50) -> list[dict]:
     """List user's judge reports (exclude full verdicts_json for list view)."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            "SELECT id, eval_run_id, eval_run_id_b, judge_model, mode, "
-            "overall_grade, overall_score, status, timestamp "
-            "FROM judge_reports WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
-            (user_id, limit),
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        "SELECT id, eval_run_id, eval_run_id_b, judge_model, mode, "
+        "overall_grade, overall_score, status, timestamp "
+        "FROM judge_reports WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+        (user_id, limit),
+    )
 
 
 async def get_judge_report(report_id: str, user_id: str) -> dict | None:
     """Get full judge report including verdicts_json and report_json."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            "SELECT * FROM judge_reports WHERE id = ? AND user_id = ?",
-            (report_id, user_id),
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+    return await _db.fetch_one(
+        "SELECT * FROM judge_reports WHERE id = ? AND user_id = ?",
+        (report_id, user_id),
+    )
 
 
 async def delete_judge_report(report_id: str, user_id: str) -> bool:
     """Delete judge report. Returns True if deleted."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        cursor = await conn.execute(
-            "DELETE FROM judge_reports WHERE id = ? AND user_id = ?",
-            (report_id, user_id),
-        )
-        await conn.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        "DELETE FROM judge_reports WHERE id = ? AND user_id = ?",
+        (report_id, user_id),
+    )
+    return count > 0
 
 
 # --- Experiment CRUD ---
@@ -1234,53 +1155,43 @@ async def create_experiment(
 ) -> str:
     """Create a new experiment. Returns experiment id."""
     exp_id = uuid.uuid4().hex
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        await conn.execute(
-            "INSERT INTO experiments "
-            "(id, user_id, name, description, suite_id, "
-            "suite_snapshot_json, baseline_eval_id, baseline_score) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (exp_id, user_id, name, description, suite_id,
-             suite_snapshot_json, baseline_eval_id, baseline_score),
-        )
-        await conn.commit()
+    await _db.execute(
+        "INSERT INTO experiments "
+        "(id, user_id, name, description, suite_id, "
+        "suite_snapshot_json, baseline_eval_id, baseline_score) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (exp_id, user_id, name, description, suite_id,
+         suite_snapshot_json, baseline_eval_id, baseline_score),
+    )
     return exp_id
 
 
 async def get_experiment(exp_id: str, user_id: str) -> dict | None:
     """Get experiment by id."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            "SELECT * FROM experiments WHERE id = ? AND user_id = ?",
-            (exp_id, user_id),
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+    return await _db.fetch_one(
+        "SELECT * FROM experiments WHERE id = ? AND user_id = ?",
+        (exp_id, user_id),
+    )
 
 
 async def get_experiments(user_id: str, limit: int = 50) -> list[dict]:
     """List user's active experiments with run_count and suite_name."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            "SELECT e.id, e.name, e.description, e.suite_id, "
-            "e.baseline_score, e.best_score, e.best_source, e.status, "
-            "e.created_at, e.updated_at, "
-            "ts.name AS suite_name, "
-            "(SELECT COUNT(*) FROM tool_eval_runs r WHERE r.experiment_id = e.id) "
-            "+ (SELECT COUNT(*) FROM param_tune_runs p WHERE p.experiment_id = e.id) "
-            "+ (SELECT COUNT(*) FROM prompt_tune_runs pt WHERE pt.experiment_id = e.id) "
-            "+ (SELECT COUNT(*) FROM judge_reports j WHERE j.experiment_id = e.id) "
-            "AS run_count "
-            "FROM experiments e "
-            "LEFT JOIN tool_suites ts ON ts.id = e.suite_id "
-            "WHERE e.user_id = ? AND e.status = 'active' "
-            "ORDER BY e.updated_at DESC LIMIT ?",
-            (user_id, limit),
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        "SELECT e.id, e.name, e.description, e.suite_id, "
+        "e.baseline_score, e.best_score, e.best_source, e.status, "
+        "e.created_at, e.updated_at, "
+        "ts.name AS suite_name, "
+        "(SELECT COUNT(*) FROM tool_eval_runs r WHERE r.experiment_id = e.id) "
+        "+ (SELECT COUNT(*) FROM param_tune_runs p WHERE p.experiment_id = e.id) "
+        "+ (SELECT COUNT(*) FROM prompt_tune_runs pt WHERE pt.experiment_id = e.id) "
+        "+ (SELECT COUNT(*) FROM judge_reports j WHERE j.experiment_id = e.id) "
+        "AS run_count "
+        "FROM experiments e "
+        "LEFT JOIN tool_suites ts ON ts.id = e.suite_id "
+        "WHERE e.user_id = ? AND e.status = 'active' "
+        "ORDER BY e.updated_at DESC LIMIT ?",
+        (user_id, limit),
+    )
 
 
 async def update_experiment(
@@ -1305,25 +1216,21 @@ async def update_experiment(
             set_parts.append(f"{k} = ?")
             values.append(v)
     values.extend([exp_id, user_id])
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        cursor = await conn.execute(
-            f"UPDATE experiments SET {', '.join(set_parts)} "
-            "WHERE id = ? AND user_id = ?",
-            values,
-        )
-        await conn.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        f"UPDATE experiments SET {', '.join(set_parts)} "
+        "WHERE id = ? AND user_id = ?",
+        values,
+    )
+    return count > 0
 
 
 async def delete_experiment(exp_id: str, user_id: str) -> bool:
     """Delete experiment. Returns True if deleted."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        cursor = await conn.execute(
-            "DELETE FROM experiments WHERE id = ? AND user_id = ?",
-            (exp_id, user_id),
-        )
-        await conn.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        "DELETE FROM experiments WHERE id = ? AND user_id = ?",
+        (exp_id, user_id),
+    )
+    return count > 0
 
 
 async def get_experiment_timeline(
@@ -1334,7 +1241,8 @@ async def get_experiment_timeline(
     Returns a flat list of dicts with 'type' discriminator.
     """
     entries = []
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
+    # Multi-query read within single connection for efficiency
+    async with aiosqlite.connect(_db._path()) as conn:
         conn.row_factory = aiosqlite.Row
 
         # Eval runs
@@ -1413,14 +1321,11 @@ async def cleanup_stale_judge_reports(minutes: int = 30) -> int:
 
     Returns number of rows updated. Called on startup to recover orphaned reports.
     """
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        cursor = await conn.execute(
-            "UPDATE judge_reports SET status = 'error' "
-            "WHERE status = 'running' AND timestamp < datetime('now', ?)",
-            (f"-{minutes} minutes",),
-        )
-        await conn.commit()
-        return cursor.rowcount
+    return await _db.execute_returning_rowcount(
+        "UPDATE judge_reports SET status = 'error' "
+        "WHERE status = 'running' AND timestamp < datetime('now', ?)",
+        (f"-{minutes} minutes",),
+    )
 
 
 async def cleanup_stale_param_tune_runs(minutes: int = 30) -> int:
@@ -1428,14 +1333,11 @@ async def cleanup_stale_param_tune_runs(minutes: int = 30) -> int:
 
     Returns number of rows updated. Called on startup to recover orphaned runs.
     """
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        cursor = await conn.execute(
-            "UPDATE param_tune_runs SET status = 'interrupted' "
-            "WHERE status = 'running' AND timestamp < datetime('now', ?)",
-            (f"-{minutes} minutes",),
-        )
-        await conn.commit()
-        return cursor.rowcount
+    return await _db.execute_returning_rowcount(
+        "UPDATE param_tune_runs SET status = 'interrupted' "
+        "WHERE status = 'running' AND timestamp < datetime('now', ?)",
+        (f"-{minutes} minutes",),
+    )
 
 
 async def cleanup_stale_prompt_tune_runs(minutes: int = 30) -> int:
@@ -1443,14 +1345,11 @@ async def cleanup_stale_prompt_tune_runs(minutes: int = 30) -> int:
 
     Returns number of rows updated. Called on startup to recover orphaned runs.
     """
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        cursor = await conn.execute(
-            "UPDATE prompt_tune_runs SET status = 'interrupted' "
-            "WHERE status = 'running' AND timestamp < datetime('now', ?)",
-            (f"-{minutes} minutes",),
-        )
-        await conn.commit()
-        return cursor.rowcount
+    return await _db.execute_returning_rowcount(
+        "UPDATE prompt_tune_runs SET status = 'interrupted' "
+        "WHERE status = 'running' AND timestamp < datetime('now', ?)",
+        (f"-{minutes} minutes",),
+    )
 
 
 # --- Analytics Queries ---
@@ -1478,16 +1377,12 @@ async def get_analytics_benchmark_runs(user_id: str, period: str = "all") -> lis
     The caller parses results_json and aggregates in Python.
     """
     where_extra, params = _period_filter(period)
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            f"SELECT id, timestamp, prompt, results_json "
-            f"FROM benchmark_runs WHERE user_id = ? {where_extra} "
-            f"ORDER BY timestamp DESC",
-            [user_id] + params,
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        f"SELECT id, timestamp, prompt, results_json "
+        f"FROM benchmark_runs WHERE user_id = ? {where_extra} "
+        f"ORDER BY timestamp DESC",
+        [user_id] + params,
+    )
 
 
 async def get_analytics_tool_eval_runs(user_id: str, period: str = "all") -> list[dict]:
@@ -1496,16 +1391,12 @@ async def get_analytics_tool_eval_runs(user_id: str, period: str = "all") -> lis
     Each row includes id, timestamp, summary_json.
     """
     where_extra, params = _period_filter(period)
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            f"SELECT id, timestamp, summary_json "
-            f"FROM tool_eval_runs WHERE user_id = ? {where_extra} "
-            f"ORDER BY timestamp DESC",
-            [user_id] + params,
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        f"SELECT id, timestamp, summary_json "
+        f"FROM tool_eval_runs WHERE user_id = ? {where_extra} "
+        f"ORDER BY timestamp DESC",
+        [user_id] + params,
+    )
 
 
 # --- Audit Log ---
@@ -1513,12 +1404,10 @@ async def get_analytics_tool_eval_runs(user_id: str, period: str = "all") -> lis
 async def cleanup_audit_log(retention_days: int = 90):
     """Delete audit entries older than retention_days."""
     try:
-        async with aiosqlite.connect(str(DB_PATH)) as conn:
-            await conn.execute(
-                "DELETE FROM audit_log WHERE timestamp < datetime('now', ?)",
-                (f'-{retention_days} days',),
-            )
-            await conn.commit()
+        await _db.execute(
+            "DELETE FROM audit_log WHERE timestamp < datetime('now', ?)",
+            (f'-{retention_days} days',),
+        )
     except Exception:
         logger.exception("Failed to clean up audit log entries")
 
@@ -1531,38 +1420,28 @@ async def create_schedule(
 ) -> str:
     """Create a scheduled benchmark. Returns schedule ID."""
     schedule_id = uuid.uuid4().hex
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        await conn.execute(
-            "INSERT INTO schedules (id, user_id, name, prompt, models_json, max_tokens, temperature, interval_hours, next_run) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (schedule_id, user_id, name, prompt, models_json, max_tokens, temperature, interval_hours, next_run),
-        )
-        await conn.commit()
+    await _db.execute(
+        "INSERT INTO schedules (id, user_id, name, prompt, models_json, max_tokens, temperature, interval_hours, next_run) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (schedule_id, user_id, name, prompt, models_json, max_tokens, temperature, interval_hours, next_run),
+    )
     return schedule_id
 
 
 async def get_user_schedules(user_id: str) -> list[dict]:
     """List all schedules for a user."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            "SELECT * FROM schedules WHERE user_id = ? ORDER BY created DESC",
-            (user_id,),
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        "SELECT * FROM schedules WHERE user_id = ? ORDER BY created DESC",
+        (user_id,),
+    )
 
 
 async def get_schedule(schedule_id: str, user_id: str) -> dict | None:
     """Get a specific schedule (scoped to user)."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            "SELECT * FROM schedules WHERE id = ? AND user_id = ?",
-            (schedule_id, user_id),
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+    return await _db.fetch_one(
+        "SELECT * FROM schedules WHERE id = ? AND user_id = ?",
+        (schedule_id, user_id),
+    )
 
 
 async def update_schedule(schedule_id: str, user_id: str, **kwargs) -> bool:
@@ -1577,45 +1456,35 @@ async def update_schedule(schedule_id: str, user_id: str, **kwargs) -> bool:
     if not fields:
         return False
     params.extend([schedule_id, user_id])
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        cursor = await conn.execute(
-            f"UPDATE schedules SET {', '.join(fields)} WHERE id = ? AND user_id = ?",
-            params,
-        )
-        await conn.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        f"UPDATE schedules SET {', '.join(fields)} WHERE id = ? AND user_id = ?",
+        params,
+    )
+    return count > 0
 
 
 async def delete_schedule(schedule_id: str, user_id: str) -> bool:
     """Delete a schedule. Returns True if deleted."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        cursor = await conn.execute(
-            "DELETE FROM schedules WHERE id = ? AND user_id = ?",
-            (schedule_id, user_id),
-        )
-        await conn.commit()
-        return cursor.rowcount > 0
+    count = await _db.execute_returning_rowcount(
+        "DELETE FROM schedules WHERE id = ? AND user_id = ?",
+        (schedule_id, user_id),
+    )
+    return count > 0
 
 
 async def get_due_schedules() -> list[dict]:
     """Get all enabled schedules where next_run <= now. Used by background scheduler."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            "SELECT * FROM schedules WHERE enabled = 1 AND next_run <= datetime('now')"
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        "SELECT * FROM schedules WHERE enabled = 1 AND next_run <= datetime('now')"
+    )
 
 
 async def update_schedule_after_run(schedule_id: str, last_run: str, next_run: str):
     """Update last_run and next_run after a scheduled benchmark completes."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        await conn.execute(
-            "UPDATE schedules SET last_run = ?, next_run = ? WHERE id = ?",
-            (last_run, next_run, schedule_id),
-        )
-        await conn.commit()
+    await _db.execute(
+        "UPDATE schedules SET last_run = ?, next_run = ? WHERE id = ?",
+        (last_run, next_run, schedule_id),
+    )
 
 
 # --- Jobs (Process Tracker) CRUD ---
@@ -1631,46 +1500,35 @@ async def create_job(
     progress_detail: str = "",
 ) -> dict:
     """Create a new job record. Returns the job dict."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        await conn.execute(
-            "INSERT INTO jobs (id, user_id, job_type, status, params_json, timeout_seconds, progress_detail) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (job_id, user_id, job_type, status, params_json, timeout_seconds, progress_detail),
-        )
-        await conn.commit()
-        cursor = await conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
-        row = await cursor.fetchone()
-        return dict(row)
+    row = await _db.execute_returning_row(
+        [("INSERT INTO jobs (id, user_id, job_type, status, params_json, timeout_seconds, progress_detail) "
+          "VALUES (?, ?, ?, ?, ?, ?, ?)",
+          (job_id, user_id, job_type, status, params_json, timeout_seconds, progress_detail))],
+        "SELECT * FROM jobs WHERE id = ?",
+        (job_id,),
+    )
+    return row
 
 
 async def get_job(job_id: str) -> dict | None:
     """Get a single job by ID."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+    return await _db.fetch_one("SELECT * FROM jobs WHERE id = ?", (job_id,))
 
 
 async def update_job_started(job_id: str, started_at: str, timeout_at: str):
     """Mark a job as running with start time and timeout deadline."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        await conn.execute(
-            "UPDATE jobs SET status = 'running', started_at = ?, timeout_at = ? WHERE id = ?",
-            (started_at, timeout_at, job_id),
-        )
-        await conn.commit()
+    await _db.execute(
+        "UPDATE jobs SET status = 'running', started_at = ?, timeout_at = ? WHERE id = ?",
+        (started_at, timeout_at, job_id),
+    )
 
 
 async def update_job_progress(job_id: str, progress_pct: int, progress_detail: str = ""):
     """Update progress fields for a running job."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        await conn.execute(
-            "UPDATE jobs SET progress_pct = ?, progress_detail = ? WHERE id = ?",
-            (progress_pct, progress_detail, job_id),
-        )
-        await conn.commit()
+    await _db.execute(
+        "UPDATE jobs SET progress_pct = ?, progress_detail = ? WHERE id = ?",
+        (progress_pct, progress_detail, job_id),
+    )
 
 
 async def update_job_status(
@@ -1693,12 +1551,7 @@ async def update_job_status(
         fields.append("error_msg = ?")
         values.append(error_msg)
     values.append(job_id)
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        await conn.execute(
-            f"UPDATE jobs SET {', '.join(fields)} WHERE id = ?",
-            values,
-        )
-        await conn.commit()
+    await _db.execute(f"UPDATE jobs SET {', '.join(fields)} WHERE id = ?", values)
 
 
 async def set_job_result_ref(job_id: str, result_ref: str):
@@ -1707,38 +1560,28 @@ async def set_job_result_ref(job_id: str, result_ref: str):
     Used to store the tune_id (or other result reference) early, so the
     frontend can discover it on reconnection before the job completes.
     """
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        await conn.execute(
-            "UPDATE jobs SET result_ref = ? WHERE id = ?",
-            (result_ref, job_id),
-        )
-        await conn.commit()
+    await _db.execute(
+        "UPDATE jobs SET result_ref = ? WHERE id = ?",
+        (result_ref, job_id),
+    )
 
 
 async def get_user_active_jobs(user_id: str) -> list[dict]:
     """Get jobs with status in ('pending', 'queued', 'running') for a user, oldest first."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            "SELECT * FROM jobs WHERE user_id = ? AND status IN ('pending', 'queued', 'running') "
-            "ORDER BY created_at ASC",
-            (user_id,),
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        "SELECT * FROM jobs WHERE user_id = ? AND status IN ('pending', 'queued', 'running') "
+        "ORDER BY created_at ASC",
+        (user_id,),
+    )
 
 
 async def get_user_recent_jobs(user_id: str, limit: int = 10) -> list[dict]:
     """Get recent completed/failed/cancelled/interrupted jobs, newest first."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            "SELECT * FROM jobs WHERE user_id = ? AND status IN ('done', 'failed', 'cancelled', 'interrupted') "
-            "ORDER BY completed_at DESC LIMIT ?",
-            (user_id, limit),
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        "SELECT * FROM jobs WHERE user_id = ? AND status IN ('done', 'failed', 'cancelled', 'interrupted') "
+        "ORDER BY completed_at DESC LIMIT ?",
+        (user_id, limit),
+    )
 
 
 async def get_user_jobs(user_id: str, status: str | None = None, limit: int = 20) -> list[dict]:
@@ -1753,70 +1596,65 @@ async def get_user_jobs(user_id: str, status: str | None = None, limit: int = 20
         params.extend(statuses)
     query += " ORDER BY created_at DESC LIMIT ?"
     params.append(limit)
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(query, params)
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(query, params)
 
 
 async def get_next_queued_job(user_id: str) -> dict | None:
     """Get the oldest queued job for a user (FIFO)."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            "SELECT * FROM jobs WHERE user_id = ? AND status = 'queued' "
-            "ORDER BY created_at ASC LIMIT 1",
-            (user_id,),
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+    return await _db.fetch_one(
+        "SELECT * FROM jobs WHERE user_id = ? AND status = 'queued' "
+        "ORDER BY created_at ASC LIMIT 1",
+        (user_id,),
+    )
 
 
 async def mark_interrupted_jobs() -> int:
     """On startup, mark all running/pending/queued jobs as interrupted. Returns count."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        cursor = await conn.execute(
-            "UPDATE jobs SET status = 'interrupted', completed_at = datetime('now') "
-            "WHERE status IN ('running', 'pending', 'queued')"
-        )
-        await conn.commit()
-        return cursor.rowcount
+    return await _db.execute_returning_rowcount(
+        "UPDATE jobs SET status = 'interrupted', completed_at = datetime('now') "
+        "WHERE status IN ('running', 'pending', 'queued')"
+    )
 
 
 async def get_timed_out_jobs() -> list[dict]:
     """Get jobs where status='running' and timeout_at < now."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            "SELECT * FROM jobs WHERE status = 'running' AND timeout_at IS NOT NULL "
-            "AND timeout_at < datetime('now')"
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        "SELECT * FROM jobs WHERE status = 'running' AND timeout_at IS NOT NULL "
+        "AND timeout_at < datetime('now')"
+    )
 
 
 async def get_all_active_jobs() -> list[dict]:
     """Admin: get all active jobs across all users with user email."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            "SELECT j.*, u.email as user_email FROM jobs j "
-            "JOIN users u ON j.user_id = u.id "
-            "WHERE j.status IN ('pending', 'queued', 'running') "
-            "ORDER BY j.created_at ASC"
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    return await _db.fetch_all(
+        "SELECT j.*, u.email as user_email FROM jobs j "
+        "JOIN users u ON j.user_id = u.id "
+        "WHERE j.status IN ('pending', 'queued', 'running') "
+        "ORDER BY j.created_at ASC"
+    )
 
 
 async def get_user_rate_limit(user_id: str) -> dict | None:
     """Get rate limit row for a user (includes max_concurrent). Returns None if no custom limit."""
-    async with aiosqlite.connect(str(DB_PATH)) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            "SELECT * FROM rate_limits WHERE user_id = ?",
-            (user_id,),
-        )
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+    return await _db.fetch_one(
+        "SELECT * FROM rate_limits WHERE user_id = ?",
+        (user_id,),
+    )
+
+
+async def get_user_active_job_count(user_id: str) -> int:
+    """Count jobs with status IN ('pending', 'queued', 'running') for a user."""
+    result = await _db.fetch_one(
+        "SELECT COUNT(*) as cnt FROM jobs WHERE user_id = ? AND status IN ('pending', 'queued', 'running')",
+        (user_id,)
+    )
+    return result["cnt"] if result else 0
+
+
+async def get_user_recent_job_count(user_id: str, hours: int = 1) -> int:
+    """Count jobs created in the last N hours for a user."""
+    result = await _db.fetch_one(
+        "SELECT COUNT(*) as cnt FROM jobs WHERE user_id = ? AND created_at > datetime('now', ?)",
+        (user_id, f'-{hours} hours')
+    )
+    return result["cnt"] if result else 0

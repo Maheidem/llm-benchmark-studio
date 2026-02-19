@@ -172,6 +172,29 @@ async def admin_headers(test_user, _patch_db_path):
 
 
 # ---------------------------------------------------------------------------
+# Rate limit cleanup for tests that create jobs
+# ---------------------------------------------------------------------------
+
+@pytest_asyncio.fixture
+async def clear_active_jobs(test_user, _patch_db_path):
+    """Mark all active jobs for the test user as 'completed' before the test runs.
+
+    This prevents rate-limit 429 errors when multiple tests create jobs
+    sequentially within the same session-scoped user.
+    """
+    import aiosqlite
+
+    user, _ = test_user
+    async with aiosqlite.connect(str(_patch_db_path)) as conn:
+        await conn.execute(
+            "UPDATE jobs SET status = 'done', completed_at = datetime('now') "
+            "WHERE user_id = ? AND status IN ('pending', 'queued', 'running')",
+            (user["id"],),
+        )
+        await conn.commit()
+
+
+# ---------------------------------------------------------------------------
 # Test config with Zai provider (for E2E smoke tests)
 # ---------------------------------------------------------------------------
 

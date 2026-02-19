@@ -198,7 +198,7 @@ class TestConfigEndpoints:
         resp = await app_client.post("/api/config/provider", headers=auth_headers, json={
             "display_name": "No Key Provider",
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects missing provider_key
 
     async def test_update_provider(self, app_client, auth_headers):
         resp = await app_client.put("/api/config/provider", headers=auth_headers, json={
@@ -252,6 +252,7 @@ class TestConfigEndpoints:
     async def test_update_nonexistent_model(self, app_client, auth_headers):
         resp = await app_client.put("/api/config/model", headers=auth_headers, json={
             "model_id": "ghost-model",
+            "provider_key": "test_provider",
             "display_name": "Ghost",
         })
         assert resp.status_code == 404
@@ -316,13 +317,13 @@ class TestApiKeyManagement:
         resp = await app_client.put("/api/keys", headers=auth_headers, json={
             "value": "sk-something",
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects missing provider_key
 
     async def test_set_key_missing_value(self, app_client, auth_headers):
         resp = await app_client.put("/api/keys", headers=auth_headers, json={
             "provider_key": "openai",
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects missing api_key
 
     async def test_set_key_nonexistent_provider(self, app_client, auth_headers):
         resp = await app_client.put("/api/keys", headers=auth_headers, json={
@@ -378,7 +379,7 @@ class TestBenchmarkEndpoint:
         data = resp.json()
         assert "job_id" in data
 
-    async def test_benchmark_legacy_format(self, app_client, auth_headers):
+    async def test_benchmark_legacy_format(self, app_client, auth_headers, clear_active_jobs):
         """Test the legacy models: [model_id] format."""
         resp = await app_client.post("/api/benchmark", headers=auth_headers, json={
             "models": ["gpt-4o"],
@@ -396,14 +397,14 @@ class TestBenchmarkEndpoint:
             "models": [],
             "runs": 1,
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects empty models list
 
     async def test_benchmark_invalid_runs(self, app_client, auth_headers):
         resp = await app_client.post("/api/benchmark", headers=auth_headers, json={
             "models": ["gpt-4o"],
             "runs": 25,  # max 20
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects runs > 20
 
     async def test_benchmark_invalid_temperature(self, app_client, auth_headers):
         resp = await app_client.post("/api/benchmark", headers=auth_headers, json={
@@ -411,15 +412,15 @@ class TestBenchmarkEndpoint:
             "runs": 1,
             "temperature": 3.0,  # max 2.0
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects temperature > 2.0
 
     async def test_benchmark_invalid_max_tokens(self, app_client, auth_headers):
         resp = await app_client.post("/api/benchmark", headers=auth_headers, json={
             "models": ["gpt-4o"],
             "runs": 1,
-            "max_tokens": 99999,  # max 16384
+            "max_tokens": 200000,  # max 128000
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects max_tokens > 128000
 
     async def test_benchmark_cancel(self, app_client, auth_headers):
         resp = await app_client.post("/api/benchmark/cancel", headers=auth_headers, json={})
@@ -486,7 +487,7 @@ class TestToolSuites:
         resp = await app_client.post("/api/tool-suites", headers=auth_headers, json={
             "tools": [],
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects empty/missing name
 
     async def test_list_suites(self, app_client, auth_headers):
         resp = await app_client.get("/api/tool-suites", headers=auth_headers)
@@ -596,7 +597,7 @@ class TestTestCases:
         resp = await app_client.post(f"/api/tool-suites/{suite_id}/cases", headers=auth_headers, json={
             "expected_tool": "test_tool",
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects empty/missing prompt
 
     async def test_list_cases(self, app_client, auth_headers, suite_id):
         resp = await app_client.get(f"/api/tool-suites/{suite_id}/cases", headers=auth_headers)
@@ -616,13 +617,13 @@ class TestToolEvalEndpoint:
         resp = await app_client.post("/api/tool-eval", headers=auth_headers, json={
             "models": ["gpt-4o"],
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects missing suite_id
 
     async def test_tool_eval_missing_models(self, app_client, auth_headers):
         resp = await app_client.post("/api/tool-eval", headers=auth_headers, json={
             "suite_id": "some-id",
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects missing models
 
     async def test_tool_eval_invalid_temperature(self, app_client, auth_headers):
         resp = await app_client.post("/api/tool-eval", headers=auth_headers, json={
@@ -630,7 +631,7 @@ class TestToolEvalEndpoint:
             "models": ["gpt-4o"],
             "temperature": 5.0,
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects temperature > 2.0
 
     async def test_tool_eval_invalid_tool_choice(self, app_client, auth_headers):
         resp = await app_client.post("/api/tool-eval", headers=auth_headers, json={
@@ -667,14 +668,14 @@ class TestParamTuneEndpoint:
             "models": ["gpt-4o"],
             "search_space": {"temperature": {"min": 0, "max": 1, "step": 0.5}},
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects missing suite_id
 
     async def test_param_tune_missing_models(self, app_client, auth_headers):
         resp = await app_client.post("/api/tool-eval/param-tune", headers=auth_headers, json={
             "suite_id": "some-id",
             "search_space": {"temperature": {"min": 0, "max": 1, "step": 0.5}},
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects missing models
 
     async def test_param_tune_empty_search_space(self, app_client, auth_headers):
         resp = await app_client.post("/api/tool-eval/param-tune", headers=auth_headers, json={
@@ -1028,13 +1029,13 @@ class TestJudgeEndpoints:
         resp = await app_client.post("/api/tool-eval/judge", headers=auth_headers, json={
             "judge_model": "gpt-4o",
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects missing eval_run_id
 
     async def test_judge_missing_model(self, app_client, auth_headers):
         resp = await app_client.post("/api/tool-eval/judge", headers=auth_headers, json={
             "eval_run_id": "some-id",
         })
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # Pydantic validation rejects missing judge_model
 
 
 # =========================================================================
@@ -1080,7 +1081,7 @@ class TestProviderKeyFlow:
             # (they CAN be the same, e.g., "openai" == "OpenAI" is ok)
             assert prov_data["provider_key"], "provider_key must not be empty"
 
-    async def test_roundtrip_config_to_benchmark(self, app_client, auth_headers):
+    async def test_roundtrip_config_to_benchmark(self, app_client, auth_headers, clear_active_jobs):
         """Read config, build targets array as frontend would, POST benchmark."""
         # Step 1: Get config
         config_resp = await app_client.get("/api/config", headers=auth_headers)
@@ -1113,7 +1114,7 @@ class TestProviderKeyFlow:
         assert resp.status_code == 200
         assert "job_id" in resp.json()
 
-    async def test_roundtrip_config_to_tool_eval(self, app_client, auth_headers):
+    async def test_roundtrip_config_to_tool_eval(self, app_client, auth_headers, clear_active_jobs):
         """Read config, build targets array, POST tool-eval (validates format)."""
         config_resp = await app_client.get("/api/config", headers=auth_headers)
         config_data = config_resp.json()

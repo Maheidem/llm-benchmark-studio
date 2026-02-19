@@ -119,7 +119,7 @@ async def zai_tool_suite(app_client, auth_headers):
 class TestE2EBenchmark:
     """Run a REAL 1-model, 1-run benchmark against Zai GLM-4.5-Air."""
 
-    async def test_real_benchmark_produces_results(self, app_client, auth_headers, zai_setup):
+    async def test_real_benchmark_produces_results(self, app_client, auth_headers, zai_setup, clear_active_jobs):
         """Submit a real benchmark job and verify it completes with results."""
         provider_key = zai_setup["provider_key"]
         model_id = zai_setup["model_id"]
@@ -175,7 +175,7 @@ class TestE2EToolEval:
     """Run a REAL 1-case tool eval against Zai GLM-4.5-Air."""
 
     async def test_real_tool_eval_produces_scores(
-        self, app_client, auth_headers, zai_setup, zai_tool_suite
+        self, app_client, auth_headers, zai_setup, zai_tool_suite, clear_active_jobs
     ):
         """Run a real tool eval and verify scoring works."""
         provider_key = zai_setup["provider_key"]
@@ -228,7 +228,7 @@ class TestE2EParamTune:
     """Run a REAL 1-combo param tune against Zai GLM-4.5-Air."""
 
     async def test_real_param_tune_produces_results(
-        self, app_client, auth_headers, zai_setup, zai_tool_suite
+        self, app_client, auth_headers, zai_setup, zai_tool_suite, clear_active_jobs
     ):
         """Run a minimal grid search (1 combo) and verify results are saved."""
         provider_key = zai_setup["provider_key"]

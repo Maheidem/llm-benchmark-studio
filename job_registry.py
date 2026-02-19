@@ -21,11 +21,43 @@ import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import Callable, Awaitable
 
 import db
 
 logger = logging.getLogger(__name__)
+
+
+class JobStatus(str, Enum):
+    PENDING = "pending"
+    QUEUED = "queued"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
+
+
+VALID_TRANSITIONS = {
+    JobStatus.PENDING: {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.CANCELLED},
+    JobStatus.QUEUED: {JobStatus.RUNNING, JobStatus.CANCELLED},
+    JobStatus.RUNNING: {JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.INTERRUPTED},
+    JobStatus.DONE: set(),
+    JobStatus.FAILED: set(),
+    JobStatus.CANCELLED: set(),
+    JobStatus.INTERRUPTED: set(),
+}
+
+
+def validate_transition(current: str, new: str) -> bool:
+    """Check if a job status transition is valid."""
+    try:
+        current_status = JobStatus(current)
+        new_status = JobStatus(new)
+    except ValueError:
+        return False
+    return new_status in VALID_TRANSITIONS.get(current_status, set())
 
 
 class JobRegistry:
@@ -194,6 +226,13 @@ class JobRegistry:
         cancel_event = asyncio.Event()
         self._cancel_events[job_id] = cancel_event
 
+        # Validate transition to running (defensive: log warning but don't block)
+        job = await db.get_job(job_id)
+        if job and not validate_transition(job["status"], "running"):
+            logger.warning(
+                "Invalid job transition for %s: %s -> running", job_id, job["status"]
+            )
+
         # Update status to running with start time and timeout
         now = datetime.now(timezone.utc)
         timeout_at = now + timedelta(seconds=timeout_seconds)
@@ -309,6 +348,14 @@ class JobRegistry:
         error_msg: str = None,
     ):
         """Update job status in DB with optional terminal fields."""
+        # Validate state transition (defensive: log warning but don't block)
+        job = await db.get_job(job_id)
+        if job:
+            old_status = job["status"]
+            if not validate_transition(old_status, status):
+                logger.warning(
+                    "Invalid job transition for %s: %s -> %s", job_id, old_status, status
+                )
         completed_at = (
             datetime.now(timezone.utc).isoformat()
             if status in ("done", "failed", "cancelled", "interrupted")

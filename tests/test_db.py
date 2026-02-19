@@ -57,6 +57,7 @@ class TestInitDb:
             "benchmark_runs", "rate_limits", "audit_log", "tool_suites",
             "tool_test_cases", "tool_eval_runs", "schedules",
             "param_tune_runs", "prompt_tune_runs", "judge_reports", "jobs",
+            "experiments",
         }
         assert expected.issubset(tables), f"Missing tables: {expected - tables}"
 

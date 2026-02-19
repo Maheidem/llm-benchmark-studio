@@ -3,14 +3,14 @@
 Covers: _mask_value, _validate_tools, _parse_expected_tool,
 _serialize_expected_tool, _tool_matches, _sse, _parse_meta_response,
 _parse_judge_json, _build_tools_summary, _build_test_cases_summary,
-_build_tool_definitions_text, _check_rate_limit, _record_rate_limit,
+_build_tool_definitions_text, _check_rate_limit,
 _compute_eval_summaries.
 """
 
 import json
 import time
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 from app import (
     _mask_value,
@@ -25,8 +25,6 @@ from app import (
     _build_test_cases_summary,
     _build_tool_definitions_text,
     _check_rate_limit,
-    _record_rate_limit,
-    _rate_windows,
     _compute_eval_summaries,
 )
 from benchmark import Target
@@ -330,38 +328,67 @@ class TestBuildToolDefinitionsText:
         assert _build_tool_definitions_text([]) == ""
 
 
-# ── _check_rate_limit / _record_rate_limit ──────────────────────────
+# ── _check_rate_limit (DB-backed) ────────────────────────────────────
 
 class TestRateLimit:
-    def setup_method(self):
-        """Clear rate windows between tests."""
-        _rate_windows.clear()
+    """Test DB-backed rate limiting via _check_rate_limit."""
 
-    def test_first_check_allowed(self):
-        allowed, remaining = _check_rate_limit("test_user")
-        assert allowed is True
-        assert remaining > 0
+    @pytest.mark.asyncio
+    async def test_allowed_when_under_limit(self):
+        """Should pass when user has no active/recent jobs."""
+        with patch("routers.helpers.db") as mock_db:
+            mock_db.get_user_rate_limit = AsyncMock(return_value=None)
+            mock_db.get_user_active_job_count = AsyncMock(return_value=0)
+            mock_db.get_user_recent_job_count = AsyncMock(return_value=5)
+            # Should not raise
+            await _check_rate_limit("test_user")
 
-    def test_record_decreases_remaining(self):
-        _, before = _check_rate_limit("test_user2")
-        _record_rate_limit("test_user2")
-        _, after = _check_rate_limit("test_user2")
-        assert after == before - 1
+    @pytest.mark.asyncio
+    async def test_raises_on_concurrent_limit(self):
+        """Should raise HTTPException 429 when concurrent jobs >= max_concurrent."""
+        from fastapi import HTTPException
+        with patch("routers.helpers.db") as mock_db:
+            mock_db.get_user_rate_limit = AsyncMock(return_value={"benchmarks_per_hour": 20, "max_concurrent": 1})
+            mock_db.get_user_active_job_count = AsyncMock(return_value=1)
+            with pytest.raises(HTTPException) as exc_info:
+                await _check_rate_limit("test_user")
+            assert exc_info.value.status_code == 429
+            assert "concurrent" in exc_info.value.detail.lower()
 
-    def test_different_users_independent(self):
-        _record_rate_limit("user_a")
-        _, remaining_b = _check_rate_limit("user_b")
-        _, remaining_a = _check_rate_limit("user_a")
-        assert remaining_b > remaining_a
+    @pytest.mark.asyncio
+    async def test_raises_on_hourly_limit(self):
+        """Should raise HTTPException 429 when recent jobs >= max_per_hour."""
+        from fastapi import HTTPException
+        with patch("routers.helpers.db") as mock_db:
+            mock_db.get_user_rate_limit = AsyncMock(return_value={"benchmarks_per_hour": 10, "max_concurrent": 5})
+            mock_db.get_user_active_job_count = AsyncMock(return_value=0)
+            mock_db.get_user_recent_job_count = AsyncMock(return_value=10)
+            with pytest.raises(HTTPException) as exc_info:
+                await _check_rate_limit("test_user")
+            assert exc_info.value.status_code == 429
+            assert "rate limit" in exc_info.value.detail.lower()
 
-    def test_old_entries_pruned(self):
-        user = "old_user"
-        # Add an old entry (more than 1 hour ago)
-        _rate_windows[user] = [time.time() - 4000]
-        allowed, _ = _check_rate_limit(user)
-        assert allowed is True
-        # Old entry should be pruned
-        assert len(_rate_windows[user]) == 0
+    @pytest.mark.asyncio
+    async def test_uses_defaults_when_no_custom_limits(self):
+        """Should use default 20/hour, 1 concurrent when no rate_limits row."""
+        from fastapi import HTTPException
+        with patch("routers.helpers.db") as mock_db:
+            mock_db.get_user_rate_limit = AsyncMock(return_value=None)
+            mock_db.get_user_active_job_count = AsyncMock(return_value=0)
+            mock_db.get_user_recent_job_count = AsyncMock(return_value=19)
+            # 19 < 20 default, should pass
+            await _check_rate_limit("test_user")
+
+    @pytest.mark.asyncio
+    async def test_respects_custom_limits(self):
+        """Should respect custom rate limits from DB."""
+        from fastapi import HTTPException
+        with patch("routers.helpers.db") as mock_db:
+            mock_db.get_user_rate_limit = AsyncMock(return_value={"benchmarks_per_hour": 100, "max_concurrent": 5})
+            mock_db.get_user_active_job_count = AsyncMock(return_value=3)
+            mock_db.get_user_recent_job_count = AsyncMock(return_value=50)
+            # 3 < 5 and 50 < 100, should pass
+            await _check_rate_limit("test_user")
 
 
 # ── _compute_eval_summaries ─────────────────────────────────────────
