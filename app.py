@@ -3512,7 +3512,12 @@ def _build_config_summary(config: dict) -> str:
         pp = config["provider_params"]
         parts.extend(f"{k}={v}" for k, v in sorted(pp.items()))
     if config.get("system_prompt"):
-        parts.append(f"prompt='{config['system_prompt'][:40]}...'")
+        sp = config["system_prompt"]
+        if isinstance(sp, dict):
+            keys = [k for k, v in sp.items() if v and str(v).strip()]
+            parts.append(f"prompt={len(keys)} entry{'s' if len(keys) != 1 else ''}")
+        elif isinstance(sp, str):
+            parts.append(f"prompt='{sp[:40]}...'")
     return ", ".join(parts) if parts else "defaults"
 
 
@@ -3820,8 +3825,8 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
     }
     if provider_params:
         config["provider_params"] = provider_params
-    if system_prompt:
-        config["system_prompt"] = system_prompt
+    if system_prompt_raw:
+        config["system_prompt"] = system_prompt_raw
     # Build target_set from the targets list
     target_set_list = []
     for t in targets:
