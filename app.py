@@ -4476,7 +4476,11 @@ async def _generate_prompts_meta(
         "messages": [{"role": "user", "content": formatted}],
         "timeout": 120,
         "num_retries": 0,  # We handle retries ourselves with backoff
-        "response_format": {
+    }
+    # Only add structured output for providers that LiteLLM confirms support it.
+    # Others (exo, ZAI, Ollama, unknown) rely on the prompt instructions + parser.
+    if litellm.supports_response_schema(model=meta_target.model_id):
+        kwargs["response_format"] = {
             "type": "json_schema",
             "json_schema": {
                 "name": "prompt_list",
@@ -4501,8 +4505,7 @@ async def _generate_prompts_meta(
                     "additionalProperties": False,
                 },
             },
-        },
-    }
+        }
     if meta_target.api_base:
         kwargs["api_base"] = meta_target.api_base
     if meta_target.api_key:
@@ -4514,7 +4517,7 @@ async def _generate_prompts_meta(
     ))
 
     last_exc: Exception | None = None
-    _json_mode_supported = True  # Assume supported; disable on first BadRequestError
+    _json_mode_supported = "response_format" in kwargs  # Only true when we actually added it
     for attempt in range(1, _max_retries + 1):
         try:
             response = await litellm.acompletion(**kwargs)
