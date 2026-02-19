@@ -4518,6 +4518,13 @@ async def _generate_prompts_meta(
 
     last_exc: Exception | None = None
     _json_mode_supported = "response_format" in kwargs  # Only true when we actually added it
+
+    # Diagnostic: log exact kwargs (sans messages content) for debugging call routing
+    _diag = {k: v for k, v in kwargs.items() if k != "messages"}
+    _diag["api_key"] = "***" if kwargs.get("api_key") else None
+    _diag["has_response_format"] = "response_format" in kwargs
+    logger.info("Meta model call kwargs: %s", _diag)
+
     for attempt in range(1, _max_retries + 1):
         try:
             response = await litellm.acompletion(**kwargs)
@@ -6523,6 +6530,9 @@ async def async_run_single(
         kwargs["api_base"] = target.api_base
     if target.api_key:
         kwargs["api_key"] = target.api_key
+
+    # Diagnostic: log exact kwargs for debugging call routing
+    logger.info("Benchmark call: model=%s api_base=%s stream=%s", kwargs.get("model"), kwargs.get("api_base"), kwargs.get("stream"))
 
     try:
         start = time.perf_counter()
