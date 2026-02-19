@@ -1579,14 +1579,21 @@
       </div>
 
       <!-- Context Bar -->
-      <div id="teContextBar" class="te-context-bar hidden">
+      <div id="teContextBar" class="te-context-bar hidden" style="position:relative;">
         <span class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Context:</span>
         <span id="ctxSuitePill" class="ctx-pill hidden"></span>
         <span id="ctxModelsPill" class="ctx-pill hidden"></span>
-        <span id="ctxExperimentPill" class="ctx-pill active hidden"></span>
+        <span id="ctxExperimentPill" class="ctx-pill active hidden" style="cursor:pointer;" onclick="teToggleExperimentDropdown()"></span>
+        <button id="ctxNewExpBtn" onclick="teShowCreateExperimentModal()" class="hidden text-[10px] px-1.5 py-0.5 rounded-sm" style="background:rgba(191,255,0,0.08);border:1px solid rgba(191,255,0,0.2);color:var(--lime);cursor:pointer;" title="New Experiment">+</button>
+        <span id="ctxSystemPromptPill" class="ctx-pill hidden" style="background:rgba(168,85,247,0.1);border-color:rgba(168,85,247,0.25);color:#A855F7;cursor:pointer;" onclick="showToolEvalView('run');setTimeout(function(){var s=document.getElementById('teSystemPromptSection');if(s)s.classList.remove('hidden')},50)">System Prompt</span>
+        <span id="ctxAppliedFromPill" class="ctx-pill hidden"></span>
         <button onclick="teToggleContextBar()" class="ml-auto text-[10px] text-zinc-700 hover:text-zinc-500" style="background:none;border:none;cursor:pointer;">
           <span id="ctxToggleText">Hide</span>
         </button>
+        <!-- Experiment Dropdown -->
+        <div id="teExpDropdown" class="hidden" style="position:absolute;top:100%;left:80px;z-index:100;min-width:240px;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.4);padding:4px 0;margin-top:4px;max-height:240px;overflow-y:auto;">
+          <div id="teExpDropdownList"></div>
+        </div>
       </div>
 
       <!-- Sub-View 1: Suite List (default) -->
@@ -1824,7 +1831,10 @@
         <!-- Eval Settings -->
         <div class="card rounded-md p-5 mb-6">
           <div class="flex items-center justify-between mb-4">
-            <label class="section-label">Eval Settings</label>
+            <div class="flex items-center gap-2">
+              <label class="section-label" style="margin:0;">Eval Settings</label>
+              <span id="teAppliedBadge" class="hidden text-[9px] px-1.5 py-0.5 rounded"></span>
+            </div>
           </div>
           <div class="flex items-center gap-4">
             <div>
@@ -1875,6 +1885,23 @@
               </div>
               <p class="text-[10px] text-zinc-700 font-body mt-2">The judge model evaluates quality of tool calling results. Runs at temperature 0.0 for consistency.</p>
             </div>
+          </div>
+        </div>
+
+        <!-- System Prompt Section (Gap 2) -->
+        <div id="teSystemPromptCard" class="card rounded-md p-5 mb-6 hidden">
+          <div class="flex items-center justify-between mb-3 cursor-pointer" onclick="teToggleSystemPrompt()">
+            <div class="flex items-center gap-2">
+              <label class="section-label" style="margin:0;cursor:pointer;">System Prompt</label>
+              <span id="teSystemPromptBadge" class="hidden text-[9px] px-1.5 py-0.5 rounded" style="background:rgba(34,197,94,0.15);color:#22C55E;">Active</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="teSystemPromptClearBtn" onclick="event.stopPropagation();teClearSystemPrompt()" class="hidden text-[10px] font-display tracking-wider uppercase px-2 py-0.5 rounded-sm" style="color:var(--coral);border:1px solid rgba(255,59,92,0.2);background:none;cursor:pointer;">Clear</button>
+              <svg id="teSystemPromptChevron" class="w-4 h-4 text-zinc-600 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+            </div>
+          </div>
+          <div id="teSystemPromptSection" class="hidden">
+            <textarea id="teSystemPromptText" rows="5" class="w-full px-3 py-2 rounded-sm text-sm text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;font-family:'Space Mono',monospace;font-size:12px;resize:vertical;" placeholder="Enter a system prompt to prepend to eval calls..."></textarea>
           </div>
         </div>
 
@@ -2531,7 +2558,9 @@
         </div>
 
         <div id="tlNoExperiment" class="text-center py-12 text-zinc-600 text-sm">
-          No experiment selected. Create or select an experiment to see its timeline.
+          No experiment selected.
+          <button onclick="teShowCreateExperimentModal()" class="ml-1 text-[11px] font-display tracking-wider uppercase" style="color:var(--lime);background:none;border:none;cursor:pointer;text-decoration:underline;">Create Experiment</button>
+          or select one to see its timeline.
         </div>
 
         <div id="tlEntries" class="hidden"></div>
@@ -7507,6 +7536,7 @@
     // --- Shared Context (cross-feature state, M2) ---
     let _sharedContext = {
       experiment_id: null,
+      experiment_name: null,
       suite_id: null,
       suite_name: null,
       selected_models: [],
@@ -7540,8 +7570,9 @@
       _scSave();
     }
     function _scGetModels() { return new Set(_sharedContext.selected_models || []); }
-    function _scSetExperiment(experimentId) {
+    function _scSetExperiment(experimentId, experimentName) {
       _sharedContext.experiment_id = experimentId;
+      _sharedContext.experiment_name = experimentName || null;
       _scSave();
     }
     function _scSetConfig(overrides) {
@@ -7549,7 +7580,7 @@
       _scSave();
     }
     function _scClear() {
-      _sharedContext = { experiment_id: null, suite_id: null, suite_name: null,
+      _sharedContext = { experiment_id: null, experiment_name: null, suite_id: null, suite_name: null,
         selected_models: [], temperature: 0.0, tool_choice: 'required',
         provider_params: {}, system_prompt: null, prompt_tuner_hint: null,
         last_updated_by: null };
@@ -7586,7 +7617,7 @@
       });
       _teUpdateContextBar();
 
-      if (view === 'run') { jgLoadDefaults(); }
+      if (view === 'run') { jgLoadDefaults(); teUpdateSystemPromptUI(); teUpdateAppliedBadge(); }
       if (view === 'pt-config') { ptLoadSuiteSelector(); ptRenderModelGrid(); _ptApplyDefaults(); ptPopulatePresetDropdown(); ptUpdatePreview(); _ptCheckRunningBanner(); }
       if (view === 'pt-history') { ptLoadHistory(); }
       if (view === 'prt-config') {
@@ -7662,10 +7693,40 @@
       const expPill = document.getElementById('ctxExperimentPill');
       if (expPill) {
         if (hasExp) {
-          expPill.textContent = 'Experiment';
+          expPill.textContent = _sharedContext.experiment_name || 'Experiment';
           expPill.classList.remove('hidden');
         } else {
           expPill.classList.add('hidden');
+        }
+      }
+
+      // "+" new experiment button: show when suite selected but no experiment
+      const newExpBtn = document.getElementById('ctxNewExpBtn');
+      if (newExpBtn) {
+        newExpBtn.classList.toggle('hidden', !hasSuite || !!hasExp);
+      }
+
+      // Gap 4: System Prompt pill
+      const spPill = document.getElementById('ctxSystemPromptPill');
+      if (spPill) {
+        spPill.classList.toggle('hidden', !_sharedContext.system_prompt);
+      }
+
+      // Gap 4: Applied From pill
+      const afPill = document.getElementById('ctxAppliedFromPill');
+      if (afPill) {
+        const src = _sharedContext.last_updated_by;
+        if (src) {
+          const labels = { param_tuner: 'from Param Tuner', prompt_tuner: 'from Prompt Tuner', judge: 'from Judge' };
+          const colors = { param_tuner: ['rgba(99,102,241,0.1)','rgba(99,102,241,0.25)','#818CF8'], prompt_tuner: ['rgba(168,85,247,0.1)','rgba(168,85,247,0.25)','#A855F7'], judge: ['rgba(245,158,11,0.1)','rgba(245,158,11,0.25)','#F59E0B'] };
+          const c = colors[src] || ['rgba(255,255,255,0.04)','rgba(255,255,255,0.08)','#A1A1AA'];
+          afPill.textContent = labels[src] || ('from ' + src);
+          afPill.style.background = c[0];
+          afPill.style.borderColor = c[1];
+          afPill.style.color = c[2];
+          afPill.classList.remove('hidden');
+        } else {
+          afPill.classList.add('hidden');
         }
       }
     }
@@ -7682,6 +7743,174 @@
         bar.style.display = '';
         if (text) text.textContent = 'Hide';
       }
+    }
+
+    // --- Gap 1: Experiment Create/Select ---
+    function teToggleExperimentDropdown() {
+      const dd = document.getElementById('teExpDropdown');
+      if (!dd) return;
+      if (!dd.classList.contains('hidden')) { dd.classList.add('hidden'); return; }
+      // Populate the dropdown
+      const list = document.getElementById('teExpDropdownList');
+      list.innerHTML = '<div class="px-3 py-2 text-[10px] text-zinc-600">Loading...</div>';
+      dd.classList.remove('hidden');
+
+      const suiteId = _sharedContext.suite_id;
+      const url = suiteId ? '/api/experiments?suite_id=' + suiteId : '/api/experiments';
+      apiFetch(url).then(r => r.json()).then(data => {
+        const exps = data.experiments || data || [];
+        let html = '';
+        if (_sharedContext.experiment_id) {
+          html += '<div class="px-3 py-1.5 text-[10px] text-zinc-500 hover:bg-zinc-800 cursor-pointer" onclick="teClearExperiment()">Clear experiment</div>';
+          html += '<div style="border-top:1px solid var(--border-subtle);margin:2px 0;"></div>';
+        }
+        if (exps.length === 0) {
+          html += '<div class="px-3 py-2 text-[10px] text-zinc-600">No experiments yet</div>';
+        } else {
+          exps.forEach(function(exp) {
+            const isActive = exp.id === _sharedContext.experiment_id;
+            html += '<div class="px-3 py-1.5 text-[11px] cursor-pointer hover:bg-zinc-800 flex items-center gap-2' + (isActive ? ' text-lime-400' : ' text-zinc-300') + '" onclick="teSelectExperiment(' + exp.id + ',\'' + (exp.name || '').replace(/'/g, "\\'") + '\')">'
+              + (isActive ? '<span style="color:var(--lime);">&#10003;</span> ' : '')
+              + (exp.name || 'Experiment #' + exp.id)
+              + '</div>';
+          });
+        }
+        html += '<div style="border-top:1px solid var(--border-subtle);margin:2px 0;"></div>';
+        html += '<div class="px-3 py-1.5 text-[11px] cursor-pointer hover:bg-zinc-800" style="color:var(--lime);" onclick="document.getElementById(\'teExpDropdown\').classList.add(\'hidden\');teShowCreateExperimentModal()">+ New Experiment</div>';
+        list.innerHTML = html;
+      }).catch(function() {
+        list.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--coral)">Failed to load</div>';
+      });
+    }
+
+    // Close experiment dropdown on outside click
+    document.addEventListener('click', function(e) {
+      const dd = document.getElementById('teExpDropdown');
+      if (!dd || dd.classList.contains('hidden')) return;
+      const pill = document.getElementById('ctxExperimentPill');
+      if (dd.contains(e.target) || (pill && pill.contains(e.target))) return;
+      dd.classList.add('hidden');
+    });
+
+    function teSelectExperiment(id, name) {
+      _scSetExperiment(id, name);
+      document.getElementById('teExpDropdown')?.classList.add('hidden');
+      showToast('Experiment: ' + (name || '#' + id), 'success');
+    }
+
+    function teClearExperiment() {
+      _scSetExperiment(null, null);
+      document.getElementById('teExpDropdown')?.classList.add('hidden');
+      showToast('Experiment cleared');
+    }
+
+    function teShowCreateExperimentModal() {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      const preselectedSuite = _sharedContext.suite_id || '';
+      overlay.innerHTML = '<div class="modal-box" style="max-width:440px;">'
+        + '<div class="modal-title">New Experiment</div>'
+        + '<div style="margin-bottom:12px;"><div style="font-size:11px;color:#85858F;margin-bottom:4px;font-family:\'Chakra Petch\',sans-serif;text-transform:uppercase;letter-spacing:0.04em">Name</div>'
+        + '<input id="teNewExpName" class="modal-input" style="margin-bottom:0" placeholder="e.g., GPT-5 vs Claude Opus"></div>'
+        + '<div style="margin-bottom:12px;"><div style="font-size:11px;color:#85858F;margin-bottom:4px;font-family:\'Chakra Petch\',sans-serif;text-transform:uppercase;letter-spacing:0.04em">Suite</div>'
+        + '<select id="teNewExpSuite" class="modal-input" style="margin-bottom:0;font-family:\'Outfit\',sans-serif;"></select></div>'
+        + '<div style="margin-bottom:16px;"><div style="font-size:11px;color:#85858F;margin-bottom:4px;font-family:\'Chakra Petch\',sans-serif;text-transform:uppercase;letter-spacing:0.04em">Description</div>'
+        + '<textarea id="teNewExpDesc" class="modal-input" style="margin-bottom:0;resize:vertical;min-height:60px;" placeholder="Optional description"></textarea></div>'
+        + '<div class="modal-buttons">'
+        + '<button class="modal-btn modal-btn-cancel" data-action="cancel">Cancel</button>'
+        + '<button class="modal-btn modal-btn-confirm" data-action="confirm">Create</button>'
+        + '</div></div>';
+      overlay.querySelector('[data-action="cancel"]').onclick = function() { _closeModal(overlay); };
+      overlay.querySelector('[data-action="confirm"]').onclick = async function() {
+        const name = document.getElementById('teNewExpName').value.trim();
+        const suiteId = document.getElementById('teNewExpSuite').value;
+        const desc = document.getElementById('teNewExpDesc').value.trim();
+        if (!name) { showToast('Name is required', 'error'); return; }
+        if (!suiteId) { showToast('Select a suite', 'error'); return; }
+        try {
+          const res = await apiFetch('/api/experiments', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name, suite_id: parseInt(suiteId), description: desc || undefined }),
+          });
+          if (!res.ok) { const err = await res.json().catch(function(){return {};}); showToast(err.error || 'Failed to create', 'error'); return; }
+          const data = await res.json();
+          _scSetExperiment(data.id || data.experiment_id, name);
+          _closeModal(overlay);
+          showToast('Experiment created: ' + name, 'success');
+        } catch (e) { showToast('Error: ' + e.message, 'error'); }
+      };
+      overlay.onclick = function(e) { if (e.target === overlay) _closeModal(overlay); };
+      document.body.appendChild(overlay);
+      // Populate suite dropdown
+      apiFetch('/api/tool-suites').then(function(r){return r.json();}).then(function(data) {
+        const sel = document.getElementById('teNewExpSuite');
+        const suites = data.suites || data || [];
+        sel.innerHTML = '<option value="">Select suite...</option>' + suites.map(function(s) {
+          return '<option value="' + s.id + '"' + (s.id == preselectedSuite ? ' selected' : '') + '>' + (s.name || 'Suite #' + s.id) + '</option>';
+        }).join('');
+      });
+      setTimeout(function() { document.getElementById('teNewExpName')?.focus(); }, 50);
+    }
+
+    // --- Gap 2: System Prompt UI ---
+    function teToggleSystemPrompt() {
+      const section = document.getElementById('teSystemPromptSection');
+      const chevron = document.getElementById('teSystemPromptChevron');
+      if (!section) return;
+      const isHidden = section.classList.contains('hidden');
+      section.classList.toggle('hidden');
+      if (chevron) chevron.style.transform = isHidden ? 'rotate(180deg)' : '';
+    }
+
+    function teUpdateSystemPromptUI() {
+      const card = document.getElementById('teSystemPromptCard');
+      const textarea = document.getElementById('teSystemPromptText');
+      const badge = document.getElementById('teSystemPromptBadge');
+      const clearBtn = document.getElementById('teSystemPromptClearBtn');
+      const section = document.getElementById('teSystemPromptSection');
+      const chevron = document.getElementById('teSystemPromptChevron');
+      if (!card) return;
+
+      const prompt = _sharedContext.system_prompt;
+      card.classList.remove('hidden');
+      if (textarea) textarea.value = prompt || '';
+      const hasPrompt = !!prompt;
+      if (badge) badge.classList.toggle('hidden', !hasPrompt);
+      if (clearBtn) clearBtn.classList.toggle('hidden', !hasPrompt);
+      // Auto-expand when prompt is set
+      if (hasPrompt && section) {
+        section.classList.remove('hidden');
+        if (chevron) chevron.style.transform = 'rotate(180deg)';
+      }
+    }
+
+    function teClearSystemPrompt() {
+      _sharedContext.system_prompt = null;
+      _scSave();
+      const textarea = document.getElementById('teSystemPromptText');
+      if (textarea) textarea.value = '';
+      document.getElementById('teSystemPromptBadge')?.classList.add('hidden');
+      document.getElementById('teSystemPromptClearBtn')?.classList.add('hidden');
+      showToast('System prompt cleared');
+    }
+
+    // --- Gap 3: Applied Config Badge ---
+    function teUpdateAppliedBadge() {
+      const badge = document.getElementById('teAppliedBadge');
+      if (!badge) return;
+      const src = _sharedContext.last_updated_by;
+      if (!src || src === 'tool_eval') { badge.classList.add('hidden'); return; }
+      const config = {
+        param_tuner: { label: 'Config from Param Tuner', bg: 'rgba(99,102,241,0.15)', color: '#818CF8' },
+        prompt_tuner: { label: 'Prompt from Prompt Tuner', bg: 'rgba(168,85,247,0.15)', color: '#A855F7' },
+        judge: { label: 'Config from Judge', bg: 'rgba(245,158,11,0.15)', color: '#F59E0B' },
+      };
+      const c = config[src] || { label: 'from ' + src, bg: 'rgba(255,255,255,0.06)', color: '#A1A1AA' };
+      badge.textContent = c.label;
+      badge.style.background = c.bg;
+      badge.style.color = c.color;
+      badge.classList.remove('hidden');
     }
 
     // --- Timeline ---
@@ -9434,6 +9663,9 @@
         ppRenderPanel('tooleval');
       }
       _ptConfigApplied = true; // Prevent _teApplyDefaults from overwriting
+      _sharedContext.last_updated_by = 'param_tuner';
+      _scSave();
+      teUpdateAppliedBadge();
       showToast('Applied: ' + (appliedParts.length ? appliedParts.join(', ') : 'best config'), 'success');
     }
 
@@ -12210,6 +12442,14 @@
       const judgeConcurrency = _p10Settings?.judge?.concurrency || 4;
       const teTemp = parseFloat(document.getElementById('teTemperature').value) || 0.0;
       const teTC = document.getElementById('teToolChoice').value;
+      // Gap 2b: Read system prompt from textarea back into shared context
+      const spText = document.getElementById('teSystemPromptText');
+      if (spText) {
+        const spVal = spText.value.trim();
+        _sharedContext.system_prompt = spVal || null;
+      }
+      // Gap 3b: Clear applied badge on manual eval start
+      _sharedContext.last_updated_by = null;
       // Write current config to shared context
       _scSetConfig({ temperature: teTemp, tool_choice: teTC });
       const body = {
