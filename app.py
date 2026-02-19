@@ -544,6 +544,19 @@ def _target_key(target: Target) -> str:
     return f"{target.provider_key or ''}::{target.model_id}"
 
 
+def _find_target(all_targets: list[Target], model_id: str,
+                 provider_key: str | None = None) -> list[Target]:
+    """Find targets by model_id, optionally qualified by provider_key.
+
+    When provider_key is given, matches on both (provider_key, model_id) for
+    precise disambiguation (e.g. same model_id in two LM Studio instances).
+    Falls back to model_id-only matching when provider_key is absent (legacy).
+    """
+    if provider_key:
+        return [t for t in all_targets if t.provider_key == provider_key and t.model_id == model_id]
+    return [t for t in all_targets if t.model_id == model_id]
+
+
 # Per-user concurrency guards
 _user_locks: dict[str, asyncio.Lock] = {}
 _user_cancel: dict[str, asyncio.Event] = {}
@@ -3413,17 +3426,18 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
     if isinstance(judge_config, dict) and judge_config.get("enabled"):
         judge_mode = judge_config.get("mode", "none")
         judge_model_id = judge_config.get("judge_model")
+        judge_provider_key = judge_config.get("judge_provider_key")
         judge_custom_instructions = judge_config.get("custom_instructions", "")
         if judge_mode in ("live_inline", "post_eval") and judge_model_id:
             judge_enabled = True
             # Prefer already-injected eval targets (keys already set)
-            jt_list = [t for t in targets if t.model_id == judge_model_id]
+            jt_list = _find_target(targets, judge_model_id, judge_provider_key)
             if jt_list:
                 judge_target = jt_list[0]
                 logger.debug("Judge target found in eval set (key already injected): %s", judge_model_id)
             else:
                 # Judge model not in eval set — fall back to all_targets + inject
-                jt_list = [t for t in all_targets if t.model_id == judge_model_id]
+                jt_list = _find_target(all_targets, judge_model_id, judge_provider_key)
                 if jt_list:
                     judge_target = jt_list[0]
                     if judge_target.provider_key:
@@ -4615,6 +4629,7 @@ async def _prompt_tune_handler(job_id: str, params: dict, cancel_event, progress
     _raw_ts = params.get("target_set")
     target_set_eval = {tuple(t) for t in _raw_ts} if _raw_ts else None
     meta_model_id = params["meta_model"]
+    meta_provider_key = params.get("meta_provider_key")
     mode = params.get("mode", "quick")
     base_prompt = params.get("base_prompt") or _DEFAULT_BASE_PROMPT
     cfg = params.get("config", {})
@@ -4648,7 +4663,7 @@ async def _prompt_tune_handler(job_id: str, params: dict, cancel_event, progress
     all_targets = build_targets(config)
 
     # Find meta-model target
-    meta_targets = [t for t in all_targets if t.model_id == meta_model_id]
+    meta_targets = _find_target(all_targets, meta_model_id, meta_provider_key)
     eval_targets = _filter_targets(all_targets, target_model_ids, target_set_eval)
 
     # Inject user keys
@@ -4966,6 +4981,7 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
     _target_models_body = {"targets": body.get("target_targets"), "models": body.get("target_models", [])}
     target_model_ids, target_set_eval = _parse_target_selection(_target_models_body)
     meta_model_id = body.get("meta_model", "")
+    meta_provider_key = body.get("meta_provider_key")
     mode = body.get("mode", "quick")
     base_prompt = body.get("base_prompt") or _DEFAULT_BASE_PROMPT
     cfg = body.get("config", {})
@@ -5002,7 +5018,7 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
     all_targets = build_targets(config)
 
     # Find meta-model target
-    meta_targets = [t for t in all_targets if t.model_id == meta_model_id]
+    meta_targets = _find_target(all_targets, meta_model_id, meta_provider_key)
     if not meta_targets:
         return JSONResponse({"error": f"Meta model '{meta_model_id}' not found in config"}, status_code=400)
 
@@ -5022,6 +5038,7 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
         "target_models": target_model_ids,
         "target_set": [list(t) for t in target_set_eval] if target_set_eval else None,
         "meta_model": meta_model_id,
+        "meta_provider_key": meta_provider_key,
         "mode": mode,
         "base_prompt": base_prompt,
         "config": cfg,
@@ -5412,6 +5429,7 @@ async def _judge_handler(job_id: str, params: dict, cancel_event, progress_cb) -
     user_id = params["user_id"]
     eval_run_id = params["eval_run_id"]
     judge_model_id = params["judge_model"]
+    judge_provider_key = params.get("judge_provider_key")
     custom_instructions = params.get("custom_instructions", "")
     concurrency = int(params.get("concurrency", 4))
 
@@ -5432,7 +5450,7 @@ async def _judge_handler(job_id: str, params: dict, cancel_event, progress_cb) -
     # Build judge target
     config = await _get_user_config(user_id)
     all_targets = build_targets(config)
-    judge_targets = [t for t in all_targets if t.model_id == judge_model_id]
+    judge_targets = _find_target(all_targets, judge_model_id, judge_provider_key)
     if not judge_targets:
         return None
     judge_target = judge_targets[0]
@@ -5575,6 +5593,7 @@ async def _judge_compare_handler(job_id: str, params: dict, cancel_event, progre
     eval_run_id_a = params["eval_run_id_a"]
     eval_run_id_b = params["eval_run_id_b"]
     judge_model_id = params["judge_model"]
+    judge_provider_key = params.get("judge_provider_key")
     concurrency = int(params.get("concurrency", 4))
 
     logger.info(
@@ -5596,7 +5615,7 @@ async def _judge_compare_handler(job_id: str, params: dict, cancel_event, progre
     # Build judge target
     config = await _get_user_config(user_id)
     all_targets = build_targets(config)
-    judge_targets = [t for t in all_targets if t.model_id == judge_model_id]
+    judge_targets = _find_target(all_targets, judge_model_id, judge_provider_key)
     if not judge_targets:
         return None
     judge_target = judge_targets[0]
@@ -5780,6 +5799,7 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
     body = await request.json()
     eval_run_id = body.get("eval_run_id")
     judge_model_id = body.get("judge_model")
+    judge_provider_key = body.get("judge_provider_key")
     custom_instructions = body.get("custom_instructions", "")
     concurrency = body.get("concurrency", 4)
 
@@ -5809,7 +5829,7 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
     # Validate judge model exists
     config = await _get_user_config(user["id"])
     all_targets = build_targets(config)
-    judge_targets = [t for t in all_targets if t.model_id == judge_model_id]
+    judge_targets = _find_target(all_targets, judge_model_id, judge_provider_key)
     if not judge_targets:
         return JSONResponse({"error": f"Judge model '{judge_model_id}' not found in config"}, status_code=400)
 
@@ -5820,6 +5840,7 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
         "user_email": user.get("email", ""),
         "eval_run_id": eval_run_id,
         "judge_model": judge_model_id,
+        "judge_provider_key": judge_provider_key,
         "custom_instructions": custom_instructions,
         "concurrency": concurrency,
     }
@@ -5844,6 +5865,7 @@ async def run_judge_compare(request: Request, user: dict = Depends(auth.get_curr
     eval_run_id_a = body.get("eval_run_id_a")
     eval_run_id_b = body.get("eval_run_id_b")
     judge_model_id = body.get("judge_model")
+    judge_provider_key = body.get("judge_provider_key")
     concurrency = body.get("concurrency", 4)
 
     if not eval_run_id_a or not eval_run_id_b:
@@ -5883,7 +5905,7 @@ async def run_judge_compare(request: Request, user: dict = Depends(auth.get_curr
     # Validate judge model exists
     config = await _get_user_config(user["id"])
     all_targets = build_targets(config)
-    judge_targets = [t for t in all_targets if t.model_id == judge_model_id]
+    judge_targets = _find_target(all_targets, judge_model_id, judge_provider_key)
     if not judge_targets:
         return JSONResponse({"error": f"Judge model '{judge_model_id}' not found in config"}, status_code=400)
 
@@ -5895,6 +5917,7 @@ async def run_judge_compare(request: Request, user: dict = Depends(auth.get_curr
         "eval_run_id_a": eval_run_id_a,
         "eval_run_id_b": eval_run_id_b,
         "judge_model": judge_model_id,
+        "judge_provider_key": judge_provider_key,
         "concurrency": concurrency,
     }
 

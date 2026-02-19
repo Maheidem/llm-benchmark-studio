@@ -9472,9 +9472,11 @@
       if (!config || !config.providers) return;
       let html = '';
       for (const [provName, provData] of Object.entries(config.providers)) {
+        const pk = provData.provider_key || provName;
         const models = getProviderModels(provData);
         for (const m of models) {
-          html += `<option value="${m.model_id}" ${m.model_id === current ? 'selected' : ''}>${m.display_name || m.model_id} (${provName})</option>`;
+          const ck = pk + '::' + m.model_id;
+          html += `<option value="${ck}" ${ck === current ? 'selected' : ''}>${m.display_name || m.model_id} (${provName})</option>`;
         }
       }
       sel.innerHTML = html;
@@ -9511,8 +9513,9 @@
       const suiteId = document.getElementById('prtSuiteSelect').value;
       if (!suiteId) { showToast('Please select a tool eval suite', 'error'); return; }
       if (prtSelectedModels.size === 0) { showToast('Please select at least one target model', 'error'); return; }
-      const metaModel = document.getElementById('prtMetaModel').value;
-      if (!metaModel) { showToast('Please select a meta-model', 'error'); return; }
+      const metaModelRaw = document.getElementById('prtMetaModel').value;
+      if (!metaModelRaw) { showToast('Please select a meta-model', 'error'); return; }
+      const metaParsed = metaModelRaw.includes('::') ? _bmParseCompoundKey(metaModelRaw) : { provider_key: '', model_id: metaModelRaw };
 
       const popSize = parseInt(document.getElementById('prtPopSize').value) || 5;
       const temperature = parseFloat(document.getElementById('prtTemperature').value) || 0.0;
@@ -9528,7 +9531,8 @@
       const body = {
         suite_id: suiteId,
         target_models: Array.from(prtSelectedModels),
-        meta_model: metaModel,
+        meta_model: metaParsed.model_id,
+        meta_provider_key: metaParsed.provider_key || undefined,
         mode: prtMode,
         config: cfg
       };
@@ -10152,13 +10156,18 @@
 
     function jgPopulateJudgeModel() {
       const sel = document.getElementById('jgJudgeModel');
-      const current = sel.value || (_p10Settings?.judge?.model_id || '');
+      const savedPk = _p10Settings?.judge?.provider_key || '';
+      const savedMid = _p10Settings?.judge?.model_id || '';
+      const savedCompound = savedPk && savedMid ? (savedPk + '::' + savedMid) : savedMid;
+      const current = sel.value || savedCompound;
       if (!config || !config.providers) return;
       let html = '';
       for (const [provName, provData] of Object.entries(config.providers)) {
+        const pk = provData.provider_key || provName;
         const models = getProviderModels(provData);
         for (const m of models) {
-          html += `<option value="${m.model_id}" ${m.model_id === current ? 'selected' : ''}>${m.display_name || m.model_id} (${provName})</option>`;
+          const ck = pk + '::' + m.model_id;
+          html += `<option value="${ck}" ${ck === current ? 'selected' : ''}>${m.display_name || m.model_id} (${provName})</option>`;
         }
       }
       sel.innerHTML = html;
@@ -10179,16 +10188,22 @@
         const modeSel = document.getElementById('jgMode');
         if (modeSel && j.mode) modeSel.value = j.mode;
         const modelSel = document.getElementById('jgJudgeModel');
-        if (modelSel && j.model_id) modelSel.value = j.model_id;
+        if (modelSel && j.model_id) {
+          const ck = j.provider_key ? (j.provider_key + '::' + j.model_id) : j.model_id;
+          modelSel.value = ck;
+        }
       }
     }
 
     function jgGetConfig() {
       if (!jgEnabled) return null;
+      const raw = document.getElementById('jgJudgeModel').value;
+      const parsed = _bmParseCompoundKey(raw);
       return {
         enabled: true,
         mode: document.getElementById('jgMode').value,
-        judge_model: document.getElementById('jgJudgeModel').value,
+        judge_model: parsed.model_id,
+        judge_provider_key: parsed.provider_key,
         custom_instructions: _p10Settings?.judge?.custom_instructions || '',
       };
     }
@@ -10373,15 +10388,18 @@
     async function jgRunPostEval(evalRunId) {
       if (!evalRunId) { showToast('No eval run selected', 'error'); return; }
 
-      // Get judge model from inline panel, or fall back to saved settings
-      let judgeModel = document.getElementById('jgJudgeModel')?.value;
-      if (!judgeModel && _p10Settings?.judge?.model_id) {
-        judgeModel = _p10Settings.judge.model_id;
+      // Get judge model from inline panel, or fall back to saved settings (compound key)
+      let judgeRaw = document.getElementById('jgJudgeModel')?.value;
+      if (!judgeRaw && _p10Settings?.judge?.provider_key && _p10Settings?.judge?.model_id) {
+        judgeRaw = _p10Settings.judge.provider_key + '::' + _p10Settings.judge.model_id;
+      } else if (!judgeRaw && _p10Settings?.judge?.model_id) {
+        judgeRaw = _p10Settings.judge.model_id;  // Legacy fallback
       }
-      if (!judgeModel) {
+      if (!judgeRaw) {
         showToast('No judge model configured. Set one in Settings > LLM Judge.', 'error');
         return;
       }
+      const judgeParsed = judgeRaw.includes('::') ? _bmParseCompoundKey(judgeRaw) : { provider_key: '', model_id: judgeRaw };
 
       // Reset
       jgVerdicts = [];
@@ -10396,7 +10414,7 @@
         const res = await apiFetch('/api/tool-eval/judge', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ eval_run_id: evalRunId, judge_model: judgeModel, custom_instructions: _p10Settings?.judge?.custom_instructions || '', concurrency: _p10Settings?.judge?.concurrency || 4 })
+          body: JSON.stringify({ eval_run_id: evalRunId, judge_model: judgeParsed.model_id, judge_provider_key: judgeParsed.provider_key || undefined, custom_instructions: _p10Settings?.judge?.custom_instructions || '', concurrency: _p10Settings?.judge?.concurrency || 4 })
         });
 
         if (res.status === 409) { showToast('Another operation is running', 'error'); return; }
@@ -10429,13 +10447,15 @@
     async function jgStartCompare(evalRunIdA, evalRunIdB) {
       if (!evalRunIdA || !evalRunIdB) { showToast('Select two eval runs to compare', 'error'); return; }
 
-      const judgeModel = document.getElementById('jgJudgeModel')?.value;
-      if (!judgeModel) {
+      let judgeRaw = document.getElementById('jgJudgeModel')?.value;
+      if (!judgeRaw) {
         // Use first available model
         jgPopulateJudgeModel();
         const sel = document.getElementById('jgJudgeModel');
         if (!sel?.value) { showToast('No judge model available', 'error'); return; }
+        judgeRaw = sel.value;
       }
+      const judgeParsed = judgeRaw.includes('::') ? _bmParseCompoundKey(judgeRaw) : { provider_key: '', model_id: judgeRaw };
 
       jgCompCases = [];
       jgCompTotal = 0;
@@ -10452,7 +10472,8 @@
           body: JSON.stringify({
             eval_run_id_a: evalRunIdA,
             eval_run_id_b: evalRunIdB,
-            judge_model: document.getElementById('jgJudgeModel')?.value || '',
+            judge_model: judgeParsed.model_id,
+            judge_provider_key: judgeParsed.provider_key || undefined,
             concurrency: _p10Settings?.judge?.concurrency || 4
           })
         });
@@ -11441,7 +11462,10 @@
         jToggle.checked = true;
         jgTogglePanel(); // triggers panel show + model populate
         const jModel = document.getElementById('jgJudgeModel');
-        if (jModel && j.model_id) jModel.value = j.model_id;
+        if (jModel && j.model_id) {
+          const ck = j.provider_key ? (j.provider_key + '::' + j.model_id) : j.model_id;
+          jModel.value = ck;
+        }
         const jMode = document.getElementById('jgMode');
         if (jMode && j.mode) jMode.value = j.mode;
       }
@@ -12350,12 +12374,17 @@
     function p10PopulateJudgeModelDropdown() {
       const sel = document.getElementById('p10JudgeModel');
       if (!sel || !config || !config.providers) return;
-      const current = sel.value || (_p10Settings?.judge?.model_id || '');
+      const savedPk = _p10Settings?.judge?.provider_key || '';
+      const savedMid = _p10Settings?.judge?.model_id || '';
+      const savedCompound = savedPk && savedMid ? (savedPk + '::' + savedMid) : savedMid;
+      const current = sel.value || savedCompound;
       let html = '<option value="">-- Select a model --</option>';
       for (const [provName, provData] of Object.entries(config.providers)) {
+        const pk = provData.provider_key || provName;
         const models = getProviderModels(provData);
         for (const m of models) {
-          html += `<option value="${m.model_id}" ${m.model_id === current ? 'selected' : ''}>${m.display_name || m.model_id} (${provName})</option>`;
+          const ck = pk + '::' + m.model_id;
+          html += `<option value="${ck}" ${ck === current ? 'selected' : ''}>${m.display_name || m.model_id} (${provName})</option>`;
         }
       }
       sel.innerHTML = html;
@@ -12370,7 +12399,10 @@
       // Judge
       p10PopulateJudgeModelDropdown();
       const jmSel = document.getElementById('p10JudgeModel');
-      if (jmSel && j.model_id) jmSel.value = j.model_id;
+      if (jmSel && j.model_id) {
+        const ck = j.provider_key ? (j.provider_key + '::' + j.model_id) : j.model_id;
+        jmSel.value = ck;
+      }
       const jmMode = document.getElementById('p10JudgeMode');
       if (jmMode && j.mode) jmMode.value = j.mode;
       const jTemp = document.getElementById('p10JudgeTemp');
@@ -12650,10 +12682,13 @@
     }
 
     function p10CollectUI() {
+      const _p10JudgeRaw = document.getElementById('p10JudgeModel')?.value || '';
+      const _p10JudgeParsed = _p10JudgeRaw.includes('::') ? _bmParseCompoundKey(_p10JudgeRaw) : { provider_key: '', model_id: _p10JudgeRaw };
       return {
         judge: {
           enabled: document.getElementById('p10JudgeEnabled')?.checked || false,
-          model_id: document.getElementById('p10JudgeModel')?.value || '',
+          model_id: _p10JudgeParsed.model_id,
+          provider_key: _p10JudgeParsed.provider_key,
           mode: document.getElementById('p10JudgeMode')?.value || 'post_eval',
           temperature: parseFloat(document.getElementById('p10JudgeTemp')?.value) || 0.0,
           max_tokens: parseInt(document.getElementById('p10JudgeMaxTokens')?.value) || 4096,
