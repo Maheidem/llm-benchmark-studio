@@ -24,11 +24,13 @@ from pathlib import Path
 import litellm
 import yaml
 
-# Disable OpenAI SDK's built-in retry loop (default max_retries=2).
-# We handle retries ourselves in _generate_prompts_meta and _call_judge_model
-# with exponential backoff. Without this, OpenAI-compatible endpoints (LM Studio)
-# trigger infinite retry loops at the SDK level.
+# Disable retry loops at two layers:
+# 1. LiteLLM wrapper (default num_retries=2) — we handle retries ourselves
+#    in _generate_prompts_meta and _call_judge_model with exponential backoff.
+# 2. OpenAI SDK internal (default max_retries=2) — without this, OpenAI-compatible
+#    endpoints (LM Studio) trigger invisible retry loops inside the SDK.
 litellm.num_retries = 0
+os.environ.setdefault("OPENAI_MAX_RETRIES", "0")
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Depends, WebSocket, WebSocketDisconnect
@@ -545,9 +547,6 @@ def _target_key(target: Target) -> str:
 # Per-user concurrency guards
 _user_locks: dict[str, asyncio.Lock] = {}
 _user_cancel: dict[str, asyncio.Event] = {}
-_prompt_tune_cancel: dict[str, asyncio.Event] = {}
-
-
 def _get_user_lock(user_id: str) -> asyncio.Lock:
     if user_id not in _user_locks:
         _user_locks[user_id] = asyncio.Lock()
@@ -558,12 +557,6 @@ def _get_user_cancel(user_id: str) -> asyncio.Event:
     if user_id not in _user_cancel:
         _user_cancel[user_id] = asyncio.Event()
     return _user_cancel[user_id]
-
-
-def _get_prompt_tune_cancel(user_id: str) -> asyncio.Event:
-    if user_id not in _prompt_tune_cancel:
-        _prompt_tune_cancel[user_id] = asyncio.Event()
-    return _prompt_tune_cancel[user_id]
 
 
 # Rate limiter
@@ -4379,8 +4372,9 @@ Generate {n} variations, each with a DIFFERENT approach. Vary structure, tone, a
 
 Suggested styles: concise & direct, detailed & explicit, structured (numbered rules), conversational, technical/specification-like.
 
-Return ONLY a JSON array: [{{"style": "concise", "prompt": "..."}}, ...]
-Do not include any text before or after the JSON array."""
+Return a JSON object with a "prompts" key containing an array:
+{{"prompts": [{{"style": "concise", "prompt": "..."}}, ...]}}
+Do not include any text before or after the JSON object."""
 
 _EVO_META_PROMPT = """You are a prompt evolution expert. You are mutating winning system prompts to create the next generation.
 
@@ -4398,39 +4392,57 @@ Create {n} new variations by mutating the parent prompts. For each:
 - Try at least one bold mutation (significantly different approach)
 - Try at least one conservative mutation (small refinement of best parent)
 
-Return ONLY a JSON array: [{{"parent_index": 0, "mutation_type": "bold", "prompt": "..."}}, ...]
-Do not include any text before or after the JSON array."""
+Return a JSON object with a "prompts" key containing an array:
+{{"prompts": [{{"parent_index": 0, "mutation_type": "bold", "prompt": "..."}}, ...]}}
+Do not include any text before or after the JSON object."""
 
 _DEFAULT_BASE_PROMPT = "You are a helpful assistant that uses tools to answer questions. When the user asks you to perform an action, use the appropriate tool."
 
 
 def _parse_meta_response(text: str) -> list[dict]:
-    """Parse JSON array from meta-model response. Uses regex fallback."""
+    """Parse JSON from meta-model response.
+
+    Handles (in order):
+    1. {"prompts": [...]} wrapper (JSON object mode)
+    2. Bare JSON array
+    3. Markdown code block stripping
+    4. Regex fallback for embedded arrays
+    """
     text = text.strip()
-    # Try direct JSON parse
-    try:
-        data = json.loads(text)
+
+    # Helper: unwrap {"prompts": [...]} or return list directly
+    def _unwrap(data):
         if isinstance(data, list):
             return data
+        if isinstance(data, dict) and isinstance(data.get("prompts"), list):
+            return data["prompts"]
+        return None
+
+    # Try direct JSON parse
+    try:
+        result = _unwrap(json.loads(text))
+        if result is not None:
+            return result
     except json.JSONDecodeError:
         pass
     # Strip markdown code blocks and try again
     stripped = re.sub(r'```(?:json)?\s*', '', text).strip()
     try:
-        data = json.loads(stripped)
-        if isinstance(data, list):
-            return data
+        result = _unwrap(json.loads(stripped))
+        if result is not None:
+            return result
     except json.JSONDecodeError:
         pass
-    # Regex fallback: find JSON array in response
-    match = re.search(r'\[[\s\S]*\]', stripped)
-    if match:
-        try:
-            data = json.loads(match.group())
-            if isinstance(data, list):
-                return data
-        except json.JSONDecodeError:
-            pass
+    # Regex fallback: find JSON object or array in response
+    for pattern in (r'\{[\s\S]*\}', r'\[[\s\S]*\]'):
+        match = re.search(pattern, stripped)
+        if match:
+            try:
+                result = _unwrap(json.loads(match.group()))
+                if result is not None:
+                    return result
+            except json.JSONDecodeError:
+                pass
     logger.debug("_parse_meta_response: all parse strategies failed, returning empty list")
     return []
 
@@ -4464,6 +4476,7 @@ async def _generate_prompts_meta(
         "messages": [{"role": "user", "content": formatted}],
         "timeout": 120,
         "num_retries": 0,  # We handle retries ourselves with backoff
+        "response_format": {"type": "json_object"},
     }
     if meta_target.api_base:
         kwargs["api_base"] = meta_target.api_base
@@ -4476,6 +4489,7 @@ async def _generate_prompts_meta(
     ))
 
     last_exc: Exception | None = None
+    _json_mode_supported = True  # Assume supported; disable on first BadRequestError
     for attempt in range(1, _max_retries + 1):
         try:
             response = await litellm.acompletion(**kwargs)
@@ -4492,6 +4506,17 @@ async def _generate_prompts_meta(
                 await asyncio.sleep(_base_delay * (2 ** (attempt - 1)))
                 continue
             return []  # All retries exhausted with empty results
+        except litellm.exceptions.BadRequestError as exc:
+            # Some models don't support response_format — retry without it
+            if _json_mode_supported and "response_format" in kwargs:
+                logger.info(
+                    "Meta model rejected response_format (attempt %d/%d): %s — retrying without JSON mode",
+                    attempt, _max_retries, exc,
+                )
+                _json_mode_supported = False
+                kwargs.pop("response_format", None)
+                continue  # Don't count this as a retry attempt
+            raise
         except _META_RETRYABLE_ERRORS as exc:
             last_exc = exc
             if attempt < _max_retries:
@@ -4532,9 +4557,363 @@ def _build_test_cases_summary(cases: list) -> str:
     return "\n".join(parts)
 
 
+async def _prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_cb) -> str | None:
+    """Job registry handler for prompt tuning (Quick or Evolutionary).
+
+    Extracts core logic from the old SSE generator.
+    Returns the tune_id on success, or None on cancel.
+    """
+    user_id = params["user_id"]
+    suite_id = params["suite_id"]
+    target_model_ids = params["target_models"]
+    _raw_ts = params.get("target_set")
+    target_set_eval = {tuple(t) for t in _raw_ts} if _raw_ts else None
+    meta_model_id = params["meta_model"]
+    mode = params.get("mode", "quick")
+    base_prompt = params.get("base_prompt") or _DEFAULT_BASE_PROMPT
+    cfg = params.get("config", {})
+
+    population_size = int(cfg.get("population_size", 5))
+    generations = int(cfg.get("generations", 1 if mode == "quick" else 3))
+    selection_ratio = float(cfg.get("selection_ratio", 0.4))
+    eval_temperature = float(cfg.get("temperature", 0.0))
+    eval_tool_choice = cfg.get("tool_choice", "required")
+
+    if mode == "quick":
+        generations = 1
+
+    population_size = max(3, min(population_size, 20))
+    generations = max(1, min(generations, 10))
+    selection_ratio = max(0.2, min(selection_ratio, 0.8))
+    total_prompts = population_size * generations
+
+    logger.info(
+        "Prompt tune started: job_id=%s user_id=%s mode=%s total_prompts=%d",
+        job_id, user_id, mode, total_prompts,
+    )
+
+    # Load suite + test cases
+    suite = await db.get_tool_suite(suite_id, user_id)
+    cases = await db.get_test_cases(suite_id)
+    tools = json.loads(suite["tools_json"])
+
+    # Build targets
+    config = await _get_user_config(user_id)
+    all_targets = build_targets(config)
+
+    # Find meta-model target
+    meta_targets = [t for t in all_targets if t.model_id == meta_model_id]
+    eval_targets = _filter_targets(all_targets, target_model_ids, target_set_eval)
+
+    # Inject user keys
+    user_keys_cache = {}
+    for t in meta_targets + eval_targets:
+        if t.provider_key and t.provider_key not in user_keys_cache:
+            encrypted = await db.get_user_key_for_provider(user_id, t.provider_key)
+            if encrypted:
+                user_keys_cache[t.provider_key] = encrypted
+    meta_targets = inject_user_keys(meta_targets, user_keys_cache)
+    eval_targets = inject_user_keys(eval_targets, user_keys_cache)
+
+    meta_target = meta_targets[0]
+
+    tools_summary = _build_tools_summary(tools)
+    test_cases_summary = _build_test_cases_summary(cases)
+    total_eval_calls = total_prompts * len(cases) * len(eval_targets)
+
+    # Pre-create DB record
+    tune_id = await db.save_prompt_tune_run(
+        user_id=user_id,
+        suite_id=suite["id"],
+        suite_name=suite["name"],
+        mode=mode,
+        target_models_json=json.dumps(target_model_ids),
+        meta_model=meta_model_id,
+        base_prompt=base_prompt,
+        config_json=json.dumps(cfg),
+        total_prompts=total_prompts,
+    )
+
+    # Store result_ref early so the frontend can discover tune_id on reconnect
+    await db.set_job_result_ref(job_id, tune_id)
+
+    # Helper to send WebSocket messages directly to the user
+    async def _ws_send(payload: dict):
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, payload)
+
+    # Notify frontend of tune start
+    await _ws_send({
+        "type": "tune_start",
+        "job_id": job_id,
+        "tune_id": tune_id,
+        "mode": mode,
+        "total_prompts": total_prompts,
+        "total_eval_calls": total_eval_calls,
+        "suite_name": suite["name"],
+    })
+
+    start_time = time.perf_counter()
+    all_generations = []
+    completed_prompts = 0
+    best_prompt = None
+    best_score = 0.0
+    survivors = []  # For evolutionary mode
+
+    for gen_num in range(1, generations + 1):
+        if cancel_event.is_set():
+            break
+
+        await _ws_send({
+            "type": "generation_start",
+            "job_id": job_id,
+            "tune_id": tune_id,
+            "generation": gen_num,
+            "total_generations": generations,
+            "population_size": population_size,
+        })
+
+        # --- Generate prompts ---
+        if gen_num == 1 or mode == "quick":
+            raw_prompts = await _generate_prompts_meta(
+                meta_target, _QUICK_META_PROMPT,
+                n=population_size,
+                tools_summary=tools_summary,
+                test_cases_summary=test_cases_summary,
+                base_prompt=base_prompt,
+            )
+        else:
+            parent_text = "\n".join(
+                f"#{i+1} (score={s['avg_score']:.2f}): \"{s['text'][:200]}...\""
+                for i, s in enumerate(survivors)
+            )
+            raw_prompts = await _generate_prompts_meta(
+                meta_target, _EVO_META_PROMPT,
+                n=population_size,
+                tools_summary=tools_summary,
+                test_cases_summary=test_cases_summary,
+                parent_prompts=parent_text,
+            )
+
+        # Handle empty meta response
+        if not raw_prompts:
+            logger.warning(
+                "Meta model returned 0 prompts for generation %d — skipping",
+                gen_num,
+            )
+            await _ws_send({
+                "type": "generation_error",
+                "job_id": job_id,
+                "tune_id": tune_id,
+                "generation": gen_num,
+                "message": "Meta model returned no prompts. Skipping generation.",
+            })
+            continue
+
+        # Normalize to list of prompt dicts
+        gen_prompts = []
+        for idx, rp in enumerate(raw_prompts[:population_size]):
+            text = rp.get("prompt", "") if isinstance(rp, dict) else str(rp)
+            style = rp.get("style", rp.get("mutation_type", "variation")) if isinstance(rp, dict) else "variation"
+            parent_idx = rp.get("parent_index") if isinstance(rp, dict) else None
+            gen_prompts.append({
+                "index": idx,
+                "style": style,
+                "text": text,
+                "parent_index": parent_idx,
+                "mutation_type": rp.get("mutation_type") if isinstance(rp, dict) else None,
+                "scores": {},
+                "avg_score": 0.0,
+                "survived": False,
+            })
+
+            await _ws_send({
+                "type": "prompt_generated",
+                "job_id": job_id,
+                "tune_id": tune_id,
+                "generation": gen_num,
+                "prompt_index": idx,
+                "prompt_text": text[:300],
+                "style": style,
+                "parent_prompt": parent_idx,
+            })
+
+        # --- Evaluate each prompt ---
+        for p_info in gen_prompts:
+            if cancel_event.is_set():
+                break
+
+            model_scores = {}
+            for target in eval_targets:
+                if cancel_event.is_set():
+                    break
+
+                await _ws_send({
+                    "type": "prompt_eval_start",
+                    "job_id": job_id,
+                    "tune_id": tune_id,
+                    "generation": gen_num,
+                    "prompt_index": p_info["index"],
+                    "model": target.display_name,
+                })
+
+                # Run all test cases with this prompt as system_prompt
+                case_results = []
+                for case in cases:
+                    if cancel_event.is_set():
+                        break
+                    _record_rate_limit(user_id)
+
+                    # Dispatch: multi-turn or single-turn
+                    mt_config = None
+                    if case.get("multi_turn_config"):
+                        try:
+                            mt_config = json.loads(case["multi_turn_config"]) if isinstance(case["multi_turn_config"], str) else case["multi_turn_config"]
+                        except (json.JSONDecodeError, TypeError):
+                            mt_config = None
+
+                    if mt_config and mt_config.get("multi_turn"):
+                        case_with_mt = {**case, "_mt_config": mt_config}
+                        r = await run_multi_turn_eval(
+                            target, tools, case_with_mt, eval_temperature,
+                            eval_tool_choice, system_prompt=p_info["text"],
+                        )
+                    else:
+                        r = await run_single_eval(
+                            target, tools, case, eval_temperature,
+                            eval_tool_choice, system_prompt=p_info["text"],
+                        )
+                    case_results.append(r)
+
+                # Compute scores
+                overall_scores = [r["overall_score"] for r in case_results if r.get("success")]
+                tool_scores = [r["tool_selection_score"] for r in case_results if r.get("success")]
+                param_scores = [r["param_accuracy"] for r in case_results if r.get("success") and r.get("param_accuracy") is not None]
+
+                avg_overall = sum(overall_scores) / len(overall_scores) if overall_scores else 0.0
+                model_scores[target.model_id] = {
+                    "overall": round(avg_overall, 4),
+                    "tool_acc": round(sum(tool_scores) / len(tool_scores) * 100, 2) if tool_scores else 0.0,
+                    "param_acc": round(sum(param_scores) / len(param_scores) * 100, 2) if param_scores else 0.0,
+                }
+
+                await _ws_send({
+                    "type": "prompt_eval_result",
+                    "job_id": job_id,
+                    "tune_id": tune_id,
+                    "generation": gen_num,
+                    "prompt_index": p_info["index"],
+                    "model_id": target.model_id,
+                    "overall_score": model_scores[target.model_id]["overall"],
+                    "tool_accuracy": model_scores[target.model_id]["tool_acc"],
+                    "param_accuracy": model_scores[target.model_id]["param_acc"],
+                })
+
+            p_info["scores"] = model_scores
+            all_model_scores = [s["overall"] for s in model_scores.values()]
+            p_info["avg_score"] = round(sum(all_model_scores) / len(all_model_scores), 4) if all_model_scores else 0.0
+
+            completed_prompts += 1
+
+            # Track global best
+            if p_info["avg_score"] > best_score:
+                best_score = p_info["avg_score"]
+                best_prompt = p_info["text"]
+
+            # Update job progress
+            pct = int((completed_prompts / total_prompts) * 100) if total_prompts > 0 else 0
+            detail = f"Gen {gen_num}/{generations}, prompt {completed_prompts}/{total_prompts}"
+            await progress_cb(pct, detail)
+
+        # --- Selection (Evolutionary mode) ---
+        gen_prompts.sort(key=lambda p: p["avg_score"], reverse=True)
+        n_survivors = max(1, int(len(gen_prompts) * selection_ratio))
+        for i, p in enumerate(gen_prompts):
+            p["survived"] = i < n_survivors
+
+        survivors = [p for p in gen_prompts if p["survived"]]
+
+        gen_best = gen_prompts[0] if gen_prompts else None
+        all_generations.append({
+            "generation": gen_num,
+            "prompts": gen_prompts,
+            "best_index": gen_best["index"] if gen_best else None,
+            "best_score": gen_best["avg_score"] if gen_best else 0.0,
+        })
+
+        await _ws_send({
+            "type": "generation_complete",
+            "job_id": job_id,
+            "tune_id": tune_id,
+            "generation": gen_num,
+            "best_score": gen_best["avg_score"] if gen_best else 0.0,
+            "best_prompt_index": gen_best["index"] if gen_best else None,
+            "survivors": [p["index"] for p in survivors],
+        })
+
+        # Incrementally save results to DB
+        await db.update_prompt_tune_run(
+            tune_id, user_id,
+            generations_json=json.dumps(all_generations),
+            best_prompt=best_prompt,
+            best_score=best_score,
+            completed_prompts=completed_prompts,
+        )
+
+    # --- Tuning complete ---
+    duration = time.perf_counter() - start_time
+
+    if cancel_event.is_set():
+        await db.update_prompt_tune_run(
+            tune_id, user_id,
+            generations_json=json.dumps(all_generations),
+            best_prompt=best_prompt,
+            best_score=best_score,
+            completed_prompts=completed_prompts,
+            status="cancelled",
+            duration_s=round(duration, 2),
+        )
+        return None
+
+    await db.update_prompt_tune_run(
+        tune_id, user_id,
+        generations_json=json.dumps(all_generations),
+        best_prompt=best_prompt,
+        best_score=best_score,
+        completed_prompts=completed_prompts,
+        status="completed",
+        duration_s=round(duration, 2),
+    )
+
+    # Send completion event to frontend
+    await _ws_send({
+        "type": "tune_complete",
+        "job_id": job_id,
+        "tune_id": tune_id,
+        "best_prompt": best_prompt,
+        "best_score": best_score,
+        "duration_s": round(duration, 2),
+    })
+
+    logger.info(
+        "Prompt tune completed: job_id=%s tune_id=%s user_id=%s prompts=%d best_score=%.4f",
+        job_id, tune_id, user_id, completed_prompts, best_score,
+    )
+
+    return tune_id
+
+
+# Register the prompt tune handler with the job registry
+job_registry.register_handler("prompt_tune", _prompt_tune_handler)
+
+
 @app.post("/api/tool-eval/prompt-tune")
 async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_current_user)):
-    """Run a prompt tuning session (Quick or Evolutionary mode) via SSE."""
+    """Run a prompt tuning session (Quick or Evolutionary mode) via job registry.
+
+    Progress is delivered via WebSocket (tune_start, prompt_eval_result, etc.).
+    Returns job_id immediately.
+    """
     body = await request.json()
     suite_id = body.get("suite_id")
     # Support precise target selection for eval targets
@@ -4555,28 +4934,13 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
     if mode not in ("quick", "evolutionary"):
         return JSONResponse({"error": "mode must be 'quick' or 'evolutionary'"}, status_code=400)
 
-    population_size = int(cfg.get("population_size", 5))
-    generations = int(cfg.get("generations", 1 if mode == "quick" else 3))
-    selection_ratio = float(cfg.get("selection_ratio", 0.4))
-    eval_temperature = float(cfg.get("temperature", 0.0))
-    eval_tool_choice = cfg.get("tool_choice", "required")
-
-    if mode == "quick":
-        generations = 1  # Quick mode = single generation
-
-    population_size = max(3, min(population_size, 20))
-    generations = max(1, min(generations, 10))
-    selection_ratio = max(0.2, min(selection_ratio, 0.8))
-    total_prompts = population_size * generations
-
-    # Load suite + test cases
+    # Load suite + test cases (validate before submitting job)
     suite = await db.get_tool_suite(suite_id, user["id"])
     if not suite:
         return JSONResponse({"error": "Suite not found"}, status_code=404)
     cases = await db.get_test_cases(suite_id)
     if not cases:
         return JSONResponse({"error": "Suite has no test cases"}, status_code=400)
-    tools = json.loads(suite["tools_json"])
 
     # Rate limit check
     allowed, remaining = _check_rate_limit(user["id"])
@@ -4585,16 +4949,9 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
             {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} per hour."},
             status_code=429,
         )
+    _record_rate_limit(user["id"])
 
-    # Concurrent guard — check early so we fail fast on double-click.
-    user_lock = _get_user_lock(user["id"])
-    if user_lock.locked():
-        return JSONResponse(
-            {"error": "A prompt tune is already running"},
-            status_code=409,
-        )
-
-    # Build targets
+    # Build targets (validate models exist in config)
     config = await _get_user_config(user["id"])
     all_targets = build_targets(config)
 
@@ -4603,348 +4960,50 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
     if not meta_targets:
         return JSONResponse({"error": f"Meta model '{meta_model_id}' not found in config"}, status_code=400)
 
-    # Find eval targets (precise provider_key+model_id or legacy model_id-only)
+    # Find eval targets
     eval_targets = _filter_targets(all_targets, target_model_ids, target_set_eval)
     if not eval_targets:
         return JSONResponse({"error": "No matching target models found in config"}, status_code=400)
 
-    # Inject user keys for all targets
-    user_keys_cache = {}
-    all_needed = meta_targets + eval_targets
-    for t in all_needed:
-        if t.provider_key and t.provider_key not in user_keys_cache:
-            encrypted = await db.get_user_key_for_provider(user["id"], t.provider_key)
-            if encrypted:
-                user_keys_cache[t.provider_key] = encrypted
-    meta_targets = inject_user_keys(meta_targets, user_keys_cache)
-    eval_targets = inject_user_keys(eval_targets, user_keys_cache)
+    # Build progress detail
+    model_count = len(eval_targets)
+    progress_detail = f"Prompt Tune: {mode}, {model_count} model{'s' if model_count != 1 else ''}, {suite['name']}"
 
-    meta_target = meta_targets[0]
-    cancel_event = _get_prompt_tune_cancel(user["id"])
+    # Submit to job registry
+    job_params = {
+        "user_id": user["id"],
+        "suite_id": suite_id,
+        "target_models": target_model_ids,
+        "target_set": [list(t) for t in target_set_eval] if target_set_eval else None,
+        "meta_model": meta_model_id,
+        "mode": mode,
+        "base_prompt": base_prompt,
+        "config": cfg,
+    }
 
-    tools_summary = _build_tools_summary(tools)
-    test_cases_summary = _build_test_cases_summary(cases)
-
-    total_eval_calls = total_prompts * len(cases) * len(eval_targets)
-
-    # Acquire lock atomically AFTER all validation passes.
-    # This prevents the double-click race: if two requests pass the
-    # early locked() check above, only one acquires here; the other
-    # blocks until the first finishes (and gets 409 on next attempt).
-    # The lock is released in the generator's finally block.
-    if user_lock.locked():
-        return JSONResponse(
-            {"error": "A prompt tune is already running"},
-            status_code=409,
-        )
-    await user_lock.acquire()
-
-    # Pre-create DB record
-    tune_id = await db.save_prompt_tune_run(
+    job_id = await job_registry.submit(
+        job_type="prompt_tune",
         user_id=user["id"],
-        suite_id=suite["id"],
-        suite_name=suite["name"],
-        mode=mode,
-        target_models_json=json.dumps(target_model_ids),
-        meta_model=meta_model_id,
-        base_prompt=base_prompt,
-        config_json=json.dumps(cfg),
-        total_prompts=total_prompts,
+        params=job_params,
+        progress_detail=progress_detail,
     )
 
-    async def generate():
-        # Lock already acquired in the endpoint before generator starts.
-        cancel_event.clear()
-        start_time = time.perf_counter()
-        all_generations = []
-        completed_prompts = 0
-        best_prompt = None
-        best_score = 0.0
-        try:
-            yield _sse({
-                "type": "tune_start",
-                "tune_id": tune_id,
-                "mode": mode,
-                "total_prompts": total_prompts,
-                "total_eval_calls": total_eval_calls,
-                "suite_name": suite["name"],
-            })
-
-            survivors = []  # For evolutionary mode
-
-            for gen_num in range(1, generations + 1):
-                if cancel_event.is_set():
-                    break
-
-                yield _sse({
-                    "type": "generation_start",
-                    "generation": gen_num,
-                    "total_generations": generations,
-                    "population_size": population_size,
-                })
-
-                # --- Generate prompts ---
-                if gen_num == 1 or mode == "quick":
-                    # First gen / Quick: use variation prompt
-                    raw_prompts = await _generate_prompts_meta(
-                        meta_target, _QUICK_META_PROMPT,
-                        n=population_size,
-                        tools_summary=tools_summary,
-                        test_cases_summary=test_cases_summary,
-                        base_prompt=base_prompt,
-                    )
-                else:
-                    # Evolutionary: mutate survivors
-                    parent_text = "\n".join(
-                        f"#{i+1} (score={s['avg_score']:.2f}): \"{s['text'][:200]}...\""
-                        for i, s in enumerate(survivors)
-                    )
-                    raw_prompts = await _generate_prompts_meta(
-                        meta_target, _EVO_META_PROMPT,
-                        n=population_size,
-                        tools_summary=tools_summary,
-                        test_cases_summary=test_cases_summary,
-                        parent_prompts=parent_text,
-                    )
-
-                # Handle empty meta response (PW5)
-                if not raw_prompts:
-                    logger.warning(
-                        "Meta model returned 0 prompts for generation %d — skipping",
-                        gen_num,
-                    )
-                    yield _sse({
-                        "type": "generation_error",
-                        "generation": gen_num,
-                        "message": "Meta model returned no prompts. Skipping generation.",
-                    })
-                    continue
-
-                # Normalize to list of prompt dicts
-                gen_prompts = []
-                for idx, rp in enumerate(raw_prompts[:population_size]):
-                    text = rp.get("prompt", "") if isinstance(rp, dict) else str(rp)
-                    style = rp.get("style", rp.get("mutation_type", "variation")) if isinstance(rp, dict) else "variation"
-                    parent_idx = rp.get("parent_index") if isinstance(rp, dict) else None
-                    gen_prompts.append({
-                        "index": idx,
-                        "style": style,
-                        "text": text,
-                        "parent_index": parent_idx,
-                        "mutation_type": rp.get("mutation_type") if isinstance(rp, dict) else None,
-                        "scores": {},
-                        "avg_score": 0.0,
-                        "survived": False,
-                    })
-
-                    yield _sse({
-                        "type": "prompt_generated",
-                        "generation": gen_num,
-                        "prompt_index": idx,
-                        "prompt_text": text[:300],
-                        "style": style,
-                        "parent_prompt": parent_idx,
-                    })
-
-                # --- Evaluate each prompt ---
-                for p_info in gen_prompts:
-                    if cancel_event.is_set():
-                        break
-
-                    model_scores = {}
-                    for target in eval_targets:
-                        if cancel_event.is_set():
-                            break
-
-                        yield _sse({
-                            "type": "prompt_eval_start",
-                            "generation": gen_num,
-                            "prompt_index": p_info["index"],
-                            "model": target.display_name,
-                        })
-
-                        # Run all test cases with this prompt as system_prompt
-                        case_results = []
-                        for case in cases:
-                            if cancel_event.is_set():
-                                break
-                            _record_rate_limit(user["id"])
-
-                            # Dispatch: multi-turn or single-turn
-                            mt_config = None
-                            if case.get("multi_turn_config"):
-                                try:
-                                    mt_config = json.loads(case["multi_turn_config"]) if isinstance(case["multi_turn_config"], str) else case["multi_turn_config"]
-                                except (json.JSONDecodeError, TypeError):
-                                    mt_config = None
-
-                            if mt_config and mt_config.get("multi_turn"):
-                                case_with_mt = {**case, "_mt_config": mt_config}
-                                r = await run_multi_turn_eval(
-                                    target, tools, case_with_mt, eval_temperature,
-                                    eval_tool_choice, system_prompt=p_info["text"],
-                                )
-                            else:
-                                r = await run_single_eval(
-                                    target, tools, case, eval_temperature,
-                                    eval_tool_choice, system_prompt=p_info["text"],
-                                )
-                            case_results.append(r)
-
-                        # Compute scores
-                        overall_scores = [r["overall_score"] for r in case_results if r.get("success")]
-                        tool_scores = [r["tool_selection_score"] for r in case_results if r.get("success")]
-                        param_scores = [r["param_accuracy"] for r in case_results if r.get("success") and r.get("param_accuracy") is not None]
-
-                        avg_overall = sum(overall_scores) / len(overall_scores) if overall_scores else 0.0
-                        model_scores[target.model_id] = {
-                            "overall": round(avg_overall, 4),
-                            "tool_acc": round(sum(tool_scores) / len(tool_scores) * 100, 2) if tool_scores else 0.0,
-                            "param_acc": round(sum(param_scores) / len(param_scores) * 100, 2) if param_scores else 0.0,
-                        }
-
-                        yield _sse({
-                            "type": "prompt_eval_result",
-                            "generation": gen_num,
-                            "prompt_index": p_info["index"],
-                            "model_id": target.model_id,
-                            "overall_score": model_scores[target.model_id]["overall"],
-                            "tool_accuracy": model_scores[target.model_id]["tool_acc"],
-                            "param_accuracy": model_scores[target.model_id]["param_acc"],
-                        })
-
-                    p_info["scores"] = model_scores
-                    # Average across all target models
-                    all_model_scores = [s["overall"] for s in model_scores.values()]
-                    p_info["avg_score"] = round(sum(all_model_scores) / len(all_model_scores), 4) if all_model_scores else 0.0
-
-                    completed_prompts += 1
-
-                    # Track global best
-                    if p_info["avg_score"] > best_score:
-                        best_score = p_info["avg_score"]
-                        best_prompt = p_info["text"]
-
-                # --- Selection (Evolutionary mode) ---
-                gen_prompts.sort(key=lambda p: p["avg_score"], reverse=True)
-                n_survivors = max(1, int(len(gen_prompts) * selection_ratio))
-                for i, p in enumerate(gen_prompts):
-                    p["survived"] = i < n_survivors
-
-                survivors = [p for p in gen_prompts if p["survived"]]
-
-                gen_best = gen_prompts[0] if gen_prompts else None
-                all_generations.append({
-                    "generation": gen_num,
-                    "prompts": gen_prompts,
-                    "best_index": gen_best["index"] if gen_best else None,
-                    "best_score": gen_best["avg_score"] if gen_best else 0.0,
-                })
-
-                yield _sse({
-                    "type": "generation_complete",
-                    "generation": gen_num,
-                    "best_score": gen_best["avg_score"] if gen_best else 0.0,
-                    "best_prompt_index": gen_best["index"] if gen_best else None,
-                    "survivors": [p["index"] for p in survivors],
-                })
-
-                # Incrementally save results to DB so crash mid-tune preserves completed generations
-                await db.update_prompt_tune_run(
-                    tune_id, user["id"],
-                    generations_json=json.dumps(all_generations),
-                    best_prompt=best_prompt,
-                    best_score=best_score,
-                    completed_prompts=completed_prompts,
-                )
-
-            # --- Tuning complete ---
-            duration = time.perf_counter() - start_time
-
-            if cancel_event.is_set():
-                await db.update_prompt_tune_run(
-                    tune_id, user["id"],
-                    generations_json=json.dumps(all_generations),
-                    best_prompt=best_prompt,
-                    best_score=best_score,
-                    completed_prompts=completed_prompts,
-                    status="cancelled",
-                    duration_s=round(duration, 2),
-                )
-                yield _sse({"type": "cancelled"})
-                return
-
-            await db.update_prompt_tune_run(
-                tune_id, user["id"],
-                generations_json=json.dumps(all_generations),
-                best_prompt=best_prompt,
-                best_score=best_score,
-                completed_prompts=completed_prompts,
-                status="completed",
-                duration_s=round(duration, 2),
-            )
-
-            yield _sse({
-                "type": "tune_complete",
-                "tune_id": tune_id,
-                "best_prompt": best_prompt,
-                "best_score": best_score,
-                "duration_s": round(duration, 2),
-            })
-
-        except Exception as e:
-            duration = time.perf_counter() - start_time
-            await db.update_prompt_tune_run(
-                tune_id, user["id"],
-                generations_json=json.dumps(all_generations),
-                best_prompt=best_prompt,
-                best_score=best_score,
-                completed_prompts=completed_prompts,
-                status="error",
-                duration_s=round(duration, 2),
-            )
-            yield _sse({"type": "error", "message": sanitize_error(str(e))})
-        finally:
-            # Safety net: if run is still "running" (e.g. client disconnected,
-            # CancelledError, deploy killed the process), save partial generations
-            # and mark as "interrupted" so it doesn't stay stuck forever.
-            try:
-                run = await db.get_prompt_tune_run(tune_id, user["id"])
-                if run and run.get("status") == "running":
-                    duration = time.perf_counter() - start_time
-                    logger.warning(
-                        "Prompt tune run %s still 'running' in finally block — "
-                        "saving %d partial generations and marking as interrupted",
-                        tune_id, len(all_generations),
-                    )
-                    await db.update_prompt_tune_run(
-                        tune_id, user["id"],
-                        generations_json=json.dumps(all_generations),
-                        best_prompt=best_prompt,
-                        best_score=best_score,
-                        completed_prompts=completed_prompts,
-                        status="interrupted",
-                        duration_s=round(duration, 2),
-                    )
-            except Exception:
-                logger.exception("Failed to clean up prompt tune run %s in finally block", tune_id)
-            user_lock.release()
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "X-Accel-Buffering": "no",
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-        },
-    )
+    return {"job_id": job_id, "status": "submitted"}
 
 
 @app.post("/api/tool-eval/prompt-tune/cancel")
-async def cancel_prompt_tune(user: dict = Depends(auth.get_current_user)):
-    """Cancel a running prompt tune."""
-    _get_prompt_tune_cancel(user["id"]).set()
-    return {"status": "ok", "message": "Cancellation requested"}
+async def cancel_prompt_tune(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Cancel a running prompt tune via job registry."""
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    job_id = body.get("job_id")
+
+    if job_id:
+        cancelled = await job_registry.cancel(job_id, user["id"])
+        if cancelled:
+            return {"status": "ok", "message": "Cancellation requested"}
+        return JSONResponse({"error": "Job not found or already finished"}, status_code=404)
+
+    return JSONResponse({"error": "job_id is required"}, status_code=400)
 
 
 @app.get("/api/tool-eval/prompt-tune/estimate")

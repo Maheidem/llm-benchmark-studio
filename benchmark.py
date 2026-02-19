@@ -25,10 +25,12 @@ import tiktoken
 import litellm
 import yaml
 
-# Disable OpenAI SDK's built-in retry loop (default max_retries=2).
-# Without this, OpenAI-compatible endpoints (LM Studio) trigger infinite
-# retry loops at the SDK level.
+# Disable retry loops at two layers:
+# 1. LiteLLM wrapper (default num_retries=2) — we handle retries ourselves.
+# 2. OpenAI SDK internal (default max_retries=2) — without this, OpenAI-compatible
+#    endpoints (LM Studio) trigger invisible retry loops inside the SDK.
 litellm.num_retries = 0
+os.environ.setdefault("OPENAI_MAX_RETRIES", "0")
 from pydantic import BaseModel, ValidationError
 from dotenv import load_dotenv
 from rich import box

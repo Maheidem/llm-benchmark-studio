@@ -2709,6 +2709,16 @@
               try { _activeParamTuneRunId = sessionStorage.getItem('_ptRunId'); } catch {}
             }
           }
+          // Restore prompt tuner tracking if there's an active prompt_tune job
+          if (job.job_type === 'prompt_tune' && (job.status === 'running' || job.status === 'pending' || job.status === 'queued')) {
+            _activePromptTuneJobId = job.id;
+            if (job.result_ref) {
+              _activePromptTuneRunId = job.result_ref;
+              try { sessionStorage.setItem('_prtRunId', job.result_ref); } catch {}
+            } else if (!_activePromptTuneRunId) {
+              try { _activePromptTuneRunId = sessionStorage.getItem('_prtRunId'); } catch {}
+            }
+          }
         }
         for (const job of (msg.recent_jobs || [])) { _jobStore[job.id] = job; }
         notifRender();
@@ -2806,6 +2816,17 @@
         case 'compare_case':
         case 'compare_start':
         case 'compare_complete':
+        // Param tune domain events — pass through to inline handler
+        case 'tune_start':
+        case 'tune_complete':
+        case 'combo_result':
+        // Prompt tune domain events — pass through to inline handler
+        case 'generation_start':
+        case 'generation_complete':
+        case 'generation_error':
+        case 'prompt_generated':
+        case 'prompt_eval_start':
+        case 'prompt_eval_result':
           break;
 
         default:
@@ -2826,6 +2847,10 @@
       // Bridge: forward job events to inline tool eval and judge progress
       if (typeof _onToolEvalJobEvent === 'function') {
         _onToolEvalJobEvent(msg);
+      }
+      // Bridge: forward job events to inline prompt tuner progress
+      if (typeof _onPromptTuneJobEvent === 'function') {
+        _onPromptTuneJobEvent(msg);
       }
     }
 
@@ -2854,6 +2879,16 @@
               try { sessionStorage.setItem('_ptRunId', job.result_ref); } catch {}
             } else if (!_activeParamTuneRunId) {
               try { _activeParamTuneRunId = sessionStorage.getItem('_ptRunId'); } catch {}
+            }
+          }
+          // Restore prompt tuner tracking from hydrated jobs
+          if (job.job_type === 'prompt_tune' && ACTIVE_STATUSES.has(job.status)) {
+            _activePromptTuneJobId = job.id;
+            if (job.result_ref) {
+              _activePromptTuneRunId = job.result_ref;
+              try { sessionStorage.setItem('_prtRunId', job.result_ref); } catch {}
+            } else if (!_activePromptTuneRunId) {
+              try { _activePromptTuneRunId = sessionStorage.getItem('_prtRunId'); } catch {}
             }
           }
         }
@@ -3088,7 +3123,11 @@
           break;
         case 'prompt_tune':
           showTab('tool-eval');
-          // TODO: navigate to prompt tune history
+          if (resultRef) {
+            prtViewHistoryRun(resultRef);
+          } else {
+            showToolEvalView('prt-history');
+          }
           break;
         case 'scheduled_benchmark':
           showTab('schedules');
@@ -3146,6 +3185,8 @@
       _activeBenchmarkJobId = null;
       try { _activeParamTuneJobId = null; _activeParamTuneRunId = null; } catch {}
       try { sessionStorage.removeItem('_ptRunId'); } catch {}
+      try { _activePromptTuneJobId = null; _activePromptTuneRunId = null; } catch {}
+      try { sessionStorage.removeItem('_prtRunId'); } catch {}
       document.getElementById('notifWidget').style.display = 'none';
       const badge = document.getElementById('notifBadge');
       badge.dataset.count = '0';
@@ -9352,13 +9393,13 @@
     // -------------------------------------------------------------------
     let prtSelectedModels = new Set();
     let prtMode = 'quick';
-    let prtPrompts = [];           // all prompts from SSE
+    let prtPrompts = [];           // all prompts from WS
     let prtBestPrompt = '';
     let prtBestScoreVal = 0;
     let prtHistory = [];
     let prtRunning = false;
-    let _prtSSETimeout = null;
-    let _prtReader = null;
+    let _activePromptTuneJobId = null;
+    let _activePromptTuneRunId = null;
     let prtScoreChart = null;
     let prtGenScores = [];         // best score per generation for chart
     let prtTotalPrompts = 0;
@@ -9530,6 +9571,10 @@
       btn.classList.add('opacity-50');
       btn.innerHTML = '<div class="pulse-dot"></div> Running...';
 
+      _activePromptTuneJobId = null;
+      _activePromptTuneRunId = null;
+      try { sessionStorage.removeItem('_prtRunId'); } catch {}
+
       try {
         const res = await apiFetch('/api/tool-eval/prompt-tune', {
           method: 'POST',
@@ -9544,32 +9589,16 @@
           _prtResetStartBtn(); return;
         }
 
-        _prtReader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+        // Job-based response: {job_id, status}
+        const data = await res.json();
+        _activePromptTuneJobId = data.job_id;
+        document.getElementById('prtProgressLabel').textContent = data.status === 'submitted' ? 'Tune queued...' : 'Tune starting...';
+        showToast('Prompt tuning submitted', 'success');
 
-        while (true) {
-          const { done, value } = await _prtReader.read();
-          if (done) break;
-          _prtResetTimeout();
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try { prtHandleSSE(JSON.parse(line.slice(6))); } catch (e) {}
-            }
-          }
-        }
+        // Progress updates arrive via WebSocket (handled by _onPromptTuneJobEvent)
       } catch (e) {
-        if (e.name !== 'AbortError') {
-          showToast('Connection error: ' + (e.message || 'unknown'), 'error');
-        }
-      } finally {
-        _prtReader = null;
-        prtRunning = false;
+        showToast('Connection error: ' + (e.message || 'unknown'), 'error');
         _prtResetStartBtn();
-        _prtClearTimeout();
       }
     }
 
@@ -9577,6 +9606,11 @@
       switch (evt.type) {
         case 'tune_start':
           prtTotalPrompts = evt.total_prompts || 0;
+          // Capture tune_id for reconnection
+          if (evt.tune_id) {
+            _activePromptTuneRunId = evt.tune_id;
+            try { sessionStorage.setItem('_prtRunId', evt.tune_id); } catch {}
+          }
           document.getElementById('prtProgressLabel').textContent =
             `${evt.mode === 'evolutionary' ? 'Evolving' : 'Generating'} prompts for ${evt.suite_name || 'suite'}`;
           document.getElementById('prtProgressCount').textContent = `0/${prtTotalPrompts}`;
@@ -9829,8 +9863,12 @@
     }
 
     async function prtCancelTune() {
+      if (!_activePromptTuneJobId) {
+        showToast('No active prompt tuning job', 'error');
+        return;
+      }
       try {
-        await apiFetch('/api/tool-eval/prompt-tune/cancel', { method: 'POST' });
+        await notifCancelJob(_activePromptTuneJobId);
         showToast('Cancelling prompt tuning...', 'success');
       } catch (e) {
         showToast('Failed to cancel', 'error');
@@ -9982,18 +10020,81 @@
       btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg> Start Prompt Tuning';
     }
 
-    function _prtResetTimeout() {
-      _prtClearTimeout();
-      _prtSSETimeout = setTimeout(() => {
-        showToast('Connection timed out', 'error');
-        const lbl = document.getElementById('prtProgressLabel');
-        if (lbl) lbl.textContent = 'Connection timed out';
-        if (_prtReader) { _prtReader.cancel(); _prtReader = null; }
-        prtRunning = false;
-        _prtResetStartBtn();
-      }, 30000);
+    // WebSocket event bridge for inline prompt tuner progress
+    function _onPromptTuneJobEvent(msg) {
+      // Accept events from the known active job, or auto-associate in reconnection mode
+      if (_activePromptTuneJobId && msg.job_id !== _activePromptTuneJobId) return;
+      if (!_activePromptTuneJobId) {
+        if (!_activePromptTuneRunId) return; // Not in reconnection mode
+        _activePromptTuneJobId = msg.job_id;
+      }
+
+      switch (msg.type) {
+        case 'job_started':
+          document.getElementById('prtProgressLabel').textContent = 'Tune running...';
+          break;
+
+        case 'job_progress': {
+          const pct = msg.progress_pct || 0;
+          document.getElementById('prtProgressBar').style.width = pct + '%';
+          document.getElementById('prtProgressLabel').textContent = msg.progress_detail || 'Running...';
+          break;
+        }
+
+        // Domain events — route to existing prtHandleSSE handler
+        case 'tune_start':
+        case 'generation_start':
+        case 'prompt_generated':
+        case 'prompt_eval_start':
+        case 'prompt_eval_result':
+        case 'generation_complete':
+        case 'generation_error':
+          prtHandleSSE(msg);
+          break;
+
+        case 'tune_complete':
+          prtHandleSSE(msg);
+          _activePromptTuneJobId = null;
+          _activePromptTuneRunId = null;
+          try { sessionStorage.removeItem('_prtRunId'); } catch {}
+          _prtResetStartBtn();
+          break;
+
+        case 'job_completed':
+          // Fallback: if tune_complete didn't fire, handle via generic job completion
+          if (_activePromptTuneJobId) {
+            prtRunning = false;
+            document.getElementById('prtProgressLabel').textContent = 'Complete!';
+            document.getElementById('prtProgressBar').style.width = '100%';
+            _activePromptTuneJobId = null;
+            _activePromptTuneRunId = null;
+            try { sessionStorage.removeItem('_prtRunId'); } catch {}
+            _prtResetStartBtn();
+            showToast('Prompt tuning complete!', 'success');
+          }
+          break;
+
+        case 'job_failed':
+          prtRunning = false;
+          document.getElementById('prtProgressLabel').textContent = 'Error: ' + (msg.error || msg.error_msg || 'unknown');
+          showToast(msg.error || msg.error_msg || 'Tuning failed', 'error');
+          _activePromptTuneJobId = null;
+          _activePromptTuneRunId = null;
+          try { sessionStorage.removeItem('_prtRunId'); } catch {}
+          _prtResetStartBtn();
+          break;
+
+        case 'job_cancelled':
+          prtRunning = false;
+          document.getElementById('prtProgressLabel').textContent = 'Cancelled — partial results saved';
+          showToast('Prompt tuning cancelled', '');
+          _activePromptTuneJobId = null;
+          _activePromptTuneRunId = null;
+          try { sessionStorage.removeItem('_prtRunId'); } catch {}
+          _prtResetStartBtn();
+          break;
+      }
     }
-    function _prtClearTimeout() { if (_prtSSETimeout) { clearTimeout(_prtSSETimeout); _prtSSETimeout = null; } }
 
     function _prtScoreColor(pct) {
       if (pct >= 90) return 'var(--lime)';
