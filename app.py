@@ -24,6 +24,12 @@ from pathlib import Path
 import litellm
 import yaml
 
+# Disable OpenAI SDK's built-in retry loop (default max_retries=2).
+# We handle retries ourselves in _generate_prompts_meta and _call_judge_model
+# with exponential backoff. Without this, OpenAI-compatible endpoints (LM Studio)
+# trigger infinite retry loops at the SDK level.
+litellm.num_retries = 0
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Response
@@ -2996,7 +3002,6 @@ async def run_single_eval(
         "tool_choice": tool_choice,
         "max_tokens": 1024,
         "timeout": 120,
-        "num_retries": 1,
     }
     if target.api_base:
         kwargs["api_base"] = target.api_base
@@ -3177,7 +3182,6 @@ async def run_multi_turn_eval(
         "tool_choice": tool_choice,
         "max_tokens": 1024,
         "timeout": 120,
-        "num_retries": 1,
     }
     if target.api_base:
         base_kwargs["api_base"] = target.api_base
@@ -6405,7 +6409,6 @@ async def async_run_single(
         "stream": True,
         "stream_options": {"include_usage": True},
         "timeout": timeout,
-        "num_retries": 2,
     }
     # Apply validated params (temperature, max_tokens, plus any tier2/passthrough)
     if extra:
