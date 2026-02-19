@@ -2501,7 +2501,6 @@
     let scatterChart = null;
     let cachedEnvKeys = [];
     let discoveredModelsCache = {}; // providerKey -> [{id, display_name}]
-    let _sseTimeout = null;
     let _lastBenchmarkBody = null;
     let providerProgress = {}; // provider -> {currentModel, currentRun, totalRuns, completedSteps, totalSteps, status, errors[]}
 
@@ -2866,14 +2865,6 @@
 
     // ── Cancel a Job ──
     async function notifCancelJob(jobId) {
-      // NOTE: WS cancel not yet wired on backend (app.py line 501).
-      // Use REST cancel exclusively until backend enables WS cancel handler.
-      // When ready, uncomment the WS-preferred path below:
-      // if (_notifWs && _notifWs.readyState === WebSocket.OPEN) {
-      //   _notifWs.send(JSON.stringify({ type: 'cancel', job_id: jobId }));
-      //   showToast('Cancelling...', '');
-      //   return;
-      // }
       try {
         const res = await apiFetch(`${NOTIF_JOBS_API}/${jobId}/cancel`, { method: 'POST' });
         if (res.ok) {
@@ -7297,12 +7288,11 @@
     let teEditingToolIndex = -1;     // -1 = adding new, >=0 = editing existing
     let teEditingCaseId = null;      // null = adding new, string = editing existing
     let teSelectedModels = new Set(); // stores "provider_key::model_id" compound keys
-    let teEvalResults = [];          // live results from SSE
-    let teEvalSummaries = [];        // model summaries from SSE
+    let teEvalResults = [];          // live results from WebSocket
+    let teEvalSummaries = [];        // model summaries from WebSocket
     let teSummarySortKey = 'overall_pct';
     let teSummarySortAsc = false;
     let teEvalHistory = [];
-    let _teSSETimeout = null;
     let teRunSuiteId = null;         // suite_id for current run view
     let _activeToolEvalJobId = null; // job_id for active tool eval (WS tracking)
     let _activeJudgeJobId = null;    // job_id for active judge run (WS tracking)
@@ -7333,7 +7323,7 @@
     // Parameter Tuner (pt prefix)
     // -------------------------------------------------------------------
     let ptSelectedModels = new Set(); // stores "provider_key::model_id" compound keys
-    let ptResults = [];        // live results from SSE
+    let ptResults = [];        // live results from WebSocket
     let ptBestConfig = null;
     let ptBestScore = 0;
     let ptSortKey = 'overall_score';
@@ -9368,6 +9358,7 @@
     let prtHistory = [];
     let prtRunning = false;
     let _prtSSETimeout = null;
+    let _prtReader = null;
     let prtScoreChart = null;
     let prtGenScores = [];         // best score per generation for chart
     let prtTotalPrompts = 0;
@@ -9404,7 +9395,7 @@
         const data = await res.json();
         const suites = data.suites || [];
         sel.innerHTML = '<option value="">-- Select a tool eval suite --</option>' +
-          suites.map(s => `<option value="${s.id}" ${s.id === current ? 'selected' : ''}>${s.name} (${(s.cases||[]).length} cases)</option>`).join('');
+          suites.map(s => `<option value="${s.id}" ${s.id === current ? 'selected' : ''}>${_teEsc(s.name)} (${s.test_case_count || 0} cases)</option>`).join('');
       } catch (e) {}
       prtUpdateEstimate();
     }
@@ -9553,12 +9544,12 @@
           _prtResetStartBtn(); return;
         }
 
-        const reader = res.body.getReader();
+        _prtReader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
 
         while (true) {
-          const { done, value } = await reader.read();
+          const { done, value } = await _prtReader.read();
           if (done) break;
           _prtResetTimeout();
           buffer += decoder.decode(value, { stream: true });
@@ -9571,8 +9562,11 @@
           }
         }
       } catch (e) {
-        showToast('Connection error: ' + (e.message || 'unknown'), 'error');
+        if (e.name !== 'AbortError') {
+          showToast('Connection error: ' + (e.message || 'unknown'), 'error');
+        }
       } finally {
+        _prtReader = null;
         prtRunning = false;
         _prtResetStartBtn();
         _prtClearTimeout();
@@ -9992,6 +9986,11 @@
       _prtClearTimeout();
       _prtSSETimeout = setTimeout(() => {
         showToast('Connection timed out', 'error');
+        const lbl = document.getElementById('prtProgressLabel');
+        if (lbl) lbl.textContent = 'Connection timed out';
+        if (_prtReader) { _prtReader.cancel(); _prtReader = null; }
+        prtRunning = false;
+        _prtResetStartBtn();
       }, 30000);
     }
     function _prtClearTimeout() { if (_prtSSETimeout) { clearTimeout(_prtSSETimeout); _prtSSETimeout = null; } }

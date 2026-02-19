@@ -539,6 +539,7 @@ def _target_key(target: Target) -> str:
 # Per-user concurrency guards
 _user_locks: dict[str, asyncio.Lock] = {}
 _user_cancel: dict[str, asyncio.Event] = {}
+_prompt_tune_cancel: dict[str, asyncio.Event] = {}
 
 
 def _get_user_lock(user_id: str) -> asyncio.Lock:
@@ -551,6 +552,12 @@ def _get_user_cancel(user_id: str) -> asyncio.Event:
     if user_id not in _user_cancel:
         _user_cancel[user_id] = asyncio.Event()
     return _user_cancel[user_id]
+
+
+def _get_prompt_tune_cancel(user_id: str) -> asyncio.Event:
+    if user_id not in _prompt_tune_cancel:
+        _prompt_tune_cancel[user_id] = asyncio.Event()
+    return _prompt_tune_cancel[user_id]
 
 
 # Rate limiter
@@ -3096,11 +3103,14 @@ async def run_multi_turn_eval(
     temperature: float,
     tool_choice: str = "required",
     provider_params: dict | None = None,
+    system_prompt: str | None = None,
 ) -> dict:
     """Run a multi-turn test case against one model. Returns result dict.
 
     Loops up to max_rounds, feeding mock tool responses back to the model
     until it calls the expected final tool or exhausts rounds.
+    Optional system_prompt injects a system message before the user prompt
+    (used by Prompt Tuner to test prompt variations).
     """
     mt_config = test_case.get("_mt_config", {})
     max_rounds = mt_config.get("max_rounds", 5)
@@ -3144,10 +3154,15 @@ async def run_multi_turn_eval(
         "raw_exchanges": [],
     }
 
-    # Build messages: per-model system_prompt prepended if configured
+    # Build messages: per-model system_prompt (from config) + explicit system_prompt (from prompt tuner)
     messages = []
+    combined_system = ""
     if target.system_prompt:
-        messages.append({"role": "system", "content": target.system_prompt})
+        combined_system = target.system_prompt
+    if system_prompt:
+        combined_system = (combined_system + "\n\n" + system_prompt) if combined_system else system_prompt
+    if combined_system:
+        messages.append({"role": "system", "content": combined_system})
     messages.append({"role": "user", "content": test_case["prompt"]})
 
     # Build validated+clamped params via provider_params module
@@ -3636,7 +3651,7 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
                 model_results.setdefault(mid, []).append(r)
 
             pe_verdicts = []
-            pe_report_data = {}
+            all_pe_reports = []
             judge_completed = 0
             judge_total = len(all_results)
             for mid, mres in model_results.items():
@@ -3680,14 +3695,24 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
                 pe_report_data = await _judge_crosscase(judge_target, mname, model_vds)
                 pe_report_data["model_id"] = mid
                 pe_report_data["model_name"] = mname
+                all_pe_reports.append(pe_report_data)
                 await _ws_send({"type": "judge_report", "job_id": job_id, "eval_id": eval_id, "report": pe_report_data})
+
+            # Derive overall grade/score from the best model's report
+            if all_pe_reports:
+                best_pe = max(all_pe_reports, key=lambda r: r.get("overall_score", 0))
+                pe_final_grade = best_pe.get("overall_grade", "?")
+                pe_final_score = best_pe.get("overall_score", 0)
+            else:
+                pe_final_grade = "?"
+                pe_final_score = 0
 
             await db.update_judge_report(
                 judge_report_id,
                 verdicts_json=json.dumps(pe_verdicts),
-                report_json=json.dumps(pe_report_data),
-                overall_grade=pe_report_data.get("overall_grade", "?"),
-                overall_score=pe_report_data.get("overall_score", 0),
+                report_json=json.dumps(all_pe_reports),
+                overall_grade=pe_final_grade,
+                overall_score=pe_final_score,
                 status="completed",
             )
             await _ws_send({"type": "judge_complete", "job_id": job_id, "judge_report_id": judge_report_id})
@@ -3710,21 +3735,31 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
                 mid = v.get("model_id", "unknown")
                 model_results_j.setdefault(mid, []).append(v)
 
-            li_report_data = {}
+            all_li_reports = []
             for mid, mvds in model_results_j.items():
                 tgt = target_map.get(mid)
                 mname = tgt.display_name if tgt else mid
                 li_report_data = await _judge_crosscase(judge_target, mname, mvds)
                 li_report_data["model_id"] = mid
                 li_report_data["model_name"] = mname
+                all_li_reports.append(li_report_data)
                 await _ws_send({"type": "judge_report", "job_id": job_id, "eval_id": eval_id, "report": li_report_data})
+
+            # Derive overall grade/score from the best model's report
+            if all_li_reports:
+                best_li = max(all_li_reports, key=lambda r: r.get("overall_score", 0))
+                li_final_grade = best_li.get("overall_grade", "?")
+                li_final_score = best_li.get("overall_score", 0)
+            else:
+                li_final_grade = "?"
+                li_final_score = 0
 
             await db.update_judge_report(
                 judge_report_id,
                 verdicts_json=json.dumps(judge_verdicts),
-                report_json=json.dumps(li_report_data),
-                overall_grade=li_report_data.get("overall_grade", "?"),
-                overall_score=li_report_data.get("overall_score", 0),
+                report_json=json.dumps(all_li_reports),
+                overall_grade=li_final_grade,
+                overall_score=li_final_score,
                 status="completed",
             )
             await _ws_send({"type": "judge_complete", "job_id": job_id, "judge_report_id": judge_report_id})
@@ -4396,30 +4431,79 @@ def _parse_meta_response(text: str) -> list[dict]:
     return []
 
 
+_META_RETRYABLE_ERRORS = (
+    litellm.exceptions.BadGatewayError,
+    litellm.exceptions.ServiceUnavailableError,
+    litellm.exceptions.InternalServerError,
+    litellm.exceptions.APIConnectionError,
+    litellm.exceptions.Timeout,
+)
+
+
 async def _generate_prompts_meta(
     meta_target: Target,
     prompt_template: str,
+    *,
+    _max_retries: int = 3,
+    _base_delay: float = 2.0,
     **format_kwargs,
 ) -> list[dict]:
-    """Call meta-model to generate prompt variations. Returns parsed list."""
+    """Call meta-model to generate prompt variations. Returns parsed list.
+
+    Retries transient errors (502/503/500/connection/timeout) with exponential
+    backoff. Retries once on empty/unparseable response.
+    """
     formatted = prompt_template.format(**format_kwargs)
 
     kwargs = {
         "model": meta_target.model_id,
         "messages": [{"role": "user", "content": formatted}],
-        "max_tokens": 4096,
-        "temperature": 0.9,  # High temp for creative prompt generation
         "timeout": 120,
-        "num_retries": 1,
+        "num_retries": 0,  # We handle retries ourselves with backoff
     }
     if meta_target.api_base:
         kwargs["api_base"] = meta_target.api_base
     if meta_target.api_key:
         kwargs["api_key"] = meta_target.api_key
+    # Use build_litellm_kwargs for provider-aware param handling
+    # (e.g. O-series models skip temperature, skip_params honoured)
+    kwargs.update(build_litellm_kwargs(
+        meta_target, temperature=0.9, max_tokens=4096,
+    ))
 
-    response = await litellm.acompletion(**kwargs)
-    content = response.choices[0].message.content or ""
-    return _parse_meta_response(content)
+    last_exc: Exception | None = None
+    for attempt in range(1, _max_retries + 1):
+        try:
+            response = await litellm.acompletion(**kwargs)
+            content = response.choices[0].message.content or ""
+            prompts = _parse_meta_response(content)
+            if prompts:
+                return prompts
+            # Empty response — retry once with backoff
+            logger.warning(
+                "Meta model returned no parseable prompts (attempt %d/%d, content_len=%d)",
+                attempt, _max_retries, len(content),
+            )
+            if attempt < _max_retries:
+                await asyncio.sleep(_base_delay * (2 ** (attempt - 1)))
+                continue
+            return []  # All retries exhausted with empty results
+        except _META_RETRYABLE_ERRORS as exc:
+            last_exc = exc
+            if attempt < _max_retries:
+                delay = _base_delay * (2 ** (attempt - 1))
+                logger.info(
+                    "Meta model transient error (attempt %d/%d): %s — retrying in %.1fs",
+                    attempt, _max_retries, exc, delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise  # Last attempt — propagate
+
+    # Should not reach here, but safety net
+    if last_exc:
+        raise last_exc
+    return []
 
 
 def _build_tools_summary(tools: list[dict]) -> str:
@@ -4498,11 +4582,11 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
             status_code=429,
         )
 
-    # Concurrent guard
+    # Concurrent guard — check early so we fail fast on double-click.
     user_lock = _get_user_lock(user["id"])
     if user_lock.locked():
         return JSONResponse(
-            {"error": "A benchmark or eval is already running"},
+            {"error": "A prompt tune is already running"},
             status_code=409,
         )
 
@@ -4532,12 +4616,24 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
     eval_targets = inject_user_keys(eval_targets, user_keys_cache)
 
     meta_target = meta_targets[0]
-    cancel_event = _get_user_cancel(user["id"])
+    cancel_event = _get_prompt_tune_cancel(user["id"])
 
     tools_summary = _build_tools_summary(tools)
     test_cases_summary = _build_test_cases_summary(cases)
 
     total_eval_calls = total_prompts * len(cases) * len(eval_targets)
+
+    # Acquire lock atomically AFTER all validation passes.
+    # This prevents the double-click race: if two requests pass the
+    # early locked() check above, only one acquires here; the other
+    # blocks until the first finishes (and gets 409 on next attempt).
+    # The lock is released in the generator's finally block.
+    if user_lock.locked():
+        return JSONResponse(
+            {"error": "A prompt tune is already running"},
+            status_code=409,
+        )
+    await user_lock.acquire()
 
     # Pre-create DB record
     tune_id = await db.save_prompt_tune_run(
@@ -4553,7 +4649,7 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
     )
 
     async def generate():
-        await user_lock.acquire()
+        # Lock already acquired in the endpoint before generator starts.
         cancel_event.clear()
         start_time = time.perf_counter()
         all_generations = []
@@ -4607,6 +4703,19 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
                         parent_prompts=parent_text,
                     )
 
+                # Handle empty meta response (PW5)
+                if not raw_prompts:
+                    logger.warning(
+                        "Meta model returned 0 prompts for generation %d — skipping",
+                        gen_num,
+                    )
+                    yield _sse({
+                        "type": "generation_error",
+                        "generation": gen_num,
+                        "message": "Meta model returned no prompts. Skipping generation.",
+                    })
+                    continue
+
                 # Normalize to list of prompt dicts
                 gen_prompts = []
                 for idx, rp in enumerate(raw_prompts[:population_size]):
@@ -4656,10 +4765,26 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
                             if cancel_event.is_set():
                                 break
                             _record_rate_limit(user["id"])
-                            r = await run_single_eval(
-                                target, tools, case, eval_temperature,
-                                eval_tool_choice, system_prompt=p_info["text"],
-                            )
+
+                            # Dispatch: multi-turn or single-turn
+                            mt_config = None
+                            if case.get("multi_turn_config"):
+                                try:
+                                    mt_config = json.loads(case["multi_turn_config"]) if isinstance(case["multi_turn_config"], str) else case["multi_turn_config"]
+                                except (json.JSONDecodeError, TypeError):
+                                    mt_config = None
+
+                            if mt_config and mt_config.get("multi_turn"):
+                                case_with_mt = {**case, "_mt_config": mt_config}
+                                r = await run_multi_turn_eval(
+                                    target, tools, case_with_mt, eval_temperature,
+                                    eval_tool_choice, system_prompt=p_info["text"],
+                                )
+                            else:
+                                r = await run_single_eval(
+                                    target, tools, case, eval_temperature,
+                                    eval_tool_choice, system_prompt=p_info["text"],
+                                )
                             case_results.append(r)
 
                         # Compute scores
@@ -4719,6 +4844,15 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
                     "best_prompt_index": gen_best["index"] if gen_best else None,
                     "survivors": [p["index"] for p in survivors],
                 })
+
+                # Incrementally save results to DB so crash mid-tune preserves completed generations
+                await db.update_prompt_tune_run(
+                    tune_id, user["id"],
+                    generations_json=json.dumps(all_generations),
+                    best_prompt=best_prompt,
+                    best_score=best_score,
+                    completed_prompts=completed_prompts,
+                )
 
             # --- Tuning complete ---
             duration = time.perf_counter() - start_time
@@ -4805,7 +4939,7 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
 @app.post("/api/tool-eval/prompt-tune/cancel")
 async def cancel_prompt_tune(user: dict = Depends(auth.get_current_user)):
     """Cancel a running prompt tune."""
-    _get_user_cancel(user["id"]).set()
+    _get_prompt_tune_cancel(user["id"]).set()
     return {"status": "ok", "message": "Cancellation requested"}
 
 
