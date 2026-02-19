@@ -76,7 +76,7 @@ class ToolEvalRequest(BaseModel):
     models: Optional[List[str]] = Field(default=None)
     targets: Optional[List[dict]] = Field(default=None)
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    system_prompt: Optional[str] = Field(None, max_length=50_000)
+    system_prompt: Optional[Any] = None  # str or dict (per-model prompts)
     experiment_id: Optional[str] = None
 
     @model_validator(mode="after")
