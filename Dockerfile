@@ -15,7 +15,8 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Copy application code
-COPY app.py benchmark.py auth.py db.py keyvault.py provider_params.py job_registry.py ws_manager.py index.html config.yaml migrate_to_multiuser.py ./
+COPY app.py benchmark.py auth.py db.py keyvault.py provider_params.py job_registry.py job_handlers.py schemas.py ws_manager.py index.html config.yaml migrate_to_multiuser.py ./
+COPY routers/ routers/
 
 # Create data directory
 RUN mkdir -p data
