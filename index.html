@@ -695,6 +695,85 @@
     @media (max-width: 768px) {
       .notif-dropdown { width: calc(100vw - 32px); right: -8px; }
     }
+
+    /* --- Sub-Tab Navigation --- */
+    .te-subtab {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 16px;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--text-muted, #71717A);
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+      white-space: nowrap;
+      background: none;
+      border-top: none;
+      border-left: none;
+      border-right: none;
+      font-family: 'Chakra Petch', sans-serif;
+    }
+    .te-subtab:hover {
+      color: var(--text-secondary, #A1A1AA);
+    }
+    .te-subtab-active {
+      color: var(--lime, #BFFF00);
+      border-bottom-color: var(--lime, #BFFF00);
+    }
+
+    /* --- Context Bar --- */
+    .te-context-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 16px;
+      font-size: 11px;
+      color: var(--text-muted, #71717A);
+      border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
+      min-height: 36px;
+    }
+    .te-context-bar .ctx-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-size: 10px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .te-context-bar .ctx-pill.active {
+      background: rgba(191,255,0,0.08);
+      border-color: rgba(191,255,0,0.2);
+      color: var(--lime, #BFFF00);
+    }
+
+    /* --- Timeline --- */
+    .tl-entry {
+      position: relative;
+      padding: 12px 16px 12px 32px;
+      border-left: 2px solid rgba(255,255,255,0.08);
+      margin-left: 8px;
+    }
+    .tl-entry::before {
+      content: '';
+      position: absolute;
+      left: -5px;
+      top: 16px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      border: 2px solid var(--entry-color, rgba(255,255,255,0.2));
+      background: var(--bg-primary, #09090B);
+    }
+    .tl-entry[data-type="eval"]    { --entry-color: var(--lime, #BFFF00); }
+    .tl-entry[data-type="param_tune"]  { --entry-color: #38BDF8; }
+    .tl-entry[data-type="prompt_tune"] { --entry-color: #A855F7; }
+    .tl-entry[data-type="judge"]  { --entry-color: #F59E0B; }
+    .tl-entry.baseline { border-left-color: var(--lime, #BFFF00); }
+    .tl-entry.baseline::before { background: var(--lime, #BFFF00); }
   </style>
 </head>
 <body class="min-h-screen">
@@ -1489,6 +1568,27 @@
     <!-- ─── TOOL EVAL TAB ─── -->
     <div id="view-tool-eval" class="hidden">
 
+      <!-- Sub-Tab Navigation -->
+      <div id="teSubTabs" class="flex items-center overflow-x-auto" style="border-bottom:1px solid var(--border-subtle, rgba(255,255,255,0.06));">
+        <button class="te-subtab te-subtab-active" data-tab="suites" onclick="teSetActiveSubTab('suites')">Suites</button>
+        <button class="te-subtab" data-tab="run" onclick="teSetActiveSubTab('run')">Evaluate</button>
+        <button class="te-subtab" data-tab="pt-config" onclick="teSetActiveSubTab('pt-config')">Param Tuner</button>
+        <button class="te-subtab" data-tab="prt-config" onclick="teSetActiveSubTab('prt-config')">Prompt Tuner</button>
+        <button class="te-subtab" data-tab="judge" onclick="teSetActiveSubTab('judge')">Judge</button>
+        <button class="te-subtab" data-tab="timeline" onclick="teSetActiveSubTab('timeline')">Timeline</button>
+      </div>
+
+      <!-- Context Bar -->
+      <div id="teContextBar" class="te-context-bar hidden">
+        <span class="text-[10px] text-zinc-600 font-display tracking-wider uppercase">Context:</span>
+        <span id="ctxSuitePill" class="ctx-pill hidden"></span>
+        <span id="ctxModelsPill" class="ctx-pill hidden"></span>
+        <span id="ctxExperimentPill" class="ctx-pill active hidden"></span>
+        <button onclick="teToggleContextBar()" class="ml-auto text-[10px] text-zinc-700 hover:text-zinc-500" style="background:none;border:none;cursor:pointer;">
+          <span id="ctxToggleText">Hide</span>
+        </button>
+      </div>
+
       <!-- Sub-View 1: Suite List (default) -->
       <div id="te-suites-view">
         <div class="flex items-center justify-between mb-6">
@@ -1497,18 +1597,6 @@
             <p class="text-sm text-zinc-600 font-body">Define tool suites, create test cases, and evaluate model accuracy.</p>
           </div>
           <div class="flex items-center gap-2 flex-wrap">
-            <button onclick="showToolEvalView('jg-history')" class="px-4 py-2 rounded-sm text-xs font-display whitespace-nowrap flex items-center justify-center gap-2 border transition-colors min-w-[120px]" style="border-color:rgba(245,158,11,0.2);color:#F59E0B;" onmouseover="this.style.borderColor='rgba(245,158,11,0.5)'" onmouseout="this.style.borderColor='rgba(245,158,11,0.2)'">
-              <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg>
-              Judge
-            </button>
-            <button onclick="showToolEvalView('prt-config')" class="px-4 py-2 rounded-sm text-xs font-display whitespace-nowrap flex items-center justify-center gap-2 border transition-colors min-w-[120px]" style="border-color:rgba(168,85,247,0.2);color:#A855F7;" onmouseover="this.style.borderColor='rgba(168,85,247,0.5)'" onmouseout="this.style.borderColor='rgba(168,85,247,0.2)'">
-              <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z"/></svg>
-              Prompt Tuner
-            </button>
-            <button onclick="showToolEvalView('pt-config')" class="px-4 py-2 rounded-sm text-xs font-display whitespace-nowrap flex items-center justify-center gap-2 border transition-colors min-w-[120px]" style="border-color:rgba(56,189,248,0.2);color:#38BDF8;" onmouseover="this.style.borderColor='rgba(56,189,248,0.5)'" onmouseout="this.style.borderColor='rgba(56,189,248,0.2)'">
-              <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/></svg>
-              Param Tuner
-            </button>
             <button onclick="teNewSuite()" class="run-btn px-4 py-2 rounded-sm text-xs whitespace-nowrap flex items-center gap-2">
               <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
               New Suite
@@ -1559,12 +1647,14 @@
                   <th class="px-5 py-3 text-left section-label">Timestamp</th>
                   <th class="px-5 py-3 text-left section-label">Suite</th>
                   <th class="px-5 py-3 text-left section-label">Models</th>
+                  <th class="px-5 py-3 text-left section-label">Config</th>
+                  <th class="px-5 py-3 text-center section-label">Judge</th>
                   <th class="px-5 py-3 text-right section-label">Overall</th>
                   <th class="px-5 py-3 text-right section-label"></th>
                 </tr>
               </thead>
               <tbody id="teHistoryBody">
-                <tr><td colspan="5" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No eval runs yet.</td></tr>
+                <tr><td colspan="7" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No eval runs yet.</td></tr>
               </tbody>
             </table>
           </div>
@@ -1656,6 +1746,18 @@
                 <input id="teCaseExpTool" class="w-full px-3 py-2 rounded-sm text-sm font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" placeholder="tool_name or comma-separated names">
                 <label class="section-label mt-3 mb-2 block">Expected Params <span class="text-zinc-600 normal-case">(JSON, optional)</span></label>
                 <textarea id="teCaseExpParams" rows="3" class="prompt-input w-full rounded-sm px-3 py-2 font-mono text-xs" placeholder='{"param_name": "value"}'></textarea>
+                <label class="section-label mt-3 mb-2 block">Param Scoring Mode</label>
+                <select id="teCaseScoringMode" class="w-full px-3 py-2 rounded-sm text-sm text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;" onchange="teToggleScoringEpsilon()">
+                  <option value="exact">Exact (default)</option>
+                  <option value="case_insensitive">Case Insensitive</option>
+                  <option value="contains">Contains (substring)</option>
+                  <option value="numeric_tolerance">Numeric Tolerance</option>
+                  <option value="regex">Regex</option>
+                </select>
+                <div id="teCaseScoringEpsilon" class="hidden mt-2">
+                  <label class="text-[10px] font-display tracking-wider uppercase text-zinc-500 block mb-1">Epsilon (tolerance)</label>
+                  <input id="teCaseEpsilon" type="number" step="0.001" value="0.01" class="w-full px-2 py-1 rounded-sm text-sm font-mono text-zinc-200" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;">
+                </div>
               </div>
               <!-- Multi-Turn Settings -->
               <div class="lg:col-span-2 mt-2">
@@ -1814,12 +1916,37 @@
           </div>
         </div>
 
+        <!-- Delta Banner (M6) -->
+        <div id="teDeltaBanner" class="hidden text-center py-2 px-4 rounded-sm mb-3 text-sm font-medium"></div>
+
         <!-- Summary Section -->
         <div id="teSummarySection" class="hidden mb-6 fade-in">
           <div class="card rounded-md overflow-hidden">
             <div class="px-5 py-3 flex items-center" style="border-bottom:1px solid var(--border-subtle)">
               <span class="section-label">Results Summary</span>
               <span id="teSummaryInfo" class="text-xs font-body text-zinc-600 ml-2"></span>
+              <div id="teActionBridges" class="hidden flex items-center gap-2 ml-2">
+                <button onclick="teBridgeToParamTuner()"
+                  class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1.5 rounded-sm transition-colors"
+                  style="color:#38BDF8;border:1px solid rgba(56,189,248,0.2);"
+                  onmouseover="this.style.borderColor='rgba(56,189,248,0.5)'"
+                  onmouseout="this.style.borderColor='rgba(56,189,248,0.2)'">
+                  Tune Parameters
+                </button>
+                <button onclick="teBridgeToPromptTuner()"
+                  class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1.5 rounded-sm transition-colors"
+                  style="color:#A855F7;border:1px solid rgba(168,85,247,0.2);"
+                  onmouseover="this.style.borderColor='rgba(168,85,247,0.5)'"
+                  onmouseout="this.style.borderColor='rgba(168,85,247,0.2)'">
+                  Tune Prompt
+                </button>
+                <button id="tePinBaselineBtn" onclick="tePinAsBaseline()" class="hidden text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1.5 rounded-sm transition-colors"
+                  style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);"
+                  onmouseover="this.style.borderColor='rgba(191,255,0,0.5)'"
+                  onmouseout="this.style.borderColor='rgba(191,255,0,0.2)'">
+                  Pin as Baseline
+                </button>
+              </div>
               <button id="teExportBtn" onclick="teExportResults()" class="text-[11px] font-display font-medium tracking-wider uppercase px-4 py-1.5 rounded-sm hidden ml-auto" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);" onmouseover="this.style.borderColor='rgba(191,255,0,0.5)'" onmouseout="this.style.borderColor='rgba(191,255,0,0.2)'">Export JSON</button>
             </div>
             <table class="w-full text-sm results-table">
@@ -1921,6 +2048,16 @@
             <div class="mb-5">
               <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-2 block">Recommendations</label>
               <ol id="jgRecommendations" class="space-y-1 list-decimal list-inside"></ol>
+            </div>
+
+            <!-- Bridge D: Judge -> Next Steps -->
+            <div id="jgActionBridges" class="hidden mt-4 pt-3" style="border-top:1px solid var(--border-subtle)">
+              <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-2 block">Next Steps</label>
+              <div class="flex items-center gap-2">
+                <button onclick="jgBridgeToParamTuner()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:#38BDF8;border:1px solid rgba(56,189,248,0.2);" onmouseover="this.style.borderColor='rgba(56,189,248,0.5)'" onmouseout="this.style.borderColor='rgba(56,189,248,0.2)'">Tune Parameters</button>
+                <button onclick="jgBridgeToPromptTuner()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:#A855F7;border:1px solid rgba(168,85,247,0.2);" onmouseover="this.style.borderColor='rgba(168,85,247,0.5)'" onmouseout="this.style.borderColor='rgba(168,85,247,0.2)'">Tune Prompt</button>
+                <button onclick="jgBridgeToReEval()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);" onmouseover="this.style.borderColor='rgba(191,255,0,0.5)'" onmouseout="this.style.borderColor='rgba(191,255,0,0.2)'">Re-Run Eval</button>
+              </div>
             </div>
 
             <!-- Per-Case Verdicts (accordion) -->
@@ -2137,6 +2274,7 @@
               <span class="section-label">Combination Results</span>
               <div class="flex items-center gap-2">
                 <button id="ptApplyBestBtn" onclick="ptApplyBest()" class="hidden text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);">Apply Best Config</button>
+                <button id="ptReEvalBtn" onclick="ptApplyAndReEval()" class="hidden text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:#22C55E;border:1px solid rgba(34,197,94,0.2);" onmouseover="this.style.borderColor='rgba(34,197,94,0.5)'" onmouseout="this.style.borderColor='rgba(34,197,94,0.2)'">Apply &amp; Re-Eval</button>
                 <button onclick="ptExportCSV()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);">Export CSV</button>
               </div>
             </div>
@@ -2321,7 +2459,11 @@
                 <span class="font-display font-semibold text-sm tracking-wider uppercase" style="color:#A855F7;">Best Prompt</span>
                 <span id="prtBestScore" class="text-xs font-mono text-zinc-400 ml-2"></span>
               </div>
-              <button onclick="prtCopyBest()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);">Copy</button>
+              <div class="flex items-center gap-2">
+                <button onclick="prtCopyBest()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:var(--lime);border:1px solid rgba(191,255,0,0.2);">Copy</button>
+                <button onclick="prtSaveToSuite()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:#A855F7;border:1px solid rgba(168,85,247,0.2);" onmouseover="this.style.borderColor='rgba(168,85,247,0.5)'" onmouseout="this.style.borderColor='rgba(168,85,247,0.2)'">Save to Suite</button>
+                <button onclick="prtApplyAndReEval()" class="text-[11px] font-display font-medium tracking-wider uppercase px-3 py-1 rounded-sm" style="color:#22C55E;border:1px solid rgba(34,197,94,0.2);" onmouseover="this.style.borderColor='rgba(34,197,94,0.5)'" onmouseout="this.style.borderColor='rgba(34,197,94,0.2)'">Apply &amp; Re-Eval</button>
+              </div>
             </div>
             <pre id="prtBestPromptText" class="text-xs font-mono text-zinc-300 whitespace-pre-wrap max-h-48 overflow-y-auto p-3 rounded-sm" style="background:rgba(0,0,0,0.2);"></pre>
           </div>
@@ -2373,6 +2515,26 @@
             </tbody>
           </table>
         </div>
+      </div>
+
+      <!-- Sub-View 12: Timeline View -->
+      <div id="te-timeline-view" class="hidden p-4">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-sm font-display font-medium tracking-wider uppercase" style="color:var(--text-secondary, #A1A1AA)">Experiment Timeline</h3>
+          <div id="tlFilterPills" class="flex gap-2">
+            <button class="tl-filter text-[10px] px-2 py-1 rounded-sm" data-filter="all" onclick="tlFilterTimeline('all')" style="background:rgba(255,255,255,0.08);color:var(--text-secondary, #A1A1AA);border:none;cursor:pointer;opacity:1">All</button>
+            <button class="tl-filter text-[10px] px-2 py-1 rounded-sm" data-filter="eval" onclick="tlFilterTimeline('eval')" style="background:rgba(191,255,0,0.08);color:var(--lime);border:none;cursor:pointer;opacity:0.5">Evals</button>
+            <button class="tl-filter text-[10px] px-2 py-1 rounded-sm" data-filter="param_tune" onclick="tlFilterTimeline('param_tune')" style="background:rgba(56,189,248,0.08);color:#38BDF8;border:none;cursor:pointer;opacity:0.5">Param Tunes</button>
+            <button class="tl-filter text-[10px] px-2 py-1 rounded-sm" data-filter="prompt_tune" onclick="tlFilterTimeline('prompt_tune')" style="background:rgba(168,85,247,0.08);color:#A855F7;border:none;cursor:pointer;opacity:0.5">Prompt Tunes</button>
+            <button class="tl-filter text-[10px] px-2 py-1 rounded-sm" data-filter="judge" onclick="tlFilterTimeline('judge')" style="background:rgba(245,158,11,0.08);color:#F59E0B;border:none;cursor:pointer;opacity:0.5">Judges</button>
+          </div>
+        </div>
+
+        <div id="tlNoExperiment" class="text-center py-12 text-zinc-600 text-sm">
+          No experiment selected. Create or select an experiment to see its timeline.
+        </div>
+
+        <div id="tlEntries" class="hidden"></div>
       </div>
 
       <!-- MCP Import Modal -->
@@ -2827,6 +2989,7 @@
         case 'prompt_generated':
         case 'prompt_eval_start':
         case 'prompt_eval_result':
+        case 'eval_promoted':
           break;
 
         default:
@@ -7341,23 +7504,278 @@
     let _teEvalStartTime = null;     // timestamp for ETA calculation
     let _teEvalTotalCases = 0;       // total test cases for progress tracking
 
+    // --- Shared Context (cross-feature state, M2) ---
+    let _sharedContext = {
+      experiment_id: null,
+      suite_id: null,
+      suite_name: null,
+      selected_models: [],
+      temperature: 0.0,
+      tool_choice: 'required',
+      provider_params: {},
+      system_prompt: null,
+      prompt_tuner_hint: null,
+      last_updated_by: null,
+    };
+    const SC_STORAGE_KEY = '_sharedContext';
+
+    function _scLoad() {
+      try {
+        const raw = sessionStorage.getItem(SC_STORAGE_KEY);
+        if (raw) Object.assign(_sharedContext, JSON.parse(raw));
+      } catch {}
+    }
+    function _scSave() {
+      try { sessionStorage.setItem(SC_STORAGE_KEY, JSON.stringify(_sharedContext)); } catch {}
+      if (typeof _teUpdateContextBar === 'function') _teUpdateContextBar();
+    }
+    function _scSetSuite(suiteId, suiteName) {
+      _sharedContext.suite_id = suiteId;
+      _sharedContext.suite_name = suiteName;
+      _sharedContext.last_updated_by = null;
+      _scSave();
+    }
+    function _scSetModels(modelSet) {
+      _sharedContext.selected_models = Array.from(modelSet);
+      _scSave();
+    }
+    function _scGetModels() { return new Set(_sharedContext.selected_models || []); }
+    function _scSetExperiment(experimentId) {
+      _sharedContext.experiment_id = experimentId;
+      _scSave();
+    }
+    function _scSetConfig(overrides) {
+      Object.assign(_sharedContext, overrides);
+      _scSave();
+    }
+    function _scClear() {
+      _sharedContext = { experiment_id: null, suite_id: null, suite_name: null,
+        selected_models: [], temperature: 0.0, tool_choice: 'required',
+        provider_params: {}, system_prompt: null, prompt_tuner_hint: null,
+        last_updated_by: null };
+      _scSave();
+    }
+    // Expose for inline handlers
+    window._sharedContext = _sharedContext;
+
     function showToolEvalView(view) {
+      _scLoad();
       const views = ['te-suites-view','te-editor-view','te-run-view',
         'pt-config-view','pt-run-view','pt-history-view',
         'prt-config-view','prt-run-view','prt-history-view',
-        'jg-compare-view','jg-history-view'];
+        'jg-compare-view','jg-history-view','te-timeline-view'];
       const viewMap = { suites: 'te-suites-view', editor: 'te-editor-view', run: 'te-run-view',
         'pt-config': 'pt-config-view', 'pt-run': 'pt-run-view', 'pt-history': 'pt-history-view',
         'prt-config': 'prt-config-view', 'prt-run': 'prt-run-view', 'prt-history': 'prt-history-view',
-        'jg-compare': 'jg-compare-view', 'jg-history': 'jg-history-view' };
+        'jg-compare': 'jg-compare-view', 'jg-history': 'jg-history-view', timeline: 'te-timeline-view' };
       const activeId = viewMap[view] || viewMap.suites;
       views.forEach(v => document.getElementById(v)?.classList.toggle('hidden', v !== activeId));
+
+      // Sync sub-tab highlight — map child views to their parent sub-tab key
+      const _viewToSubTab = {
+        suites: 'suites', editor: 'suites',
+        run: 'run',
+        'pt-config': 'pt-config', 'pt-run': 'pt-config', 'pt-history': 'pt-config',
+        'prt-config': 'prt-config', 'prt-run': 'prt-config', 'prt-history': 'prt-config',
+        'jg-compare': 'judge', 'jg-history': 'judge',
+        timeline: 'timeline'
+      };
+      const activeTab = _viewToSubTab[view] || 'suites';
+      document.querySelectorAll('#teSubTabs .te-subtab').forEach(btn => {
+        btn.classList.toggle('te-subtab-active', btn.dataset.tab === activeTab);
+      });
+      _teUpdateContextBar();
+
       if (view === 'run') { jgLoadDefaults(); }
       if (view === 'pt-config') { ptLoadSuiteSelector(); ptRenderModelGrid(); _ptApplyDefaults(); ptPopulatePresetDropdown(); ptUpdatePreview(); _ptCheckRunningBanner(); }
       if (view === 'pt-history') { ptLoadHistory(); }
-      if (view === 'prt-config') { prtLoadSuiteSelector(); prtRenderModelGrid(); prtPopulateMetaModel(); _prtApplyDefaults(); prtUpdateEstimate(); }
+      if (view === 'prt-config') {
+        prtLoadSuiteSelector(); prtRenderModelGrid(); prtPopulateMetaModel(); _prtApplyDefaults(); prtUpdateEstimate();
+        // Bridge D: consume judge hint if available
+        if (_sharedContext.prompt_tuner_hint) {
+          const basePrompt = document.getElementById('prtBasePrompt');
+          if (basePrompt && !basePrompt.value.trim()) {
+            basePrompt.value = 'Focus on these areas identified by the judge:\n' + _sharedContext.prompt_tuner_hint;
+            _sharedContext.prompt_tuner_hint = null;
+            _scSave();
+          }
+        }
+      }
       if (view === 'prt-history') { prtLoadHistory(); }
       if (view === 'jg-history') { jgLoadHistory(); }
+      if (view === 'timeline') { tlLoadTimeline(); }
+    }
+
+    // -------------------------------------------------------------------
+    // Sub-Tab Navigation + Context Bar + Timeline (M7)
+    // -------------------------------------------------------------------
+
+    function teSetActiveSubTab(tabKey) {
+      // Map sub-tab keys to showToolEvalView keys
+      const tabToView = {
+        suites: 'suites',
+        run: 'run',
+        'pt-config': 'pt-config',
+        'prt-config': 'prt-config',
+        judge: 'jg-history',
+        timeline: 'timeline'
+      };
+      const viewKey = tabToView[tabKey] || 'suites';
+      showToolEvalView(viewKey);
+    }
+
+    function _teUpdateContextBar() {
+      const bar = document.getElementById('teContextBar');
+      if (!bar) return;
+
+      const hasSuite = _sharedContext.suite_id;
+      const hasModels = _sharedContext.selected_models?.length > 0;
+      const hasExp = _sharedContext.experiment_id;
+
+      if (!hasSuite && !hasModels && !hasExp) {
+        bar.classList.add('hidden');
+        return;
+      }
+      if (!_ctxBarHidden) bar.classList.remove('hidden');
+
+      const suitePill = document.getElementById('ctxSuitePill');
+      if (suitePill) {
+        if (hasSuite) {
+          suitePill.textContent = _sharedContext.suite_name || 'Suite';
+          suitePill.classList.remove('hidden');
+        } else {
+          suitePill.classList.add('hidden');
+        }
+      }
+
+      const modelsPill = document.getElementById('ctxModelsPill');
+      if (modelsPill) {
+        if (hasModels) {
+          const count = _sharedContext.selected_models.length;
+          modelsPill.textContent = count + ' model' + (count > 1 ? 's' : '');
+          modelsPill.classList.remove('hidden');
+        } else {
+          modelsPill.classList.add('hidden');
+        }
+      }
+
+      const expPill = document.getElementById('ctxExperimentPill');
+      if (expPill) {
+        if (hasExp) {
+          expPill.textContent = 'Experiment';
+          expPill.classList.remove('hidden');
+        } else {
+          expPill.classList.add('hidden');
+        }
+      }
+    }
+
+    let _ctxBarHidden = false;
+    function teToggleContextBar() {
+      _ctxBarHidden = !_ctxBarHidden;
+      const bar = document.getElementById('teContextBar');
+      const text = document.getElementById('ctxToggleText');
+      if (_ctxBarHidden) {
+        bar.style.display = 'none';
+        if (text) text.textContent = 'Show Context';
+      } else {
+        bar.style.display = '';
+        if (text) text.textContent = 'Hide';
+      }
+    }
+
+    // --- Timeline ---
+    let _tlFilter = 'all';
+    let _tlData = [];
+
+    async function tlLoadTimeline() {
+      const expId = _sharedContext.experiment_id;
+      const noExp = document.getElementById('tlNoExperiment');
+      const entries = document.getElementById('tlEntries');
+
+      if (!expId) {
+        if (noExp) noExp.classList.remove('hidden');
+        if (entries) entries.classList.add('hidden');
+        return;
+      }
+
+      try {
+        const res = await apiFetch('/api/experiments/' + expId + '/timeline');
+        if (!res.ok) { showToast('Failed to load timeline', 'error'); return; }
+        const data = await res.json();
+        _tlData = data.entries || [];
+
+        if (noExp) noExp.classList.add('hidden');
+        if (entries) entries.classList.remove('hidden');
+
+        tlRenderTimeline();
+      } catch (e) {
+        showToast('Error loading timeline: ' + e.message, 'error');
+      }
+    }
+
+    function tlRenderTimeline() {
+      const container = document.getElementById('tlEntries');
+      if (!container) return;
+
+      const filtered = _tlFilter === 'all' ? _tlData : _tlData.filter(function(e) { return e.type === _tlFilter; });
+
+      if (filtered.length === 0) {
+        container.innerHTML = '<div class="text-center py-8 text-zinc-600 text-sm">No entries' + (_tlFilter !== 'all' ? ' matching filter' : '') + '</div>';
+        return;
+      }
+
+      container.innerHTML = filtered.map(function(entry) {
+        var isBaseline = entry.is_baseline;
+        var typeLabels = { eval: 'Eval', param_tune: 'Param Tune', prompt_tune: 'Prompt Tune', judge: 'Judge' };
+        var typeColors = { eval: 'var(--lime,#BFFF00)', param_tune: '#38BDF8', prompt_tune: '#A855F7', judge: '#F59E0B' };
+
+        var details = '';
+        if (entry.type === 'eval') {
+          var score = entry.score !== undefined ? (entry.score * 100).toFixed(1) + '%' : '--';
+          var delta = '';
+          var deltaColor = '#22C55E';
+          if (entry.delta !== null && entry.delta !== undefined) {
+            deltaColor = entry.delta >= 0 ? '#22C55E' : '#EF4444';
+            delta = ' (' + (entry.delta >= 0 ? '+' : '') + (entry.delta * 100).toFixed(1) + '%)';
+          }
+          details = '<span>Score: ' + score + '</span>';
+          if (entry.delta !== null && entry.delta !== undefined) details += '<span style="color:' + deltaColor + '">' + delta + '</span>';
+          if (entry.config_summary) details += '<span class="text-zinc-600 ml-2">' + _teEsc(entry.config_summary) + '</span>';
+          if (entry.promoted_from) details += '<span class="text-[10px] ml-2 px-1.5 py-0.5 rounded" style="background:rgba(168,85,247,0.15);color:#A855F7">promoted</span>';
+        } else if (entry.type === 'param_tune' || entry.type === 'prompt_tune') {
+          var ptScore = entry.score !== undefined ? (entry.score * 100).toFixed(1) + '%' : '--';
+          var ptStatus = entry.status || '';
+          details = '<span>Best: ' + ptScore + '</span><span class="text-zinc-600 ml-2">' + _teEsc(ptStatus) + '</span>';
+          if (entry.type === 'prompt_tune' && entry.prompt_preview) {
+            details += '<span class="text-zinc-700 ml-2 text-[10px]">"' + _teEsc(entry.prompt_preview) + '"</span>';
+          }
+        } else if (entry.type === 'judge') {
+          details = '<span>Grade: ' + _teEsc(entry.grade || '--') + '</span>';
+          if (entry.overall_score !== null && entry.overall_score !== undefined) details += '<span class="ml-2">Score: ' + entry.overall_score + '</span>';
+          if (entry.mode) details += '<span class="text-zinc-600 ml-2">' + _teEsc(entry.mode) + '</span>';
+        }
+
+        var ts = new Date(entry.timestamp).toLocaleString();
+
+        return '<div class="tl-entry ' + (isBaseline ? 'baseline' : '') + '" data-type="' + entry.type + '">' +
+          '<div class="flex items-center gap-2 mb-1">' +
+            '<span class="text-[10px] font-display font-medium tracking-wider uppercase" style="color:' + typeColors[entry.type] + '">' + typeLabels[entry.type] + '</span>' +
+            (isBaseline ? '<span class="text-[9px] px-1.5 py-0.5 rounded" style="background:rgba(191,255,0,0.15);color:var(--lime)">BASELINE</span>' : '') +
+            '<span class="text-[10px] text-zinc-700 ml-auto">' + ts + '</span>' +
+          '</div>' +
+          '<div class="text-[11px] flex items-center gap-1 flex-wrap">' + details + '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    function tlFilterTimeline(filter) {
+      _tlFilter = filter;
+      document.querySelectorAll('#tlFilterPills .tl-filter').forEach(function(btn) {
+        var isActive = btn.dataset.filter === filter;
+        btn.style.opacity = isActive ? '1' : '0.5';
+      });
+      tlRenderTimeline();
     }
 
     // -------------------------------------------------------------------
@@ -7974,6 +8392,7 @@
 
     // --- Task #7: Wire model selection changes ---
     function ptOnModelsChanged() {
+      _scSetModels(ptSelectedModels);
       const paramDefs = ptComputeAvailableParams();
       ptRenderDynamicParams(paramDefs);
     }
@@ -8403,6 +8822,10 @@
           sel.innerHTML += `<option value="${s.id}" ${s.id === existing ? 'selected' : ''}>${_teEsc(s.name)} (${s.test_case_count || 0} cases)</option>`;
         }
       }
+      // Pre-select from shared context if no existing value
+      if (!existing && _sharedContext.suite_id) {
+        sel.value = _sharedContext.suite_id;
+      }
     }
 
     // Helper: build compound key for ptSelectedModels
@@ -8423,6 +8846,9 @@
       grid.innerHTML = '';
       ptSelectedModels.clear();
       if (!config || !config.providers) return;
+
+      // Pre-select from shared context if available
+      const scModels = _scGetModels();
 
       for (const [provider, provData] of Object.entries(config.providers)) {
         const color = getColor(provider);
@@ -8461,6 +8887,11 @@
           card.dataset.modelId = m.model_id;
           card.dataset.compoundKey = ck;
           card.dataset.providerKey = provData.provider_key || provider;
+          // Pre-select from shared context
+          if (scModels.size > 0 && scModels.has(ck)) {
+            ptSelectedModels.add(ck);
+            card.classList.add('selected');
+          }
           card.onclick = (e) => {
             e.stopPropagation();
             if (ptSelectedModels.has(ck)) { ptSelectedModels.delete(ck); card.classList.remove('selected'); }
@@ -8472,6 +8903,10 @@
         }
         group.appendChild(subgrid);
         grid.appendChild(group);
+      }
+      // If pre-selection happened, trigger param update
+      if (ptSelectedModels.size > 0 && scModels.size > 0) {
+        ptOnModelsChanged();
       }
     }
 
@@ -8532,6 +8967,7 @@
       document.getElementById('ptBestCard').classList.add('hidden');
       document.getElementById('ptResultsSection').classList.remove('hidden');
       document.getElementById('ptApplyBestBtn').classList.add('hidden');
+      document.getElementById('ptReEvalBtn').classList.add('hidden');
       document.getElementById('ptResultsHead').innerHTML = '';
       document.getElementById('ptResultsBody').innerHTML = '';
       const _adjBanner = document.getElementById('ptAdjustmentsSummary');
@@ -8548,11 +8984,15 @@
       const perModelSpaces = ptBuildPerModelSearchSpaces();
       // Send targets as [{provider_key, model_id}] for precise provider matching
       const targets = Array.from(ptSelectedModels).map(k => _ptParseCompoundKey(k));
+      // Write suite to shared context
+      _scSetSuite(suiteId, document.getElementById('ptSuiteSelect').options[document.getElementById('ptSuiteSelect').selectedIndex]?.text || '');
       const body = {
         suite_id: suiteId,
         targets: targets,
         search_space: searchSpace,
       };
+      // Include experiment_id from shared context
+      if (_sharedContext.experiment_id) body.experiment_id = _sharedContext.experiment_id;
       if (perModelSpaces) {
         body.per_model_search_spaces = perModelSpaces;
       }
@@ -8691,6 +9131,7 @@
         case 'tune_complete':
           document.getElementById('ptProgressSection').classList.add('hidden');
           document.getElementById('ptApplyBestBtn').classList.remove('hidden');
+          document.getElementById('ptReEvalBtn').classList.remove('hidden');
           if (msg.best_config) { ptBestConfig = msg.best_config; ptBestScore = msg.best_score || ptBestScore; }
           ptUpdateBestCard();
           ptRenderResultsTable();
@@ -8708,6 +9149,7 @@
           if (_activeParamTuneJobId) {
             document.getElementById('ptProgressSection').classList.add('hidden');
             document.getElementById('ptApplyBestBtn').classList.remove('hidden');
+            document.getElementById('ptReEvalBtn').classList.remove('hidden');
             ptRenderResultsTable();
             _activeParamTuneJobId = null;
             _activeParamTuneRunId = null;
@@ -8739,6 +9181,11 @@
           _ptClearETA();
           _ptResetStartBtn();
           showToast('Tuning cancelled. Partial results saved.', '');
+          break;
+
+        case 'eval_promoted':
+          showToast('Best result promoted to eval history', 'success');
+          teLoadHistory();
           break;
       }
     }
@@ -8990,6 +9437,35 @@
       showToast('Applied: ' + (appliedParts.length ? appliedParts.join(', ') : 'best config'), 'success');
     }
 
+    // --- Bridge B: Apply best param tune config and re-run eval ---
+    async function ptApplyAndReEval() {
+      if (!ptBestConfig) return;
+      const configDesc = Object.entries(ptBestConfig)
+        .filter(([k]) => !['model_name','model_id'].includes(k))
+        .map(([k,v]) => `${k}=${v}`).join(', ');
+      showModal('Apply & Re-Eval',
+        `Re-run eval with best config?\n${configDesc}`,
+        async () => {
+          const skipKeys = new Set(['model_name', 'model_id']);
+          const provParams = {};
+          for (const [k, v] of Object.entries(ptBestConfig)) {
+            if (skipKeys.has(k) || v === undefined || v === null) continue;
+            if (k === 'temperature') { _sharedContext.temperature = v; continue; }
+            if (k === 'tool_choice') { _sharedContext.tool_choice = v; continue; }
+            provParams[k] = v;
+          }
+          _sharedContext.provider_params = provParams;
+          _sharedContext.last_updated_by = 'param_tuner';
+          _scSave();
+          showToolEvalView('run');
+          ptApplyBest();
+          await new Promise(r => setTimeout(r, 300));
+          teStartEval();
+        },
+        { confirmLabel: 'Start Eval' }
+      );
+    }
+
     function ptExportCSV() {
       if (!ptResults.length) { showToast('No results to export', 'error'); return; }
       const cfgKeys = _ptConfigKeys();
@@ -9128,6 +9604,7 @@
           document.getElementById('ptProgressSection').classList.remove('hidden');
           document.getElementById('ptResultsSection').classList.remove('hidden');
           document.getElementById('ptApplyBestBtn').classList.add('hidden');
+          document.getElementById('ptReEvalBtn').classList.add('hidden');
           const pct = ptTotalCombos > 0 ? Math.round((ptResults.length / ptTotalCombos) * 100) : 0;
           document.getElementById('ptProgressBar').style.width = pct + '%';
           document.getElementById('ptProgressLabel').textContent = `Reconnected — tuning in progress`;
@@ -9149,6 +9626,7 @@
           document.getElementById('ptProgressSection').classList.add('hidden');
           document.getElementById('ptResultsSection').classList.remove('hidden');
           document.getElementById('ptApplyBestBtn').classList.remove('hidden');
+          document.getElementById('ptReEvalBtn').classList.remove('hidden');
           _activeParamTuneRunId = null;
           _ptSeenCombos = new Set();
 
@@ -9242,6 +9720,7 @@
         document.getElementById('ptBestCard').classList.add('hidden');
         document.getElementById('ptResultsSection').classList.remove('hidden');
         document.getElementById('ptApplyBestBtn').classList.add('hidden');
+        document.getElementById('ptReEvalBtn').classList.add('hidden');
         document.getElementById('ptResultsHead').innerHTML = '';
         document.getElementById('ptResultsBody').innerHTML = '';
         const _adjBanner = document.getElementById('ptAdjustmentsSummary');
@@ -9438,20 +9917,33 @@
         sel.innerHTML = '<option value="">-- Select a tool eval suite --</option>' +
           suites.map(s => `<option value="${s.id}" ${s.id === current ? 'selected' : ''}>${_teEsc(s.name)} (${s.test_case_count || 0} cases)</option>`).join('');
       } catch (e) {}
+      // Pre-select from shared context if no current value
+      if (!current && _sharedContext.suite_id) {
+        sel.value = _sharedContext.suite_id;
+      }
       prtUpdateEstimate();
     }
 
     function prtRenderModelGrid() {
       const grid = document.getElementById('prtModelGrid');
       if (!config || !config.providers) { grid.innerHTML = '<div class="text-xs text-zinc-600 font-body">No models loaded</div>'; return; }
+      prtSelectedModels.clear();
+      // Pre-select from shared context if available
+      const scModels = _scGetModels();
       let html = '';
       for (const [provName, provData] of Object.entries(config.providers)) {
+        const pk = provData.provider_key || provName;
         const models = getProviderModels(provData);
         for (const m of models) {
-          const checked = prtSelectedModels.has(m.model_id);
+          const ck = pk + '::' + m.model_id;
+          const preSelect = scModels.size > 0 && scModels.has(ck);
+          if (preSelect) prtSelectedModels.add(ck);
+          const checked = prtSelectedModels.has(ck);
           const color = getColor(provName);
+          // Escape compound key for inline handler (replace single quotes)
+          const ckEsc = ck.replace(/'/g, "\\'");
           html += `<label class="flex items-center gap-2 py-1 px-2 rounded cursor-pointer hover:bg-white/5 transition-colors">
-            <input type="checkbox" ${checked ? 'checked' : ''} onchange="prtToggleModel('${m.model_id}', this.checked)" style="accent-color:${color.text}">
+            <input type="checkbox" ${checked ? 'checked' : ''} onchange="prtToggleModel('${ckEsc}', this.checked)" style="accent-color:${color.text}">
             <span class="text-xs font-mono text-zinc-400">${m.display_name || m.model_id}</span>
             <span class="text-[9px] font-mono text-zinc-700">${provName}</span>
           </label>`;
@@ -9460,9 +9952,10 @@
       grid.innerHTML = html || '<div class="text-xs text-zinc-600 font-body">No models available</div>';
     }
 
-    function prtToggleModel(modelId, checked) {
-      if (checked) prtSelectedModels.add(modelId);
-      else prtSelectedModels.delete(modelId);
+    function prtToggleModel(compoundKey, checked) {
+      if (checked) prtSelectedModels.add(compoundKey);
+      else prtSelectedModels.delete(compoundKey);
+      _scSetModels(prtSelectedModels);
       prtUpdateEstimate();
     }
 
@@ -9528,15 +10021,26 @@
         cfg.selection_ratio = parseFloat(document.getElementById('prtSelRatio').value) || 0.4;
       }
 
+      // Parse compound keys into target_targets for precise provider matching
+      const prtTargets = Array.from(prtSelectedModels).map(k => {
+        const i = k.indexOf('::');
+        if (i >= 0) return { provider_key: k.substring(0, i), model_id: k.substring(i + 2) };
+        return { provider_key: '', model_id: k };
+      });
       const body = {
         suite_id: suiteId,
-        target_models: Array.from(prtSelectedModels),
+        target_models: prtTargets.map(t => t.model_id),
+        target_targets: prtTargets,
         meta_model: metaParsed.model_id,
         meta_provider_key: metaParsed.provider_key || undefined,
         mode: prtMode,
         config: cfg
       };
       if (basePrompt) body.base_prompt = basePrompt;
+      // Write suite to shared context
+      _scSetSuite(suiteId, document.getElementById('prtSuiteSelect').options[document.getElementById('prtSuiteSelect').selectedIndex]?.text || '');
+      // Include experiment_id from shared context
+      if (_sharedContext.experiment_id) body.experiment_id = _sharedContext.experiment_id;
 
       // Reset state
       prtPrompts = [];
@@ -10236,6 +10740,8 @@
         case 'judge_complete':
           document.getElementById('jgReportStatus').textContent = 'Complete';
           if (data.judge_report_id) window.jgLastReportId = data.judge_report_id;
+          // Bridge D: show next-steps action bridges
+          document.getElementById('jgActionBridges')?.classList.remove('hidden');
           showToast('Judge report complete!', 'success');
           break;
 
@@ -10405,6 +10911,7 @@
       jgVerdicts = [];
       jgReport = null;
       document.getElementById('jgVerdicts').innerHTML = '';
+      document.getElementById('jgActionBridges')?.classList.add('hidden');
       document.getElementById('jgReportSection').classList.remove('hidden');
       document.getElementById('jgReportStatus').textContent = 'Starting judge...';
       document.getElementById('jgGradeBadge').textContent = '...';
@@ -10438,8 +10945,26 @@
     /** Judge from history: load the run view first, then trigger judge */
     async function jgJudgeFromHistory(runId) {
       await teViewHistoryRun(runId);
-      // Small delay to let DOM settle after view switch
       await new Promise(r => setTimeout(r, 100));
+      // Ensure judge model is populated (Bridge E)
+      jgPopulateJudgeModel();
+      const sel = document.getElementById('jgJudgeModel');
+      if (!sel?.value) {
+        const j = _p10Settings?.judge;
+        if (j?.model_id) {
+          const ck = j.provider_key ? (j.provider_key + '::' + j.model_id) : j.model_id;
+          sel.value = ck;
+        }
+      }
+      if (!sel?.value) {
+        showToast('No judge model configured. Set one in Settings > LLM Judge.', 'error');
+        return;
+      }
+      const toggle = document.getElementById('jgToggle');
+      if (toggle && !toggle.checked) {
+        toggle.checked = true;
+        jgTogglePanel();
+      }
       jgRunPostEval(runId);
     }
 
@@ -11211,9 +11736,11 @@
         }
         const paramsStr = c.expected_params ? '(' + Object.entries(c.expected_params).map(([k,v]) => `${k}=${JSON.stringify(v)}`).join(', ') + ')' : '';
         const mtBadge = c.multi_turn ? '<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm ml-2" style="color:var(--lime);background:rgba(191,255,0,0.08);border:1px solid rgba(191,255,0,0.15)">MULTI-TURN</span>' : '';
+        const scMode = c.scoring_config?.mode;
+        const scBadge = scMode && scMode !== 'exact' ? `<span class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm ml-2" style="color:#60A5FA;background:rgba(96,165,250,0.08);border:1px solid rgba(96,165,250,0.15)" title="Scoring: ${scMode}">${scMode.replace('_', ' ').toUpperCase()}</span>` : '';
         return `<div class="flex items-start justify-between px-3 py-2 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);">
           <div class="flex-1 min-w-0">
-            <div class="text-sm text-zinc-300 font-body mb-0.5">#${i+1} "${_teEsc(_teTruncate(c.prompt, 80))}"${mtBadge}</div>
+            <div class="text-sm text-zinc-300 font-body mb-0.5">#${i+1} "${_teEsc(_teTruncate(c.prompt, 80))}"${mtBadge}${scBadge}</div>
             <div class="text-xs font-mono text-zinc-500">Expected: ${expStr}${paramsStr ? ' ' + _teEsc(paramsStr) : ''}</div>
           </div>
           <div class="flex gap-2 ml-3 flex-shrink-0 mt-1">
@@ -11236,6 +11763,9 @@
       document.getElementById('teCaseExpParams').value = '';
       document.getElementById('teCaseNoTool').checked = false;
       document.getElementById('teCaseExpTool').disabled = false;
+      document.getElementById('teCaseScoringMode').value = 'exact';
+      document.getElementById('teCaseEpsilon').value = '0.01';
+      document.getElementById('teCaseScoringEpsilon').classList.add('hidden');
       document.getElementById('teCaseMultiTurn').checked = false;
       document.getElementById('teCaseMultiTurnSettings').classList.add('hidden');
       document.getElementById('teCaseMaxRounds').value = '5';
@@ -11262,6 +11792,11 @@
         document.getElementById('teCaseExpTool').value = c.expected_tool || '';
       }
       document.getElementById('teCaseExpParams').value = c.expected_params ? JSON.stringify(c.expected_params, null, 2) : '';
+      // Scoring mode (S3)
+      const sc = c.scoring_config || {};
+      document.getElementById('teCaseScoringMode').value = sc.mode || 'exact';
+      document.getElementById('teCaseEpsilon').value = sc.epsilon ?? 0.01;
+      document.getElementById('teCaseScoringEpsilon').classList.toggle('hidden', (sc.mode || 'exact') !== 'numeric_tolerance');
       const isMultiTurn = !!c.multi_turn;
       document.getElementById('teCaseMultiTurn').checked = isMultiTurn;
       document.getElementById('teCaseMultiTurnSettings').classList.toggle('hidden', !isMultiTurn);
@@ -11282,6 +11817,11 @@
       const checked = document.getElementById('teCaseNoTool').checked;
       document.getElementById('teCaseExpTool').disabled = checked;
       if (checked) document.getElementById('teCaseExpTool').value = '';
+    }
+
+    function teToggleScoringEpsilon() {
+      const mode = document.getElementById('teCaseScoringMode').value;
+      document.getElementById('teCaseScoringEpsilon').classList.toggle('hidden', mode !== 'numeric_tolerance');
     }
 
     function teToggleMultiTurn() {
@@ -11326,6 +11866,18 @@
       errEl.classList.add('hidden');
 
       const caseData = { prompt, expected_tool, expected_params };
+
+      // Scoring config (S3 fuzzy scoring)
+      const scoringMode = document.getElementById('teCaseScoringMode').value;
+      if (scoringMode && scoringMode !== 'exact') {
+        const sc = { mode: scoringMode };
+        if (scoringMode === 'numeric_tolerance') {
+          sc.epsilon = parseFloat(document.getElementById('teCaseEpsilon').value) || 0.01;
+        }
+        caseData.scoring_config = sc;
+      } else {
+        caseData.scoring_config = null;
+      }
 
       // Multi-turn fields
       if (document.getElementById('teCaseMultiTurn').checked) {
@@ -11443,6 +11995,7 @@
       const tools = teCurrentSuite.tools || [];
       if (!tools.length) { showToast('Add at least one tool first', 'error'); return; }
       teRunSuiteId = teCurrentSuite.id;
+      _scSetSuite(teCurrentSuite.id, teCurrentSuite.name);
       document.getElementById('teRunTitle').textContent = 'Run Eval: ' + (teCurrentSuite.name || 'Untitled');
       teRenderEvalModelGrid();
       _teResetRunView();
@@ -11517,6 +12070,9 @@
       teSelectedModels.clear();
       if (!config || !config.providers) return;
 
+      // Pre-select from shared context if available
+      const scModels = _scGetModels();
+
       for (const [provider, provData] of Object.entries(config.providers)) {
         const color = getColor(provider);
         const models = getProviderModels(provData);
@@ -11541,6 +12097,7 @@
             if (allSel) { teSelectedModels.delete(ck); c.classList.remove('selected'); }
             else { teSelectedModels.add(ck); c.classList.add('selected'); }
           });
+          _scSetModels(teSelectedModels);
           ppOnModelSelectionChange('tooleval');
         };
         group.appendChild(header);
@@ -11554,6 +12111,11 @@
           card.dataset.modelId = m.model_id;
           card.dataset.compoundKey = ck;
           card.dataset.providerKey = provData.provider_key || provider;
+          // Pre-select from shared context
+          if (scModels.size > 0 && scModels.has(ck)) {
+            teSelectedModels.add(ck);
+            card.classList.add('selected');
+          }
           card.onclick = (e) => {
             e.stopPropagation();
             if (teSelectedModels.has(ck)) {
@@ -11563,6 +12125,7 @@
               teSelectedModels.add(ck);
               card.classList.add('selected');
             }
+            _scSetModels(teSelectedModels);
             ppOnModelSelectionChange('tooleval');
           };
           card.innerHTML = `
@@ -11575,6 +12138,10 @@
         }
         group.appendChild(subgrid);
         grid.appendChild(group);
+      }
+      // If pre-selection happened, trigger param panel update
+      if (teSelectedModels.size > 0 && scModels.size > 0) {
+        ppOnModelSelectionChange('tooleval');
       }
     }
 
@@ -11608,6 +12175,9 @@
       document.getElementById('teStartBtn').innerHTML = '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> Start Eval';
       document.getElementById('teCancelEvalBtn').classList.add('hidden');
       document.getElementById('teExportBtn').classList.add('hidden');
+      document.getElementById('teActionBridges')?.classList.add('hidden');
+      document.getElementById('teDeltaBanner')?.classList.add('hidden');
+      document.getElementById('tePinBaselineBtn')?.classList.add('hidden');
       window.teLastEvalId = null;
     }
 
@@ -11638,20 +12208,31 @@
       const tePpParams = ppCollectParams('tooleval');
       const teJudgeConfig = jgGetConfig();
       const judgeConcurrency = _p10Settings?.judge?.concurrency || 4;
+      const teTemp = parseFloat(document.getElementById('teTemperature').value) || 0.0;
+      const teTC = document.getElementById('teToolChoice').value;
+      // Write current config to shared context
+      _scSetConfig({ temperature: teTemp, tool_choice: teTC });
       const body = {
         suite_id: teRunSuiteId,
         targets: Array.from(teSelectedModels).map(k => { const i = k.indexOf('::'); return { provider_key: k.substring(0, i), model_id: k.substring(i + 2) }; }),
-        temperature: parseFloat(document.getElementById('teTemperature').value) || 0.0,
-        tool_choice: document.getElementById('teToolChoice').value,
+        temperature: teTemp,
+        tool_choice: teTC,
         judge_concurrency: judgeConcurrency,
         ...(tePpParams ? { provider_params: tePpParams } : {}),
         ...(teJudgeConfig ? { judge: teJudgeConfig } : {}),
       };
+      // Include experiment_id from shared context
+      if (_sharedContext.experiment_id) body.experiment_id = _sharedContext.experiment_id;
+      // Include system_prompt if available (shared context, Phase 2)
+      if (_sharedContext.system_prompt) {
+        body.system_prompt = _sharedContext.system_prompt;
+      }
 
       // Reset judge state
       jgVerdicts = [];
       jgReport = null;
       document.getElementById('jgReportSection')?.classList.add('hidden');
+      document.getElementById('jgActionBridges')?.classList.add('hidden');
       document.getElementById('jgVerdicts') && (document.getElementById('jgVerdicts').innerHTML = '');
       // Show/hide judge column in live results table
       const jgColHeader = document.getElementById('jgLiveColHeader');
@@ -11879,6 +12460,30 @@
             window.teLastEvalId = data.eval_id;
             document.getElementById('teExportBtn').classList.remove('hidden');
           }
+          // Bridge A: show action bridges on eval complete
+          document.getElementById('teActionBridges')?.classList.remove('hidden');
+          // M6: Show "Pin as Baseline" button if experiment is active
+          const pinBtn = document.getElementById('tePinBaselineBtn');
+          if (pinBtn) {
+            if (_sharedContext.experiment_id) pinBtn.classList.remove('hidden');
+            else pinBtn.classList.add('hidden');
+          }
+          // M6: Delta banner
+          if (data.delta !== undefined && data.delta !== null) {
+            const banner = document.getElementById('teDeltaBanner');
+            if (banner) {
+              const pct = (data.delta * 100).toFixed(1);
+              const sign = data.delta >= 0 ? '+' : '';
+              const color = data.delta >= 0 ? '#22C55E' : '#EF4444';
+              banner.innerHTML = `vs. baseline: <span style="color:${color};font-weight:700">${sign}${pct}%</span>`;
+              banner.style.border = `1px solid ${data.delta >= 0 ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`;
+              banner.classList.remove('hidden');
+            }
+            if (data.baseline_score !== undefined) {
+              _sharedContext._baseline_score = data.baseline_score;
+              _scSave();
+            }
+          }
           showToast('Eval complete!', 'success');
           teLoadHistory();
           _teResetStartBtn();
@@ -11956,6 +12561,13 @@
           const data = msg.data || msg;
           jgHandleSSE({ type: 'compare_complete', ...(data || {}) });
           if (isJudge) _activeJudgeJobId = null;
+          break;
+        }
+
+        case 'eval_promoted': {
+          showToast('Best result promoted to eval history', 'success');
+          // Refresh history if suites view is visible
+          teLoadHistory();
           break;
         }
 
@@ -12175,26 +12787,217 @@
       } catch {}
     }
 
+    function _teBuildConfigSummary(config) {
+      if (!config) return '';
+      const parts = [];
+      if (config.temperature !== undefined) parts.push('temp=' + config.temperature);
+      if (config.tool_choice) parts.push('tool_choice=' + config.tool_choice);
+      if (config.provider_params) {
+        Object.entries(config.provider_params).sort().forEach(([k, v]) => parts.push(k + '=' + v));
+      }
+      if (config.system_prompt) parts.push("prompt='" + config.system_prompt.slice(0, 30) + "...'");
+      return parts.join(', ') || 'defaults';
+    }
+
+    // --- Bridge A: Eval Results -> Tune Parameters / Tune Prompt ---
+    function teBridgeToParamTuner() {
+      _scSetSuite(teRunSuiteId, document.getElementById('teRunTitle')?.textContent?.replace(/^(Run Eval|History): /, '') || '');
+      _scSetModels(teSelectedModels);
+      _scSetConfig({
+        temperature: parseFloat(document.getElementById('teTemperature')?.value) || 0.0,
+        tool_choice: document.getElementById('teToolChoice')?.value || 'required',
+      });
+      _sharedContext.last_updated_by = 'tool_eval';
+      _scSave();
+      showToolEvalView('pt-config');
+    }
+
+    function teBridgeToPromptTuner() {
+      _scSetSuite(teRunSuiteId, document.getElementById('teRunTitle')?.textContent?.replace(/^(Run Eval|History): /, '') || '');
+      _scSetModels(teSelectedModels);
+      _scSetConfig({
+        temperature: parseFloat(document.getElementById('teTemperature')?.value) || 0.0,
+        tool_choice: document.getElementById('teToolChoice')?.value || 'required',
+      });
+      _sharedContext.last_updated_by = 'tool_eval';
+      _scSave();
+      showToolEvalView('prt-config');
+    }
+
+    // --- M6: Pin as Baseline ---
+    async function tePinAsBaseline() {
+      const expId = _sharedContext.experiment_id;
+      if (!expId || !window.teLastEvalId) { showToast('No experiment or eval run', 'error'); return; }
+      try {
+        const res = await apiFetch(`/api/experiments/${expId}/baseline`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ eval_run_id: window.teLastEvalId }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          showToast(`Baseline set (score: ${(data.baseline_score * 100).toFixed(1)}%)`, 'success');
+          _sharedContext._baseline_score = data.baseline_score;
+          _scSave();
+        } else {
+          const err = await res.json().catch(() => ({}));
+          showToast(err.error || 'Failed to pin baseline', 'error');
+        }
+      } catch (e) { showToast('Error: ' + e.message, 'error'); }
+    }
+
+    // --- M6: Pin from history row ---
+    async function tePinHistoryAsBaseline(runId) {
+      const expId = _sharedContext.experiment_id;
+      if (!expId) { showToast('No experiment active', 'error'); return; }
+      try {
+        const res = await apiFetch(`/api/experiments/${expId}/baseline`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ eval_run_id: runId }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          showToast(`Baseline set (score: ${(data.baseline_score * 100).toFixed(1)}%)`, 'success');
+          _sharedContext._baseline_score = data.baseline_score;
+          _scSave();
+          teLoadHistory();
+        } else {
+          const err = await res.json().catch(() => ({}));
+          showToast(err.error || 'Failed to pin baseline', 'error');
+        }
+      } catch (e) { showToast('Error: ' + e.message, 'error'); }
+    }
+
+    // --- Bridge C: Prompt Tuner Best -> Save to Suite / Apply & Re-Eval ---
+    async function prtSaveToSuite() {
+      if (!prtBestPrompt) { showToast('No best prompt available', 'error'); return; }
+      const suiteId = _sharedContext.suite_id || document.getElementById('prtSuiteSelect')?.value;
+      if (!suiteId) { showToast('No suite selected', 'error'); return; }
+      showModal('Save Prompt to Suite',
+        `Save the best prompt as the default system prompt for "${_sharedContext.suite_name || 'this suite'}"?`,
+        async () => {
+          try {
+            const res = await apiFetch(`/api/tool-suites/${suiteId}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ system_prompt: prtBestPrompt }),
+            });
+            if (res.ok) { showToast('Prompt saved to suite', 'success'); }
+            else { const err = await res.json().catch(() => ({})); showToast(err.error || 'Failed', 'error'); }
+          } catch (e) { showToast('Error: ' + e.message, 'error'); }
+        },
+        { confirmLabel: 'Save' }
+      );
+    }
+
+    async function prtApplyAndReEval() {
+      if (!prtBestPrompt) { showToast('No best prompt available', 'error'); return; }
+      showModal('Apply & Re-Eval', 'Re-run eval with the best prompt as system prompt?',
+        async () => {
+          _sharedContext.system_prompt = prtBestPrompt;
+          _sharedContext.last_updated_by = 'prompt_tuner';
+          _scSave();
+          showToolEvalView('run');
+          await new Promise(r => setTimeout(r, 300));
+          teStartEval();
+        },
+        { confirmLabel: 'Start Eval' }
+      );
+    }
+
+    // --- Bridge D: Judge Report -> Next Steps ---
+    function jgBridgeToParamTuner() {
+      _sharedContext.last_updated_by = 'judge';
+      _scSave();
+      showToolEvalView('pt-config');
+    }
+    function jgBridgeToPromptTuner() {
+      const recs = Array.from(document.querySelectorAll('#jgRecommendations li'))
+        .map(li => li.textContent.trim()).filter(Boolean).join('\n');
+      if (recs) _sharedContext.prompt_tuner_hint = recs;
+      _sharedContext.last_updated_by = 'judge';
+      _scSave();
+      showToolEvalView('prt-config');
+    }
+    function jgBridgeToReEval() {
+      _sharedContext.last_updated_by = 'judge';
+      _scSave();
+      showToolEvalView('run');
+    }
+
+    function _teJudgeGradeColor(grade) {
+      if (!grade) return '#85858F';
+      const g = grade.charAt(0).toUpperCase();
+      if (g === 'A') return '#22C55E';
+      if (g === 'B') return '#38BDF8';
+      if (g === 'C') return '#EAB308';
+      if (g === 'D') return '#F97316';
+      if (g === 'F') return '#EF4444';
+      return '#85858F';
+    }
+
+    function _tePromotedBadge(config) {
+      if (!config || !config.promoted_from) return '';
+      const src = config.promoted_from;
+      let label = 'promoted';
+      if (src.startsWith('param_tune:')) label = 'from param tune';
+      else if (src.startsWith('prompt_tune:')) label = 'from prompt tune';
+      return ` <span class="text-[9px] px-1.5 py-0.5 rounded" style="background:rgba(168,85,247,0.15);color:#A855F7;">${label}</span>`;
+    }
+
     function teRenderHistory() {
       const body = document.getElementById('teHistoryBody');
+      const hasExperiment = !!_sharedContext.experiment_id;
+      const baselineScore = _sharedContext._baseline_score;
       if (!teEvalHistory.length) {
-        body.innerHTML = '<tr><td colspan="5" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No eval runs yet.</td></tr>';
+        body.innerHTML = '<tr><td colspan="7" class="px-5 py-8 text-center text-zinc-600 text-sm font-body">No eval runs yet.</td></tr>';
         return;
       }
       body.innerHTML = teEvalHistory.map(r => {
-        const models = r.models_json ? (typeof r.models_json === 'string' ? JSON.parse(r.models_json) : r.models_json) : [];
-        const summaries = r.summary_json ? (typeof r.summary_json === 'string' ? JSON.parse(r.summary_json) : r.summary_json) : [];
+        const models = r.models || (r.models_json ? (typeof r.models_json === 'string' ? JSON.parse(r.models_json) : r.models_json) : []);
+        const summaries = r.summary || (r.summary_json ? (typeof r.summary_json === 'string' ? JSON.parse(r.summary_json) : r.summary_json) : []);
         const avgOverall = summaries.length > 0 ? (summaries.reduce((s, x) => s + (x.overall_pct || 0), 0) / summaries.length).toFixed(1) : '-';
         const overallColor = avgOverall !== '-' ? _teScoreColor(parseFloat(avgOverall)) : '#85858F';
         const ts = _teTimeAgo(r.timestamp);
         const modelStr = models.length <= 2 ? models.join(', ') : models.length + ' models';
+        const configSummary = r.config ? _teBuildConfigSummary(r.config) : '';
+        const promotedBadge = _tePromotedBadge(r.config);
+        const configCell = configSummary
+          ? `<span class="text-[10px] font-mono text-zinc-600" title="${_teEsc(configSummary)}">${_teEsc(configSummary.length > 40 ? configSummary.slice(0, 40) + '...' : configSummary)}</span>${promotedBadge}`
+          : (promotedBadge || '<span class="text-zinc-700 text-[10px]">-</span>');
+        // Judge grade badge (M5)
+        const judgeGrade = r.judge_grade;
+        const judgeColor = _teJudgeGradeColor(judgeGrade);
+        const judgeCell = judgeGrade
+          ? `<span class="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded" style="background:${judgeColor}20;color:${judgeColor}">${_teEsc(judgeGrade)}</span>`
+          : '<span class="text-zinc-700 text-[10px]">--</span>';
+        // M6: Delta column when experiment is active
+        let deltaCell = '';
+        if (hasExperiment && baselineScore != null && avgOverall !== '-') {
+          const runScore = parseFloat(avgOverall) / 100;
+          const delta = runScore - baselineScore;
+          const deltaPct = (delta * 100).toFixed(1);
+          const sign = delta >= 0 ? '+' : '';
+          const dColor = delta >= 0 ? '#22C55E' : '#EF4444';
+          deltaCell = `<td class="px-3 py-3 text-right text-xs font-mono font-bold" style="color:${dColor}">${sign}${deltaPct}%</td>`;
+        } else if (hasExperiment) {
+          deltaCell = '<td class="px-3 py-3 text-right text-xs text-zinc-700">--</td>';
+        }
+        // M6: Pin as baseline button in actions
+        const pinBtn = hasExperiment
+          ? `<button onclick="tePinHistoryAsBaseline('${r.id}')" class="text-[10px] font-display tracking-wider uppercase mr-2" style="color:var(--lime);opacity:0.5" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.5'" title="Pin as baseline">Pin</button>`
+          : '';
         return `<tr>
           <td class="px-5 py-3 text-xs text-zinc-500 font-body">${ts}</td>
           <td class="px-5 py-3 text-sm font-body text-zinc-300">${_teEsc(r.suite_name || '')}</td>
           <td class="px-5 py-3 text-xs font-mono text-zinc-500">${_teEsc(modelStr)}</td>
+          <td class="px-5 py-3 text-xs">${configCell}</td>
+          <td class="px-5 py-3 text-center">${judgeCell}</td>
+          ${deltaCell}
           <td class="px-5 py-3 text-right text-sm font-mono font-bold" style="color:${overallColor}">${avgOverall}${avgOverall !== '-' ? '%' : ''}</td>
           <td class="px-5 py-3 text-right">
-            <button onclick="teViewHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 mr-2">View</button>
+            ${pinBtn}<button onclick="teViewHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 mr-2">View</button>
             <button onclick="jgJudgeFromHistory('${r.id}')" class="text-[10px] font-display tracking-wider uppercase mr-2" style="color:#F59E0B;opacity:0.6" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">Judge</button>
             <button onclick="teExportResults('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 mr-2" style="color:var(--lime);opacity:0.6" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">Export</button>
             <button onclick="teDeleteHistoryRun('${r.id}')" class="text-[10px] font-display tracking-wider uppercase text-zinc-700 hover:text-red-400">Delete</button>

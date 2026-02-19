@@ -211,6 +211,20 @@ async def init_db():
         except Exception:
             logger.debug("Column multi_turn_config already exists")
 
+        # M1: config_json on tool_eval_runs (full reproducible config)
+        try:
+            await db.execute("ALTER TABLE tool_eval_runs ADD COLUMN config_json TEXT")
+            await db.commit()
+        except Exception:
+            logger.debug("Column tool_eval_runs.config_json already exists")
+
+        # S3: scoring_config_json on tool_test_cases (fuzzy scoring modes)
+        try:
+            await db.execute("ALTER TABLE tool_test_cases ADD COLUMN scoring_config_json TEXT")
+            await db.commit()
+        except Exception:
+            logger.debug("Column tool_test_cases.scoring_config_json already exists")
+
         # --- Parameter Tuner ---
 
         await db.execute("""
@@ -333,6 +347,72 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_timeout ON jobs(status, timeout_at)")
         await db.commit()
+
+        # --- Experiments (M2) ---
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS experiments (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                suite_id TEXT NOT NULL,
+                suite_snapshot_json TEXT,
+                baseline_eval_id TEXT,
+                baseline_score REAL,
+                best_config_json TEXT,
+                best_score REAL DEFAULT 0.0,
+                best_source TEXT,
+                best_source_id TEXT,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active', 'archived')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_experiments_user ON experiments(user_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_experiments_suite ON experiments(suite_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_experiments_status ON experiments(user_id, status)")
+        await db.commit()
+
+        # --- M2: Experiment integration (experiment_id FK on 4 tables) ---
+
+        try:
+            await db.execute("ALTER TABLE tool_eval_runs ADD COLUMN experiment_id TEXT")
+            await db.commit()
+        except Exception:
+            logger.debug("Column tool_eval_runs.experiment_id already exists")
+
+        try:
+            await db.execute("ALTER TABLE param_tune_runs ADD COLUMN experiment_id TEXT")
+            await db.commit()
+        except Exception:
+            logger.debug("Column param_tune_runs.experiment_id already exists")
+
+        try:
+            await db.execute("ALTER TABLE prompt_tune_runs ADD COLUMN experiment_id TEXT")
+            await db.commit()
+        except Exception:
+            logger.debug("Column prompt_tune_runs.experiment_id already exists")
+
+        try:
+            await db.execute("ALTER TABLE judge_reports ADD COLUMN experiment_id TEXT")
+            await db.commit()
+        except Exception:
+            logger.debug("Column judge_reports.experiment_id already exists")
+
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tool_eval_runs_experiment ON tool_eval_runs(experiment_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_param_tune_runs_experiment ON param_tune_runs(experiment_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_prompt_tune_runs_experiment ON prompt_tune_runs(experiment_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_experiment ON judge_reports(experiment_id)")
+        await db.commit()
+
+        # M6: system_prompt on tool_suites
+        try:
+            await db.execute("ALTER TABLE tool_suites ADD COLUMN system_prompt TEXT")
+            await db.commit()
+        except Exception:
+            logger.debug("Column tool_suites.system_prompt already exists")
 
         # --- Migration: add 'interrupted' status to param_tune_runs / prompt_tune_runs ---
         # SQLite CHECK constraints can't be altered, so we recreate the tables.
@@ -690,7 +770,7 @@ async def get_tool_suite(suite_id: str, user_id: str) -> dict | None:
         return dict(row) if row else None
 
 
-async def update_tool_suite(suite_id: str, user_id: str, name: str = None, description: str = None, tools_json: str = None) -> bool:
+async def update_tool_suite(suite_id: str, user_id: str, name: str = None, description: str = None, tools_json: str = None, system_prompt: str = None) -> bool:
     """Update suite fields. Returns True if found and updated."""
     fields = []
     params = []
@@ -703,6 +783,9 @@ async def update_tool_suite(suite_id: str, user_id: str, name: str = None, descr
     if tools_json is not None:
         fields.append("tools_json = ?")
         params.append(tools_json)
+    if system_prompt is not None:
+        fields.append("system_prompt = ?")
+        params.append(system_prompt)
     if not fields:
         return False
     fields.append("updated_at = datetime('now')")
@@ -742,20 +825,20 @@ async def get_test_cases(suite_id: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-async def create_test_case(suite_id: str, prompt: str, expected_tool: str | None, expected_params: str | None, param_scoring: str = "exact", multi_turn_config: str | None = None) -> str:
+async def create_test_case(suite_id: str, prompt: str, expected_tool: str | None, expected_params: str | None, param_scoring: str = "exact", multi_turn_config: str | None = None, scoring_config_json: str | None = None) -> str:
     """Create a single test case. Returns case_id."""
     case_id = uuid.uuid4().hex
     async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute(
-            "INSERT INTO tool_test_cases (id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (case_id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config),
+            "INSERT INTO tool_test_cases (id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config, scoring_config_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (case_id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config, scoring_config_json),
         )
         await db.commit()
     return case_id
 
 
-async def update_test_case(case_id: str, suite_id: str, prompt: str = None, expected_tool: str = None, expected_params: str = None, param_scoring: str = None, multi_turn_config: str | None = None) -> bool:
+async def update_test_case(case_id: str, suite_id: str, prompt: str = None, expected_tool: str = None, expected_params: str = None, param_scoring: str = None, multi_turn_config: str | None = None, scoring_config_json: str | None = None) -> bool:
     """Update a test case. Returns True if found."""
     fields = []
     params = []
@@ -774,6 +857,9 @@ async def update_test_case(case_id: str, suite_id: str, prompt: str = None, expe
     if multi_turn_config is not None:
         fields.append("multi_turn_config = ?")
         params.append(multi_turn_config)
+    if scoring_config_json is not None:
+        fields.append("scoring_config_json = ?")
+        params.append(scoring_config_json)
     if not fields:
         return False
     params.extend([case_id, suite_id])
@@ -799,26 +885,38 @@ async def delete_test_case(case_id: str, suite_id: str) -> bool:
 
 # --- Tool Eval Runs CRUD ---
 
-async def save_tool_eval_run(user_id: str, suite_id: str, suite_name: str, models_json: str, results_json: str, summary_json: str, temperature: float) -> str:
+async def save_tool_eval_run(user_id: str, suite_id: str, suite_name: str, models_json: str, results_json: str, summary_json: str, temperature: float, config_json: str | None = None, experiment_id: str | None = None) -> str:
     """Save eval run. Returns run_id."""
     run_id = uuid.uuid4().hex
     async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute(
-            "INSERT INTO tool_eval_runs (id, user_id, suite_id, suite_name, models_json, results_json, summary_json, temperature) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (run_id, user_id, suite_id, suite_name, models_json, results_json, summary_json, temperature),
+            "INSERT INTO tool_eval_runs (id, user_id, suite_id, suite_name, models_json, results_json, summary_json, temperature, config_json, experiment_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (run_id, user_id, suite_id, suite_name, models_json, results_json, summary_json, temperature, config_json, experiment_id),
         )
         await db.commit()
     return run_id
 
 
 async def get_tool_eval_runs(user_id: str, limit: int = 50) -> list[dict]:
-    """List user's eval runs (exclude full results_json for list view)."""
+    """List user's eval runs (exclude full results_json for list view).
+
+    Includes the most recent completed judge report's grade/score for each run
+    via a LEFT JOIN on judge_reports (M5).
+    """
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, suite_id, suite_name, models_json, summary_json, temperature, timestamp "
-            "FROM tool_eval_runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+            "SELECT r.id, r.suite_id, r.suite_name, r.models_json, r.summary_json, "
+            "r.temperature, r.timestamp, r.config_json, "
+            "j.overall_grade AS judge_grade, j.overall_score AS judge_score "
+            "FROM tool_eval_runs r "
+            "LEFT JOIN ("
+            "  SELECT eval_run_id, overall_grade, overall_score, "
+            "    ROW_NUMBER() OVER (PARTITION BY eval_run_id ORDER BY timestamp DESC) AS rn "
+            "  FROM judge_reports WHERE status = 'completed'"
+            ") j ON j.eval_run_id = r.id AND j.rn = 1 "
+            "WHERE r.user_id = ? ORDER BY r.timestamp DESC LIMIT ?",
             (user_id, limit),
         )
         rows = await cursor.fetchall()
@@ -853,14 +951,15 @@ async def delete_tool_eval_run(run_id: str, user_id: str) -> bool:
 async def save_param_tune_run(
     user_id: str, suite_id: str, suite_name: str, models_json: str,
     search_space_json: str, total_combos: int,
+    experiment_id: str | None = None,
 ) -> str:
     """Create a new param tune run (status=running). Returns run_id."""
     run_id = uuid.uuid4().hex
     async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute(
-            "INSERT INTO param_tune_runs (id, user_id, suite_id, suite_name, models_json, search_space_json, total_combos) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (run_id, user_id, suite_id, suite_name, models_json, search_space_json, total_combos),
+            "INSERT INTO param_tune_runs (id, user_id, suite_id, suite_name, models_json, search_space_json, total_combos, experiment_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (run_id, user_id, suite_id, suite_name, models_json, search_space_json, total_combos, experiment_id),
         )
         await db.commit()
     return run_id
@@ -951,16 +1050,17 @@ async def save_prompt_tune_run(
     user_id: str, suite_id: str, suite_name: str, mode: str,
     target_models_json: str, meta_model: str, base_prompt: str | None,
     config_json: str, total_prompts: int,
+    experiment_id: str | None = None,
 ) -> str:
     """Create a new prompt tune run (status=running). Returns run_id."""
     run_id = uuid.uuid4().hex
     async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute(
             "INSERT INTO prompt_tune_runs (id, user_id, suite_id, suite_name, mode, "
-            "target_models_json, meta_model, base_prompt, config_json, total_prompts) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "target_models_json, meta_model, base_prompt, config_json, total_prompts, experiment_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (run_id, user_id, suite_id, suite_name, mode,
-             target_models_json, meta_model, base_prompt, config_json, total_prompts),
+             target_models_json, meta_model, base_prompt, config_json, total_prompts, experiment_id),
         )
         await db.commit()
     return run_id
@@ -1054,13 +1154,14 @@ async def save_judge_report(
     mode: str,
     eval_run_id: str | None = None,
     eval_run_id_b: str | None = None,
+    experiment_id: str | None = None,
 ) -> str:
     """Create a new judge report (status=running). Returns report id."""
     async with aiosqlite.connect(str(DB_PATH)) as conn:
         cursor = await conn.execute(
-            "INSERT INTO judge_reports (user_id, eval_run_id, eval_run_id_b, judge_model, mode) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (user_id, eval_run_id, eval_run_id_b, judge_model, mode),
+            "INSERT INTO judge_reports (user_id, eval_run_id, eval_run_id_b, judge_model, mode, experiment_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, eval_run_id, eval_run_id_b, judge_model, mode, experiment_id),
         )
         await conn.commit()
         row = await (await conn.execute(
@@ -1119,6 +1220,192 @@ async def delete_judge_report(report_id: str, user_id: str) -> bool:
         )
         await conn.commit()
         return cursor.rowcount > 0
+
+
+# --- Experiment CRUD ---
+
+
+async def create_experiment(
+    user_id: str, name: str, suite_id: str,
+    description: str = "",
+    suite_snapshot_json: str | None = None,
+    baseline_eval_id: str | None = None,
+    baseline_score: float | None = None,
+) -> str:
+    """Create a new experiment. Returns experiment id."""
+    exp_id = uuid.uuid4().hex
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        await conn.execute(
+            "INSERT INTO experiments "
+            "(id, user_id, name, description, suite_id, "
+            "suite_snapshot_json, baseline_eval_id, baseline_score) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (exp_id, user_id, name, description, suite_id,
+             suite_snapshot_json, baseline_eval_id, baseline_score),
+        )
+        await conn.commit()
+    return exp_id
+
+
+async def get_experiment(exp_id: str, user_id: str) -> dict | None:
+    """Get experiment by id."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM experiments WHERE id = ? AND user_id = ?",
+            (exp_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def get_experiments(user_id: str, limit: int = 50) -> list[dict]:
+    """List user's active experiments with run_count and suite_name."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT e.id, e.name, e.description, e.suite_id, "
+            "e.baseline_score, e.best_score, e.best_source, e.status, "
+            "e.created_at, e.updated_at, "
+            "ts.name AS suite_name, "
+            "(SELECT COUNT(*) FROM tool_eval_runs r WHERE r.experiment_id = e.id) "
+            "+ (SELECT COUNT(*) FROM param_tune_runs p WHERE p.experiment_id = e.id) "
+            "+ (SELECT COUNT(*) FROM prompt_tune_runs pt WHERE pt.experiment_id = e.id) "
+            "+ (SELECT COUNT(*) FROM judge_reports j WHERE j.experiment_id = e.id) "
+            "AS run_count "
+            "FROM experiments e "
+            "LEFT JOIN tool_suites ts ON ts.id = e.suite_id "
+            "WHERE e.user_id = ? AND e.status = 'active' "
+            "ORDER BY e.updated_at DESC LIMIT ?",
+            (user_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def update_experiment(
+    exp_id: str, user_id: str, **fields
+) -> bool:
+    """Update experiment fields. Only non-None fields are updated."""
+    allowed = {
+        "name", "description", "baseline_eval_id", "baseline_score",
+        "best_config_json", "best_score", "best_source",
+        "best_source_id", "status", "suite_snapshot_json",
+    }
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    updates["updated_at"] = "datetime('now')"
+    set_parts = []
+    values = []
+    for k, v in updates.items():
+        if v == "datetime('now')":
+            set_parts.append(f"{k} = datetime('now')")
+        else:
+            set_parts.append(f"{k} = ?")
+            values.append(v)
+    values.extend([exp_id, user_id])
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        cursor = await conn.execute(
+            f"UPDATE experiments SET {', '.join(set_parts)} "
+            "WHERE id = ? AND user_id = ?",
+            values,
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
+
+async def delete_experiment(exp_id: str, user_id: str) -> bool:
+    """Delete experiment. Returns True if deleted."""
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        cursor = await conn.execute(
+            "DELETE FROM experiments WHERE id = ? AND user_id = ?",
+            (exp_id, user_id),
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
+
+async def get_experiment_timeline(
+    exp_id: str, user_id: str
+) -> list[dict]:
+    """Get all runs linked to an experiment, ordered by timestamp.
+
+    Returns a flat list of dicts with 'type' discriminator.
+    """
+    entries = []
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        conn.row_factory = aiosqlite.Row
+
+        # Eval runs
+        cursor = await conn.execute(
+            "SELECT id, timestamp, summary_json, config_json "
+            "FROM tool_eval_runs "
+            "WHERE experiment_id = ? AND user_id = ?",
+            (exp_id, user_id),
+        )
+        for row in await cursor.fetchall():
+            entries.append({
+                "type": "eval", "id": row["id"],
+                "timestamp": row["timestamp"],
+                "summary_json": row["summary_json"],
+                "config_json": row["config_json"],
+            })
+
+        # Param tune runs
+        cursor = await conn.execute(
+            "SELECT id, timestamp, best_score, best_config_json, status "
+            "FROM param_tune_runs "
+            "WHERE experiment_id = ? AND user_id = ?",
+            (exp_id, user_id),
+        )
+        for row in await cursor.fetchall():
+            entries.append({
+                "type": "param_tune", "id": row["id"],
+                "timestamp": row["timestamp"],
+                "best_score": row["best_score"],
+                "best_config_json": row["best_config_json"],
+                "status": row["status"],
+            })
+
+        # Prompt tune runs
+        cursor = await conn.execute(
+            "SELECT id, timestamp, best_score, best_prompt, status "
+            "FROM prompt_tune_runs "
+            "WHERE experiment_id = ? AND user_id = ?",
+            (exp_id, user_id),
+        )
+        for row in await cursor.fetchall():
+            entries.append({
+                "type": "prompt_tune", "id": row["id"],
+                "timestamp": row["timestamp"],
+                "best_score": row["best_score"],
+                "best_prompt": row["best_prompt"],
+                "status": row["status"],
+            })
+
+        # Judge reports
+        cursor = await conn.execute(
+            "SELECT id, timestamp, overall_grade, overall_score, "
+            "mode, eval_run_id, status "
+            "FROM judge_reports "
+            "WHERE experiment_id = ? AND user_id = ?",
+            (exp_id, user_id),
+        )
+        for row in await cursor.fetchall():
+            entries.append({
+                "type": "judge", "id": row["id"],
+                "timestamp": row["timestamp"],
+                "overall_grade": row["overall_grade"],
+                "overall_score": row["overall_score"],
+                "mode": row["mode"],
+                "eval_run_id": row["eval_run_id"],
+                "status": row["status"],
+            })
+
+    # Sort by timestamp
+    entries.sort(key=lambda e: e["timestamp"])
+    return entries
 
 
 async def cleanup_stale_judge_reports(minutes: int = 30) -> int:

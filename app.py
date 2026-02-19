@@ -2439,7 +2439,8 @@ async def import_tool_suite(request: Request, user: dict = Depends(auth.get_curr
             if not mt_obj.get("multi_turn"):
                 mt_obj["multi_turn"] = True
             mt_config = json.dumps(mt_obj)
-        await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config)
+        sc_json = json.dumps(item["scoring_config"]) if item.get("scoring_config") else None
+        await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json)
         created += 1
     return {"status": "ok", "suite_id": suite_id, "test_cases_created": created}
 
@@ -2470,6 +2471,15 @@ async def get_tool_suite(suite_id: str, user: dict = Depends(auth.get_current_us
                 c["optimal_hops"] = mt.get("optimal_hops", 2)
             except (json.JSONDecodeError, TypeError):
                 logger.debug("Failed to parse multi_turn_config for test case in suite %s", suite_id)
+        # Parse scoring_config_json for frontend (S3)
+        if c.get("scoring_config_json"):
+            try:
+                c["scoring_config"] = json.loads(c["scoring_config_json"]) if isinstance(c["scoring_config_json"], str) else c["scoring_config_json"]
+            except (json.JSONDecodeError, TypeError):
+                c["scoring_config"] = None
+            del c["scoring_config_json"]
+        else:
+            c["scoring_config"] = None
     suite["test_cases"] = cases
     return suite
 
@@ -2489,6 +2499,25 @@ async def update_tool_suite(suite_id: str, request: Request, user: dict = Depend
                 return JSONResponse({"error": err}, status_code=400)
         tools_json = json.dumps(tools)
     updated = await db.update_tool_suite(suite_id, user["id"], name=name, description=description, tools_json=tools_json)
+    if not updated:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+@app.patch("/api/tool-suites/{suite_id}")
+async def patch_tool_suite(suite_id: str, request: Request, user: dict = Depends(auth.get_current_user)):
+    """Patch suite fields (e.g. system_prompt). Lighter than PUT."""
+    body = await request.json()
+    kwargs = {}
+    if "system_prompt" in body:
+        kwargs["system_prompt"] = body["system_prompt"]
+    if "name" in body:
+        kwargs["name"] = body["name"]
+    if "description" in body:
+        kwargs["description"] = body["description"]
+    if not kwargs:
+        return JSONResponse({"error": "No fields to update"}, status_code=400)
+    updated = await db.update_tool_suite(suite_id, user["id"], **kwargs)
     if not updated:
         return JSONResponse({"error": "Suite not found"}, status_code=404)
     return {"status": "ok"}
@@ -2534,6 +2563,14 @@ async def export_tool_suite(suite_id: str, user: dict = Depends(auth.get_current
                             tc[k] = mt[k]
             except (json.JSONDecodeError, TypeError):
                 logger.debug("Failed to parse multi_turn_config during export")
+        # Include scoring_config if set (S3)
+        if c.get("scoring_config_json"):
+            try:
+                sc = json.loads(c["scoring_config_json"]) if isinstance(c["scoring_config_json"], str) else c["scoring_config_json"]
+                if sc:
+                    tc["scoring_config"] = sc
+            except (json.JSONDecodeError, TypeError):
+                pass
         test_cases.append(tc)
     export_data = {
         "name": suite.get("name", "Untitled"),
@@ -2617,6 +2654,15 @@ async def list_test_cases(suite_id: str, user: dict = Depends(auth.get_current_u
                 c["optimal_hops"] = mt.get("optimal_hops", 2)
             except (json.JSONDecodeError, TypeError):
                 logger.debug("Failed to parse multi_turn_config for case in suite %s", suite_id)
+        # Parse scoring_config_json for frontend (S3)
+        if c.get("scoring_config_json"):
+            try:
+                c["scoring_config"] = json.loads(c["scoring_config_json"]) if isinstance(c["scoring_config_json"], str) else c["scoring_config_json"]
+            except (json.JSONDecodeError, TypeError):
+                c["scoring_config"] = None
+            del c["scoring_config_json"]
+        else:
+            c["scoring_config"] = None
     return {"cases": cases}
 
 
@@ -2658,7 +2704,8 @@ async def create_test_cases(suite_id: str, request: Request, user: dict = Depend
             expected_params = json.dumps(item["expected_params"]) if item.get("expected_params") is not None else None
             param_scoring = item.get("param_scoring", "exact")
             mt_config = _extract_mt_config(item)
-            await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config)
+            sc_json = json.dumps(item["scoring_config"]) if item.get("scoring_config") else None
+            await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json)
             created += 1
         return {"status": "ok", "created": created}
 
@@ -2670,7 +2717,8 @@ async def create_test_cases(suite_id: str, request: Request, user: dict = Depend
     expected_params = json.dumps(body["expected_params"]) if body.get("expected_params") is not None else None
     param_scoring = body.get("param_scoring", "exact")
     mt_config = _extract_mt_config(body)
-    case_id = await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config)
+    sc_json = json.dumps(body["scoring_config"]) if body.get("scoring_config") else None
+    case_id = await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json)
     return {"status": "ok", "case_id": case_id}
 
 
@@ -2706,7 +2754,12 @@ async def update_test_case(suite_id: str, case_id: str, request: Request, user: 
         else:
             # multi_turn explicitly set to false -- clear the config
             mt_config = ""  # empty string to clear in DB
-    updated = await db.update_test_case(case_id, suite_id, prompt=prompt, expected_tool=expected_tool, expected_params=expected_params, param_scoring=param_scoring, multi_turn_config=mt_config)
+    # Scoring config (S3 fuzzy scoring)
+    sc_json = None
+    if "scoring_config" in body:
+        sc_json = json.dumps(body["scoring_config"]) if body["scoring_config"] else ""  # empty string to clear
+
+    updated = await db.update_test_case(case_id, suite_id, prompt=prompt, expected_tool=expected_tool, expected_params=expected_params, param_scoring=param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json)
     if not updated:
         return JSONResponse({"error": "Test case not found"}, status_code=404)
     return {"status": "ok"}
@@ -2737,6 +2790,13 @@ async def list_tool_eval_runs(user: dict = Depends(auth.get_current_user)):
         if isinstance(run.get("summary_json"), str):
             run["summary"] = json.loads(run["summary_json"])
             del run["summary_json"]
+        # Parse config_json for frontend (M1)
+        if isinstance(run.get("config_json"), str):
+            try:
+                run["config"] = json.loads(run["config_json"])
+            except (json.JSONDecodeError, TypeError):
+                run["config"] = None
+            del run["config_json"]
     return {"runs": runs}
 
 
@@ -2755,6 +2815,13 @@ async def get_tool_eval_run(eval_id: str, user: dict = Depends(auth.get_current_
     if isinstance(run.get("summary_json"), str):
         run["summary"] = json.loads(run["summary_json"])
         del run["summary_json"]
+    # Parse config_json for frontend (M1)
+    if isinstance(run.get("config_json"), str):
+        try:
+            run["config"] = json.loads(run["config_json"])
+        except (json.JSONDecodeError, TypeError):
+            run["config"] = None
+        del run["config_json"]
     return run
 
 
@@ -2787,10 +2854,47 @@ def score_tool_selection(expected_tool, actual_tool: str | None) -> float:
     return 1.0 if actual_tool.lower() == expected_tool.lower() else 0.0
 
 
-def score_params(expected_params: dict | None, actual_params: dict | None) -> float | None:
+def _match_value(expected_val, actual_val, mode: str = "exact", epsilon: float = 0.01) -> bool:
+    """Compare a single expected vs actual value using the given scoring mode."""
+    if mode == "case_insensitive":
+        if isinstance(expected_val, str) and isinstance(actual_val, str):
+            return expected_val.lower() == actual_val.lower()
+        return expected_val == actual_val
+
+    if mode == "contains":
+        es = str(expected_val).lower()
+        av = str(actual_val).lower()
+        return es in av or av in es
+
+    if mode == "numeric_tolerance":
+        try:
+            return abs(float(expected_val) - float(actual_val)) <= epsilon
+        except (ValueError, TypeError):
+            return str(expected_val) == str(actual_val)
+
+    if mode == "regex":
+        import re
+        try:
+            return bool(re.search(str(expected_val), str(actual_val)))
+        except re.error:
+            return str(expected_val) == str(actual_val)
+
+    # Default: exact (with existing case-insensitive string and exact numeric logic)
+    if isinstance(expected_val, str) and isinstance(actual_val, str):
+        return expected_val.lower() == actual_val.lower()
+    if isinstance(expected_val, (int, float)) and isinstance(actual_val, (int, float)):
+        return float(expected_val) == float(actual_val)
+    return expected_val == actual_val
+
+
+def score_params(expected_params: dict | None, actual_params: dict | None, scoring_config: dict | None = None) -> float | None:
     """Score parameter accuracy for one test case.
 
     Returns: float 0.0-1.0, or None if params not scored.
+
+    scoring_config format:
+      {"mode": "exact|case_insensitive|contains|numeric_tolerance|regex",
+       "epsilon": 0.01}  -- epsilon only used for numeric_tolerance
     """
     if expected_params is None:
         return None
@@ -2799,22 +2903,19 @@ def score_params(expected_params: dict | None, actual_params: dict | None) -> fl
     if actual_params is None:
         return 0.0
 
+    mode = "exact"
+    epsilon = 0.01
+    if scoring_config:
+        mode = scoring_config.get("mode", "exact")
+        epsilon = scoring_config.get("epsilon", 0.01)
+
     correct = 0
     total = len(expected_params)
     for key, expected_val in expected_params.items():
         if key not in actual_params:
             continue
         actual_val = actual_params[key]
-        # String comparison: case-insensitive
-        if isinstance(expected_val, str) and isinstance(actual_val, str):
-            if expected_val.lower() == actual_val.lower():
-                correct += 1
-        # Numeric comparison
-        elif isinstance(expected_val, (int, float)) and isinstance(actual_val, (int, float)):
-            if float(expected_val) == float(actual_val):
-                correct += 1
-        # Exact match for everything else
-        elif expected_val == actual_val:
+        if _match_value(expected_val, actual_val, mode, epsilon):
             correct += 1
 
     return correct / total if total > 0 else 1.0
@@ -2837,6 +2938,7 @@ def score_multi_turn(
     expected_params: dict | None,
     valid_prerequisites: list[str],
     optimal_hops: int,
+    scoring_config: dict | None = None,
 ) -> dict:
     """Score a multi-turn tool calling chain.
 
@@ -2848,7 +2950,7 @@ def score_multi_turn(
     # --- Completion: did the final tool call match expected? ---
     final_call = tool_chain[-1]
     tool_score = score_tool_selection(expected_tool, final_call.get("tool_name"))
-    param_score = score_params(expected_params, final_call.get("params"))
+    param_score = score_params(expected_params, final_call.get("params"), scoring_config=scoring_config)
     completion = compute_overall_score(tool_score, param_score)
 
     # --- Efficiency: optimal_hops / actual_hops ---
@@ -2965,6 +3067,15 @@ async def run_single_eval(
         except (json.JSONDecodeError, TypeError):
             logger.debug("Failed to parse expected_params for test case %s", test_case.get("id"))
             expected_params = None
+
+    # Parse scoring config for fuzzy matching (S3)
+    scoring_config = None
+    sc_raw = test_case.get("scoring_config_json")
+    if sc_raw:
+        try:
+            scoring_config = json.loads(sc_raw) if isinstance(sc_raw, str) else sc_raw
+        except (json.JSONDecodeError, TypeError):
+            logger.debug("Failed to parse scoring_config_json for test case %s", test_case.get("id"))
 
     result = {
         "model_id": target.model_id,
@@ -3099,7 +3210,7 @@ async def run_single_eval(
 
     # Score
     result["tool_selection_score"] = score_tool_selection(expected_tool, result["actual_tool"])
-    result["param_accuracy"] = score_params(expected_params, result["actual_params"])
+    result["param_accuracy"] = score_params(expected_params, result["actual_params"], scoring_config=scoring_config)
     result["overall_score"] = compute_overall_score(result["tool_selection_score"], result["param_accuracy"])
 
     return result
@@ -3137,6 +3248,15 @@ async def run_multi_turn_eval(
         except (json.JSONDecodeError, TypeError):
             logger.debug("Failed to parse expected_params for multi-turn test case %s", test_case.get("id"))
             expected_params = None
+
+    # Parse scoring config for fuzzy matching (S3)
+    scoring_config = None
+    sc_raw = test_case.get("scoring_config_json")
+    if sc_raw:
+        try:
+            scoring_config = json.loads(sc_raw) if isinstance(sc_raw, str) else sc_raw
+        except (json.JSONDecodeError, TypeError):
+            logger.debug("Failed to parse scoring_config_json for multi-turn test case %s", test_case.get("id"))
 
     result = {
         "model_id": target.model_id,
@@ -3311,6 +3431,7 @@ async def run_multi_turn_eval(
             expected_params=expected_params,
             valid_prerequisites=valid_prerequisites,
             optimal_hops=optimal_hops,
+            scoring_config=scoring_config,
         )
         result["completion_score"] = scores["completion"]
         result["efficiency_score"] = scores["efficiency"]
@@ -3320,7 +3441,7 @@ async def run_multi_turn_eval(
 
         # Also set individual scores for summary compatibility
         result["tool_selection_score"] = score_tool_selection(expected_tool, result["actual_tool"])
-        result["param_accuracy"] = score_params(expected_params, result["actual_params"])
+        result["param_accuracy"] = score_params(expected_params, result["actual_params"], scoring_config=scoring_config)
 
     except Exception as e:
         result["success"] = False
@@ -3370,6 +3491,67 @@ def _compute_eval_summaries(results: list[dict], targets: list[Target]) -> list[
     return summaries
 
 
+def _avg_overall_from_summaries(summaries: list[dict]) -> float:
+    """Compute average overall score (0.0-1.0) from eval summaries.
+    Summaries use overall_pct (0-100), so we divide by 100.
+    """
+    if not summaries:
+        return 0.0
+    scores = [s.get("overall_pct", 0) for s in summaries]
+    return round(sum(scores) / len(scores) / 100, 4)
+
+
+def _build_config_summary(config: dict) -> str:
+    """Build human-readable summary from config_json dict."""
+    parts = []
+    if "temperature" in config:
+        parts.append(f"temp={config['temperature']}")
+    if "tool_choice" in config:
+        parts.append(f"tool_choice={config['tool_choice']}")
+    if config.get("provider_params"):
+        pp = config["provider_params"]
+        parts.extend(f"{k}={v}" for k, v in sorted(pp.items()))
+    if config.get("system_prompt"):
+        parts.append(f"prompt='{config['system_prompt'][:40]}...'")
+    return ", ".join(parts) if parts else "defaults"
+
+
+async def _maybe_update_experiment_best(
+    experiment_id: str,
+    user_id: str,
+    score: float,
+    config_json: str,
+    source: str,
+    source_id: str,
+) -> bool:
+    """Update experiment's best_* fields if the new score exceeds current best.
+
+    Returns True if experiment was updated.
+    """
+    exp = await db.get_experiment(experiment_id, user_id)
+    if not exp:
+        return False
+    current_best = exp.get("best_score") or 0.0
+    if score > current_best:
+        await db.update_experiment(
+            experiment_id, user_id,
+            best_config_json=config_json,
+            best_score=score,
+            best_source=source,
+            best_source_id=source_id,
+        )
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, {
+                "type": "experiment_best_updated",
+                "experiment_id": experiment_id,
+                "best_score": score,
+                "best_source": source,
+                "best_source_id": source_id,
+            })
+        return True
+    return False
+
+
 # --- Eval Engine: Job Registry Handler ---
 
 
@@ -3387,14 +3569,15 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
     temperature = float(params.get("temperature", 0.0))
     tool_choice = params.get("tool_choice", "required")
     provider_params = params.get("provider_params")
+    system_prompt = params.get("system_prompt")
     judge_config = params.get("judge")
     judge_concurrency = int(params.get("judge_concurrency", 4))
+    experiment_id = params.get("experiment_id")
 
     logger.info(
         "Tool eval started: job_id=%s user_id=%s models=%d",
         job_id, user_id, len(model_ids) if model_ids else 0,
     )
-
 
     # Load suite + test cases
     suite = await db.get_tool_suite(suite_id, user_id)
@@ -3505,9 +3688,9 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
 
                 if mt_config and mt_config.get("multi_turn"):
                     case_with_mt = {**case, "_mt_config": mt_config}
-                    result = await run_multi_turn_eval(target, tools, case_with_mt, temperature, tool_choice, provider_params=provider_params)
+                    result = await run_multi_turn_eval(target, tools, case_with_mt, temperature, tool_choice, provider_params=provider_params, system_prompt=system_prompt)
                 else:
-                    result = await run_single_eval(target, tools, case, temperature, tool_choice, provider_params=provider_params)
+                    result = await run_single_eval(target, tools, case, temperature, tool_choice, provider_params=provider_params, system_prompt=system_prompt)
                 await results_queue.put(result)
 
     # Launch provider groups in parallel
@@ -3620,6 +3803,24 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
     for s in summaries:
         await _ws_send({"type": "tool_eval_summary", "job_id": job_id, "data": s})
 
+    # Build config_json for reproducibility (M1)
+    config = {
+        "temperature": temperature,
+        "tool_choice": tool_choice,
+    }
+    if provider_params:
+        config["provider_params"] = provider_params
+    if system_prompt:
+        config["system_prompt"] = system_prompt
+    # Build target_set from the targets list
+    target_set_list = []
+    for t in targets:
+        target_set_list.append([t.provider_key or "", t.model_id])
+    target_set_cleaned = [ts for ts in target_set_list if ts[0] or ts[1]]
+    if target_set_cleaned:
+        config["target_set"] = target_set_cleaned
+    config_json_str = json.dumps(config)
+
     # Save to DB
     eval_id = await db.save_tool_eval_run(
         user_id=user_id,
@@ -3629,10 +3830,35 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
         results_json=json.dumps(all_results),
         summary_json=json.dumps(summaries),
         temperature=temperature,
+        config_json=config_json_str,
+        experiment_id=experiment_id,
     )
 
     # Store result_ref so frontend can discover eval_id on reconnect
     await db.set_job_result_ref(job_id, eval_id)
+
+    # --- Experiment integration (M2) ---
+    if experiment_id:
+        try:
+            avg_score = _avg_overall_from_summaries(summaries)
+            # Auto-pin first eval as baseline if experiment has none
+            exp = await db.get_experiment(experiment_id, user_id)
+            if exp and not exp.get("baseline_eval_id"):
+                await db.update_experiment(
+                    experiment_id, user_id,
+                    baseline_eval_id=eval_id,
+                    baseline_score=avg_score,
+                )
+            # Update experiment best if improved
+            await _maybe_update_experiment_best(
+                experiment_id, user_id,
+                score=avg_score,
+                config_json=config_json_str,
+                source="eval",
+                source_id=eval_id,
+            )
+        except Exception:
+            logger.exception("Experiment update failed: experiment_id=%s", experiment_id)
 
     # --- Post-eval judge mode ---
     judge_report_id = None
@@ -3647,6 +3873,7 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
                 judge_model=judge_target.model_id,
                 mode="post_eval",
                 eval_run_id=eval_id,
+                experiment_id=experiment_id,
             )
             await _ws_send({
                 "type": "judge_start",
@@ -3740,6 +3967,7 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
                 judge_model=judge_target.model_id,
                 mode="live_inline",
                 eval_run_id=eval_id,
+                experiment_id=experiment_id,
             )
             model_results_j: dict[str, list[dict]] = {}
             for v in judge_verdicts:
@@ -3779,13 +4007,23 @@ async def _tool_eval_handler(job_id: str, params: dict, cancel_event, progress_c
             if judge_report_id:
                 await db.update_judge_report(judge_report_id, status="error")
 
-    # Send completion event
-    await _ws_send({
+    # Send completion event (M6: include delta if experiment has baseline)
+    complete_evt = {
         "type": "tool_eval_complete",
         "job_id": job_id,
         "eval_id": eval_id,
         "judge_report_id": judge_report_id,
-    })
+    }
+    if experiment_id:
+        try:
+            exp = await db.get_experiment(experiment_id, user_id)
+            if exp and exp.get("baseline_score") is not None:
+                avg_score = _avg_overall_from_summaries(summaries)
+                complete_evt["delta"] = round(avg_score - exp["baseline_score"], 4)
+                complete_evt["baseline_score"] = exp["baseline_score"]
+        except Exception:
+            logger.debug("Failed to compute delta for experiment %s", experiment_id)
+    await _ws_send(complete_evt)
 
     logger.info(
         "Tool eval completed: job_id=%s user_id=%s results=%d eval_id=%s",
@@ -3811,6 +4049,7 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
     temperature = body.get("temperature", 0.0)
     tool_choice = body.get("tool_choice", "required")
     provider_params = body.get("provider_params")
+    system_prompt = body.get("system_prompt")
     judge_config = body.get("judge")
 
     # --- Validation ---
@@ -3853,6 +4092,7 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
     progress_detail = f"Tool Eval: {model_count} model{'s' if model_count != 1 else ''}, {suite['name']}"
 
     # Submit to job registry
+    experiment_id = body.get("experiment_id")
     job_params = {
         "user_id": user["id"],
         "user_email": user.get("email", ""),
@@ -3862,8 +4102,10 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
         "temperature": temperature,
         "tool_choice": tool_choice,
         "provider_params": provider_params,
+        "system_prompt": system_prompt,
         "judge": judge_config,
         "judge_concurrency": body.get("judge_concurrency", 4),
+        "experiment_id": experiment_id,
     }
 
     job_id = await job_registry.submit(
@@ -3953,6 +4195,7 @@ async def _param_tune_handler(job_id: str, params: dict, cancel_event, progress_
     target_set = {tuple(t) for t in _raw_ts} if _raw_ts else None
     search_space = params.get("search_space", {})
     per_model_search_spaces = params.get("per_model_search_spaces", {})
+    experiment_id = params.get("experiment_id")
 
     logger.info(
         "Param tune started: job_id=%s user_id=%s models=%d",
@@ -4025,6 +4268,7 @@ async def _param_tune_handler(job_id: str, params: dict, cancel_event, progress_
         models_json=json.dumps(model_ids),
         search_space_json=json.dumps(per_model_search_spaces if per_model_combos else search_space),
         total_combos=total_combos,
+        experiment_id=experiment_id,
     )
 
     # Store result_ref early so the frontend can discover tune_id on reconnect
@@ -4227,6 +4471,81 @@ async def _param_tune_handler(job_id: str, params: dict, cancel_event, progress_
         job_id, tune_id, user_id, completed, best_score,
     )
 
+    # --- Auto-promote best result to tool_eval_runs (if in experiment) ---
+    if experiment_id and all_results:
+        try:
+            best = max(all_results, key=lambda r: r.get("overall_score", 0))
+            if best.get("case_results"):
+                # Build full results list (add model_id to each case result)
+                promoted_results = []
+                for cr in best["case_results"]:
+                    promoted_results.append({
+                        **cr,
+                        "model_id": best["model_id"],
+                        "model_name": best.get("model_name", best["model_id"]),
+                    })
+
+                # Build config_json from the winning combo
+                combo_config = best.get("config", {})
+                config_for_promote = {
+                    "temperature": combo_config.get("temperature", 0.0),
+                    "tool_choice": combo_config.get("tool_choice", "required"),
+                }
+                pp = {k: v for k, v in combo_config.items()
+                      if k not in ("temperature", "tool_choice", "max_tokens")}
+                if pp:
+                    config_for_promote["provider_params"] = pp
+
+                # Add promoted_from marker
+                config_for_promote["promoted_from"] = f"param_tune:{tune_id}"
+
+                promoted_summary = [{
+                    "model_id": best["model_id"],
+                    "model_name": best.get("model_name", best["model_id"]),
+                    "provider": best.get("provider_key", ""),
+                    "tool_accuracy_pct": best.get("tool_accuracy", 0.0),
+                    "param_accuracy_pct": best.get("param_accuracy", 0.0),
+                    "overall_pct": round(best.get("overall_score", 0.0) * 100, 1),
+                    "cases_run": best.get("cases_total", 0),
+                    "cases_passed": best.get("cases_passed", 0),
+                }]
+
+                promoted_eval_id = await db.save_tool_eval_run(
+                    user_id=user_id,
+                    suite_id=suite["id"],
+                    suite_name=suite["name"],
+                    models_json=json.dumps([best["model_id"]]),
+                    results_json=json.dumps(promoted_results),
+                    summary_json=json.dumps(promoted_summary),
+                    temperature=config_for_promote.get("temperature", 0.0),
+                    config_json=json.dumps(config_for_promote),
+                    experiment_id=experiment_id,
+                )
+
+                await _maybe_update_experiment_best(
+                    experiment_id, user_id,
+                    score=best.get("overall_score", 0.0),
+                    config_json=json.dumps(config_for_promote),
+                    source="param_tune",
+                    source_id=tune_id,
+                )
+
+                await _ws_send({
+                    "type": "eval_promoted",
+                    "job_id": job_id,
+                    "tune_id": tune_id,
+                    "promoted_eval_id": promoted_eval_id,
+                    "experiment_id": experiment_id,
+                    "score": best.get("overall_score", 0.0),
+                })
+
+                logger.info(
+                    "Param tune auto-promoted: tune_id=%s promoted_eval_id=%s experiment_id=%s",
+                    tune_id, promoted_eval_id, experiment_id,
+                )
+        except Exception:
+            logger.exception("Auto-promote failed for param tune: tune_id=%s", tune_id)
+
     return tune_id
 
 
@@ -4293,6 +4612,7 @@ async def run_param_tune(request: Request, user: dict = Depends(auth.get_current
     progress_detail = f"Param Tune: {model_count} model{'s' if model_count != 1 else ''}, {suite['name']}"
 
     # Submit to job registry
+    experiment_id = body.get("experiment_id")
     job_params = {
         "user_id": user["id"],
         "user_email": user.get("email", ""),
@@ -4301,6 +4621,7 @@ async def run_param_tune(request: Request, user: dict = Depends(auth.get_current
         "target_set": [list(t) for t in target_set] if target_set else None,
         "search_space": search_space,
         "per_model_search_spaces": per_model_search_spaces,
+        "experiment_id": experiment_id,
     }
 
     job_id = await job_registry.submit(
@@ -4633,6 +4954,7 @@ async def _prompt_tune_handler(job_id: str, params: dict, cancel_event, progress
     mode = params.get("mode", "quick")
     base_prompt = params.get("base_prompt") or _DEFAULT_BASE_PROMPT
     cfg = params.get("config", {})
+    experiment_id = params.get("experiment_id")
 
     population_size = int(cfg.get("population_size", 5))
     generations = int(cfg.get("generations", 1 if mode == "quick" else 3))
@@ -4693,6 +5015,7 @@ async def _prompt_tune_handler(job_id: str, params: dict, cancel_event, progress
         base_prompt=base_prompt,
         config_json=json.dumps(cfg),
         total_prompts=total_prompts,
+        experiment_id=experiment_id,
     )
 
     # Store result_ref early so the frontend can discover tune_id on reconnect
@@ -4961,6 +5284,29 @@ async def _prompt_tune_handler(job_id: str, params: dict, cancel_event, progress
         job_id, tune_id, user_id, completed_prompts, best_score,
     )
 
+    # --- Auto-promote best prompt (if in experiment) ---
+    if experiment_id and best_prompt:
+        try:
+            config_for_promote = {
+                "temperature": eval_temperature,
+                "tool_choice": eval_tool_choice,
+                "system_prompt": best_prompt,
+                "promoted_from": f"prompt_tune:{tune_id}",
+            }
+            await _maybe_update_experiment_best(
+                experiment_id, user_id,
+                score=best_score,
+                config_json=json.dumps(config_for_promote),
+                source="prompt_tune",
+                source_id=tune_id,
+            )
+            logger.info(
+                "Prompt tune auto-promoted experiment best: tune_id=%s experiment_id=%s",
+                tune_id, experiment_id,
+            )
+        except Exception:
+            logger.exception("Auto-promote failed for prompt tune: tune_id=%s", tune_id)
+
     return tune_id
 
 
@@ -5032,6 +5378,7 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
     progress_detail = f"Prompt Tune: {mode}, {model_count} model{'s' if model_count != 1 else ''}, {suite['name']}"
 
     # Submit to job registry
+    experiment_id = body.get("experiment_id")
     job_params = {
         "user_id": user["id"],
         "suite_id": suite_id,
@@ -5042,6 +5389,7 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
         "mode": mode,
         "base_prompt": base_prompt,
         "config": cfg,
+        "experiment_id": experiment_id,
     }
 
     job_id = await job_registry.submit(
@@ -5432,6 +5780,7 @@ async def _judge_handler(job_id: str, params: dict, cancel_event, progress_cb) -
     judge_provider_key = params.get("judge_provider_key")
     custom_instructions = params.get("custom_instructions", "")
     concurrency = int(params.get("concurrency", 4))
+    experiment_id = params.get("experiment_id")
 
     logger.info(
         "Judge started: job_id=%s user_id=%s eval_run_id=%s concurrency=%d",
@@ -5477,6 +5826,7 @@ async def _judge_handler(job_id: str, params: dict, cancel_event, progress_cb) -
         judge_model=judge_model_id,
         mode="post_eval",
         eval_run_id=eval_run_id,
+        experiment_id=experiment_id,
     )
 
     # Store result_ref early
@@ -5595,6 +5945,7 @@ async def _judge_compare_handler(job_id: str, params: dict, cancel_event, progre
     judge_model_id = params["judge_model"]
     judge_provider_key = params.get("judge_provider_key")
     concurrency = int(params.get("concurrency", 4))
+    experiment_id = params.get("experiment_id")
 
     logger.info(
         "Judge compare started: job_id=%s user_id=%s run_a=%s run_b=%s",
@@ -5658,6 +6009,7 @@ async def _judge_compare_handler(job_id: str, params: dict, cancel_event, progre
         mode="comparative",
         eval_run_id=eval_run_id_a,
         eval_run_id_b=eval_run_id_b,
+        experiment_id=experiment_id,
     )
 
     # Store result_ref early
@@ -5835,6 +6187,7 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
 
     progress_detail = f"Judge: {len(results)} verdicts, {judge_targets[0].display_name}"
 
+    experiment_id = body.get("experiment_id")
     job_params = {
         "user_id": user["id"],
         "user_email": user.get("email", ""),
@@ -5843,6 +6196,7 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
         "judge_provider_key": judge_provider_key,
         "custom_instructions": custom_instructions,
         "concurrency": concurrency,
+        "experiment_id": experiment_id,
     }
 
     job_id = await job_registry.submit(
@@ -5911,6 +6265,7 @@ async def run_judge_compare(request: Request, user: dict = Depends(auth.get_curr
 
     progress_detail = f"Compare: {len(common_tcs)} cases, {judge_targets[0].display_name}"
 
+    experiment_id = body.get("experiment_id")
     job_params = {
         "user_id": user["id"],
         "user_email": user.get("email", ""),
@@ -5919,6 +6274,7 @@ async def run_judge_compare(request: Request, user: dict = Depends(auth.get_curr
         "judge_model": judge_model_id,
         "judge_provider_key": judge_provider_key,
         "concurrency": concurrency,
+        "experiment_id": experiment_id,
     }
 
     job_id = await job_registry.submit(
@@ -5969,6 +6325,399 @@ async def delete_judge_report(report_id: str, user: dict = Depends(auth.get_curr
     if not deleted:
         return JSONResponse({"error": "Judge report not found"}, status_code=404)
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Experiments (M2)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/experiments")
+async def list_experiments(user: dict = Depends(auth.get_current_user)):
+    """List user's active experiments."""
+    experiments = await db.get_experiments(user["id"])
+    return {"experiments": experiments}
+
+
+@app.post("/api/experiments")
+async def create_experiment(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Create a new experiment."""
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    suite_id = body.get("suite_id")
+    if not suite_id:
+        return JSONResponse({"error": "suite_id is required"}, status_code=400)
+    description = body.get("description", "")
+
+    # Validate suite ownership
+    suite = await db.get_tool_suite(suite_id, user["id"])
+    if not suite:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+
+    # Optional baseline
+    baseline_eval_id = body.get("baseline_eval_id")
+    baseline_score = None
+    if baseline_eval_id:
+        eval_run = await db.get_tool_eval_run(baseline_eval_id, user["id"])
+        if not eval_run:
+            return JSONResponse({"error": "Baseline eval run not found"}, status_code=404)
+        if eval_run["suite_id"] != suite_id:
+            return JSONResponse(
+                {"error": "Baseline eval run suite_id does not match experiment suite_id"},
+                status_code=400,
+            )
+        summary = json.loads(eval_run.get("summary_json", "[]"))
+        baseline_score = _avg_overall_from_summaries(summary)
+
+    # Optional suite snapshot
+    suite_snapshot_json = None
+    if body.get("snapshot_suite"):
+        cases = await db.get_test_cases(suite_id)
+        snapshot = {
+            "suite": {
+                "id": suite["id"],
+                "name": suite["name"],
+                "tools_json": suite["tools_json"],
+            },
+            "test_cases": cases,
+        }
+        suite_snapshot_json = json.dumps(snapshot)
+
+    exp_id = await db.create_experiment(
+        user_id=user["id"],
+        name=name,
+        suite_id=suite_id,
+        description=description,
+        suite_snapshot_json=suite_snapshot_json,
+        baseline_eval_id=baseline_eval_id,
+        baseline_score=baseline_score,
+    )
+
+    return {"status": "ok", "experiment_id": exp_id, "baseline_score": baseline_score}
+
+
+@app.get("/api/experiments/{experiment_id}")
+async def get_experiment(experiment_id: str, user: dict = Depends(auth.get_current_user)):
+    """Get single experiment with parsed best_config."""
+    exp = await db.get_experiment(experiment_id, user["id"])
+    if not exp:
+        return JSONResponse({"error": "Experiment not found"}, status_code=404)
+
+    # Add suite_name
+    suite = await db.get_tool_suite(exp["suite_id"], user["id"])
+    exp["suite_name"] = suite["name"] if suite else None
+
+    # Parse best_config_json for frontend convenience
+    if exp.get("best_config_json"):
+        try:
+            exp["best_config"] = json.loads(exp["best_config_json"])
+        except (json.JSONDecodeError, TypeError):
+            exp["best_config"] = None
+    else:
+        exp["best_config"] = None
+
+    return exp
+
+
+@app.put("/api/experiments/{experiment_id}")
+async def update_experiment(experiment_id: str, request: Request, user: dict = Depends(auth.get_current_user)):
+    """Update experiment name/description."""
+    body = await request.json()
+    name = body.get("name")
+    description = body.get("description")
+
+    fields = {}
+    if name is not None:
+        name = name.strip()
+        if not name:
+            return JSONResponse({"error": "name cannot be empty"}, status_code=400)
+        fields["name"] = name
+    if description is not None:
+        fields["description"] = description
+
+    if not fields:
+        return JSONResponse({"error": "No fields to update"}, status_code=400)
+
+    updated = await db.update_experiment(experiment_id, user["id"], **fields)
+    if not updated:
+        return JSONResponse({"error": "Experiment not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+@app.delete("/api/experiments/{experiment_id}")
+async def delete_experiment(experiment_id: str, user: dict = Depends(auth.get_current_user)):
+    """Delete an experiment."""
+    deleted = await db.delete_experiment(experiment_id, user["id"])
+    if not deleted:
+        return JSONResponse({"error": "Experiment not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+@app.put("/api/experiments/{experiment_id}/baseline")
+async def pin_experiment_baseline(
+    experiment_id: str,
+    request: Request,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Pin or re-pin a baseline eval run for an experiment."""
+    body = await request.json()
+    eval_run_id = body.get("eval_run_id")
+    if not eval_run_id:
+        return JSONResponse(
+            {"error": "eval_run_id is required"}, status_code=400
+        )
+
+    # Validate experiment
+    exp = await db.get_experiment(experiment_id, user["id"])
+    if not exp:
+        return JSONResponse(
+            {"error": "Experiment not found"}, status_code=404
+        )
+
+    # Validate eval run
+    eval_run = await db.get_tool_eval_run(eval_run_id, user["id"])
+    if not eval_run:
+        return JSONResponse(
+            {"error": "Eval run not found"}, status_code=404
+        )
+
+    # Validate suite match
+    if eval_run["suite_id"] != exp["suite_id"]:
+        return JSONResponse(
+            {"error": "Eval run suite_id does not match experiment suite_id"},
+            status_code=400,
+        )
+
+    # Compute baseline score from summary
+    summary = json.loads(eval_run.get("summary_json", "[]"))
+    if summary:
+        scores = [s.get("overall_pct", 0) for s in summary]
+        baseline_score = round(sum(scores) / len(scores) / 100, 4)
+    else:
+        baseline_score = 0.0
+
+    # Update experiment
+    await db.update_experiment(
+        experiment_id, user["id"],
+        baseline_eval_id=eval_run_id,
+        baseline_score=baseline_score,
+    )
+
+    return {
+        "status": "ok",
+        "baseline_eval_id": eval_run_id,
+        "baseline_score": baseline_score,
+    }
+
+
+@app.get("/api/experiments/{experiment_id}/timeline")
+async def get_experiment_timeline(
+    experiment_id: str,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Get ordered timeline of all linked runs across features."""
+    exp = await db.get_experiment(experiment_id, user["id"])
+    if not exp:
+        return JSONResponse({"error": "Experiment not found"}, status_code=404)
+
+    raw_entries = await db.get_experiment_timeline(experiment_id, user["id"])
+    baseline_score = exp.get("baseline_score")
+    baseline_eval_id = exp.get("baseline_eval_id")
+
+    entries = []
+    for e in raw_entries:
+        entry = {"type": e["type"], "id": e["id"], "timestamp": e["timestamp"]}
+
+        if e["type"] == "eval":
+            summary = json.loads(e.get("summary_json") or "[]")
+            score = _avg_overall_from_summaries(summary)
+            entry["score"] = score
+            entry["delta"] = round(score - baseline_score, 4) if baseline_score is not None else None
+            entry["is_baseline"] = (e["id"] == baseline_eval_id)
+            if e.get("config_json"):
+                try:
+                    cfg = json.loads(e["config_json"])
+                    entry["config_summary"] = _build_config_summary(cfg)
+                    if cfg.get("promoted_from"):
+                        entry["promoted_from"] = cfg["promoted_from"]
+                except (json.JSONDecodeError, TypeError):
+                    entry["config_summary"] = "defaults"
+            else:
+                entry["config_summary"] = "defaults"
+
+        elif e["type"] == "param_tune":
+            score = e.get("best_score") or 0.0
+            entry["score"] = score
+            entry["delta"] = round(score - baseline_score, 4) if baseline_score is not None else None
+            entry["status"] = e.get("status")
+            if e.get("best_config_json"):
+                try:
+                    cfg = json.loads(e["best_config_json"])
+                    entry["config_summary"] = "best: " + _build_config_summary(cfg)
+                except (json.JSONDecodeError, TypeError):
+                    entry["config_summary"] = "defaults"
+            else:
+                entry["config_summary"] = "defaults"
+
+        elif e["type"] == "prompt_tune":
+            score = e.get("best_score") or 0.0
+            entry["score"] = score
+            entry["delta"] = round(score - baseline_score, 4) if baseline_score is not None else None
+            entry["status"] = e.get("status")
+            bp = e.get("best_prompt") or ""
+            entry["prompt_preview"] = bp[:80] if bp else ""
+
+        elif e["type"] == "judge":
+            entry["grade"] = e.get("overall_grade")
+            entry["overall_score"] = e.get("overall_score")
+            entry["mode"] = e.get("mode")
+            entry["eval_run_id"] = e.get("eval_run_id")
+            entry["status"] = e.get("status")
+
+        entries.append(entry)
+
+    # Build best info
+    best_config = None
+    if exp.get("best_config_json"):
+        try:
+            best_config = json.loads(exp["best_config_json"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return {
+        "experiment_id": experiment_id,
+        "experiment_name": exp["name"],
+        "baseline": {
+            "eval_id": baseline_eval_id,
+            "score": baseline_score,
+        } if baseline_eval_id else None,
+        "best": {
+            "score": exp.get("best_score") or 0.0,
+            "source": exp.get("best_source"),
+            "source_id": exp.get("best_source_id"),
+            "config": best_config,
+        },
+        "entries": entries,
+    }
+
+
+@app.post("/api/experiments/{experiment_id}/run-best")
+async def run_experiment_best(
+    experiment_id: str,
+    request: Request,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Convenience: run eval using the experiment's best_config_json."""
+    exp = await db.get_experiment(experiment_id, user["id"])
+    if not exp:
+        return JSONResponse({"error": "Experiment not found"}, status_code=404)
+
+    if not exp.get("best_config_json"):
+        return JSONResponse({"error": "Experiment has no best config yet"}, status_code=400)
+
+    try:
+        best_config = json.loads(exp["best_config_json"])
+    except (json.JSONDecodeError, TypeError):
+        return JSONResponse({"error": "Invalid best config JSON"}, status_code=400)
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    # Build targets from best config or request override
+    targets = body.get("targets")
+    models = body.get("models")
+    if not targets and not models:
+        target_set = best_config.get("target_set", [])
+        if target_set:
+            targets = [{"provider_key": t[0], "model_id": t[1]} for t in target_set]
+
+    if not targets and not models:
+        return JSONResponse(
+            {"error": "No models specified and best config has no target_set"},
+            status_code=400,
+        )
+
+    # Build payload for the tool-eval endpoint
+    eval_body = {
+        "suite_id": exp["suite_id"],
+        "temperature": best_config.get("temperature", 0.0),
+        "tool_choice": best_config.get("tool_choice", "required"),
+        "experiment_id": experiment_id,
+    }
+    if targets:
+        eval_body["targets"] = targets
+    if models:
+        eval_body["models"] = models
+    if best_config.get("provider_params"):
+        eval_body["provider_params"] = best_config["provider_params"]
+    if best_config.get("system_prompt"):
+        eval_body["system_prompt"] = best_config["system_prompt"]
+
+    # Parse targets/models for validation
+    model_ids, target_set = _parse_target_selection(eval_body)
+    if not model_ids:
+        return JSONResponse({"error": "No matching models found"}, status_code=400)
+
+    # Validate suite
+    suite = await db.get_tool_suite(exp["suite_id"], user["id"])
+    if not suite:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    cases = await db.get_test_cases(exp["suite_id"])
+    if not cases:
+        return JSONResponse({"error": "Suite has no test cases"}, status_code=400)
+
+    # Rate limit
+    allowed, _ = _check_rate_limit(user["id"])
+    if not allowed:
+        return JSONResponse(
+            {"error": f"Rate limit exceeded. Max {RATE_LIMIT_PER_HOUR} per hour."},
+            status_code=429,
+        )
+    _record_rate_limit(user["id"])
+
+    # Build targets and validate
+    user_config = await _get_user_config(user["id"])
+    all_targets = build_targets(user_config)
+    filtered_targets = _filter_targets(all_targets, model_ids, target_set)
+    if not filtered_targets:
+        return JSONResponse({"error": "No matching models found in config"}, status_code=400)
+
+    model_count = len(filtered_targets)
+    progress_detail = f"Tool Eval: {model_count} model{'s' if model_count != 1 else ''}, {suite['name']} (from experiment)"
+
+    job_params = {
+        "user_id": user["id"],
+        "user_email": user.get("email", ""),
+        "suite_id": exp["suite_id"],
+        "models": model_ids,
+        "target_set": [list(t) for t in target_set] if target_set else None,
+        "temperature": best_config.get("temperature", 0.0),
+        "tool_choice": best_config.get("tool_choice", "required"),
+        "provider_params": best_config.get("provider_params"),
+        "system_prompt": best_config.get("system_prompt"),
+        "experiment_id": experiment_id,
+    }
+
+    job_id = await job_registry.submit(
+        job_type="tool_eval",
+        user_id=user["id"],
+        params=job_params,
+        progress_detail=progress_detail,
+    )
+
+    return {
+        "job_id": job_id,
+        "status": "submitted",
+        "config_used": {
+            "temperature": best_config.get("temperature", 0.0),
+            "tool_choice": best_config.get("tool_choice", "required"),
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
