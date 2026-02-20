@@ -1,3 +1,12 @@
+# Stage 1: Build Vue frontend
+FROM node:22-alpine AS frontend-build
+WORKDIR /build
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# Stage 2: Python backend
 FROM python:3.13-slim
 
 # Install uv
@@ -15,8 +24,11 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Copy application code
-COPY app.py benchmark.py auth.py db.py keyvault.py provider_params.py job_registry.py job_handlers.py schemas.py ws_manager.py index.html config.yaml migrate_to_multiuser.py ./
+COPY app.py benchmark.py auth.py db.py keyvault.py provider_params.py job_registry.py job_handlers.py schemas.py ws_manager.py config.yaml migrate_to_multiuser.py ./
 COPY routers/ routers/
+
+# Copy built frontend assets (vite outputs to ../static relative to /build, i.e. /static)
+COPY --from=frontend-build /static/ static/
 
 # Create data directory
 RUN mkdir -p data

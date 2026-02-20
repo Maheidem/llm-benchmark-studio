@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 data/
 .scratchpad/
+static/
+frontend/node_modules/
+frontend/dist/

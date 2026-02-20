@@ -31,9 +31,11 @@ os.environ.setdefault("OPENAI_MAX_RETRIES", "0")
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 # Load .env before importing benchmark (needs API keys)
 _dir = Path(__file__).parent
+_static_dir = _dir / "static"
 load_dotenv(_dir / ".env", override=True)
 
 APP_VERSION = os.getenv("APP_VERSION", "dev")
@@ -303,8 +305,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Content Security Policy
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; "
-            "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://fonts.googleapis.com; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src 'self' https://fonts.gstatic.com; "
             "img-src 'self' data:; "
             "connect-src 'self'; "
@@ -440,6 +442,10 @@ schedules._run_scheduled_benchmark = _run_scheduled_benchmark
 for r in routers.all_routers:
     app.include_router(r)
 
+# Mount Vue/Vite built assets (if present)
+if (_static_dir / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=_static_dir / "assets"), name="assets")
+
 
 # ---------------------------------------------------------------------------
 # Static / infrastructure routes (remain on app directly)
@@ -447,9 +453,10 @@ for r in routers.all_routers:
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    """Serve the dashboard UI."""
+    """Serve the Vue SPA from static/index.html."""
+    vue_index = _static_dir / "index.html"
     return HTMLResponse(
-        content=(_dir / "index.html").read_text(),
+        content=vue_index.read_text(),
         headers={"Cache-Control": "no-cache, must-revalidate"},
     )
 
@@ -536,6 +543,20 @@ from routers.mcp import (  # noqa: E402
     generate_test_case,
     _example_value,
 )
+
+
+# ---------------------------------------------------------------------------
+# SPA catch-all: serve Vue index.html for client-side routes
+# ---------------------------------------------------------------------------
+
+@app.get("/{full_path:path}", response_class=HTMLResponse)
+async def spa_catch_all(full_path: str):
+    """Catch-all for Vue Router history mode -- serves the SPA shell."""
+    vue_index = _static_dir / "index.html"
+    return HTMLResponse(
+        content=vue_index.read_text(),
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
 
 
 # ---------------------------------------------------------------------------
