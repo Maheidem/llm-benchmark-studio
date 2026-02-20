@@ -62,28 +62,49 @@
             @delete-tool="confirmDeleteTool"
             @import-tools="importToolsJson"
             @export-tools="exportTools"
-          />
+          >
+            <!-- Inline tool editor (editing existing) -->
+            <template #editor="{ index }">
+              <div v-if="toolEditorVisible && editingToolIndex === index" class="mt-2 mb-2">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-[10px] font-display tracking-wider uppercase text-zinc-500">Edit Tool</span>
+                  <button @click="toolEditorVisible = false" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300">Cancel</button>
+                </div>
+                <textarea
+                  v-model="toolJson"
+                  rows="12"
+                  class="w-full px-3 py-2 rounded-sm text-xs text-zinc-200"
+                  style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;font-family:'Space Mono',monospace;resize:vertical;"
+                ></textarea>
+                <div v-if="toolJsonError" class="text-xs mt-1" style="color:var(--coral);">{{ toolJsonError }}</div>
+                <div class="flex justify-end gap-2 mt-2">
+                  <button @click="toolEditorVisible = false" class="modal-btn modal-btn-cancel text-xs">Cancel</button>
+                  <button @click="saveToolJson" class="modal-btn modal-btn-confirm text-xs">Save Tool</button>
+                </div>
+              </div>
+            </template>
 
-          <!-- Tool JSON Editor -->
-          <div v-if="toolEditorVisible" class="mt-4">
-            <div class="flex items-center justify-between mb-2">
-              <span class="text-[10px] font-display tracking-wider uppercase text-zinc-500">
-                {{ editingToolIndex >= 0 ? 'Edit Tool' : 'New Tool' }}
-              </span>
-              <button @click="toolEditorVisible = false" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300">Cancel</button>
-            </div>
-            <textarea
-              v-model="toolJson"
-              rows="12"
-              class="w-full px-3 py-2 rounded-sm text-xs text-zinc-200"
-              style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;font-family:'Space Mono',monospace;resize:vertical;"
-            ></textarea>
-            <div v-if="toolJsonError" class="text-xs mt-1" style="color:var(--coral);">{{ toolJsonError }}</div>
-            <div class="flex justify-end gap-2 mt-2">
-              <button @click="toolEditorVisible = false" class="modal-btn modal-btn-cancel text-xs">Cancel</button>
-              <button @click="saveToolJson" class="modal-btn modal-btn-confirm text-xs">Save Tool</button>
-            </div>
-          </div>
+            <!-- New tool editor (adding) -->
+            <template #add-editor>
+              <div v-if="toolEditorVisible && editingToolIndex < 0" class="mt-4">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-[10px] font-display tracking-wider uppercase text-zinc-500">New Tool</span>
+                  <button @click="toolEditorVisible = false" class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300">Cancel</button>
+                </div>
+                <textarea
+                  v-model="toolJson"
+                  rows="12"
+                  class="w-full px-3 py-2 rounded-sm text-xs text-zinc-200"
+                  style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;font-family:'Space Mono',monospace;resize:vertical;"
+                ></textarea>
+                <div v-if="toolJsonError" class="text-xs mt-1" style="color:var(--coral);">{{ toolJsonError }}</div>
+                <div class="flex justify-end gap-2 mt-2">
+                  <button @click="toolEditorVisible = false" class="modal-btn modal-btn-cancel text-xs">Cancel</button>
+                  <button @click="saveToolJson" class="modal-btn modal-btn-confirm text-xs">Save Tool</button>
+                </div>
+              </div>
+            </template>
+          </ToolsList>
         </div>
 
         <!-- Test Cases Panel -->
@@ -94,17 +115,31 @@
             @add-case="showCaseEditor(null)"
             @edit-case="showCaseEditor"
             @delete-case="confirmDeleteCase"
-          />
+          >
+            <!-- Inline test case editor (editing existing) -->
+            <template #editor="{ caseItem }">
+              <div v-if="caseEditorVisible && editingCaseId === caseItem.id" class="mt-2 mb-2">
+                <TestCaseForm
+                  :test-case="editingCase"
+                  :editing="true"
+                  @save="saveCase"
+                  @cancel="caseEditorVisible = false"
+                />
+              </div>
+            </template>
 
-          <!-- Test Case Editor -->
-          <div v-if="caseEditorVisible" class="mt-4">
-            <TestCaseForm
-              :test-case="editingCase"
-              :editing="!!editingCaseId"
-              @save="saveCase"
-              @cancel="caseEditorVisible = false"
-            />
-          </div>
+            <!-- New test case editor (adding) -->
+            <template #add-editor>
+              <div v-if="caseEditorVisible && !editingCaseId" class="mt-4">
+                <TestCaseForm
+                  :test-case="editingCase"
+                  :editing="false"
+                  @save="saveCase"
+                  @cancel="caseEditorVisible = false"
+                />
+              </div>
+            </template>
+          </TestCasesList>
         </div>
       </div>
     </template>

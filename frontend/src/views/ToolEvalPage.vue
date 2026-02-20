@@ -13,7 +13,8 @@
 
     <!-- Context Bar -->
     <ContextBar
-      @show-system-prompt="navigateTo('ToolEvalEvaluate')"
+      @show-system-prompt="handleShowSystemPrompt"
+      @newExperiment="onNewExperiment"
     />
 
     <!-- Child Route -->
@@ -24,14 +25,21 @@
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, nextTick, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import ContextBar from '../components/tool-eval/ContextBar.vue'
 import { useToolEvalStore } from '../stores/toolEval.js'
+import { useModal } from '../composables/useModal.js'
+import { useSharedContext } from '../composables/useSharedContext.js'
+import { useToast } from '../composables/useToast.js'
+import { apiFetch } from '../utils/api.js'
 
 const route = useRoute()
 const router = useRouter()
 const store = useToolEvalStore()
+const { inputModal } = useModal()
+const { context, setExperiment } = useSharedContext()
+const { showToast } = useToast()
 
 onMounted(() => {
   store.loadContext()
@@ -44,6 +52,7 @@ const tabs = [
   { key: 'prompt-tuner', label: 'Prompt Tuner', route: 'PromptTunerConfig' },
   { key: 'judge', label: 'Judge', route: 'JudgeHistory' },
   { key: 'timeline', label: 'Timeline', route: 'Timeline' },
+  { key: 'history', label: 'History', route: 'ToolEvalHistory' },
 ]
 
 // Map child routes to their parent tab key
@@ -60,6 +69,7 @@ const routeToTab = {
   JudgeHistory: 'judge',
   JudgeCompare: 'judge',
   Timeline: 'timeline',
+  ToolEvalHistory: 'history',
 }
 
 const activeTab = computed(() => {
@@ -72,5 +82,32 @@ function navigateTab(tab) {
 
 function navigateTo(name) {
   router.push({ name })
+}
+
+async function handleShowSystemPrompt() {
+  await router.push({ name: 'ToolEvalEvaluate' })
+  await nextTick()
+  setTimeout(() => {
+    const el = document.querySelector('[data-section="system-prompt"]')
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, 100)
+}
+
+async function onNewExperiment() {
+  const name = await inputModal('New Experiment', 'Enter experiment name:')
+  if (!name) return
+  try {
+    const res = await apiFetch('/api/experiments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, suite_id: context.suiteId || null })
+    })
+    if (!res.ok) throw new Error('Failed to create experiment')
+    const data = await res.json()
+    setExperiment(data.id, data.name || name)
+    showToast('Experiment created', 'success')
+  } catch (e) {
+    showToast(e.message || 'Failed to create experiment', 'error')
+  }
 }
 </script>

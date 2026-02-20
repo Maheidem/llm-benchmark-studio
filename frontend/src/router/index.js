@@ -34,6 +34,7 @@ const routes = [
       { path: 'judge', name: 'JudgeHistory', component: () => import('../views/tool-eval/JudgeHistory.vue') },
       { path: 'judge/compare', name: 'JudgeCompare', component: () => import('../views/tool-eval/JudgeCompare.vue') },
       { path: 'timeline', name: 'Timeline', component: () => import('../views/tool-eval/TimelineView.vue') },
+      { path: 'history', name: 'ToolEvalHistory', component: () => import('../views/tool-eval/HistoryView.vue') },
     ],
   },
   {

@@ -59,7 +59,20 @@
 
     <!-- Prompt -->
     <div>
-      <label class="text-xs text-zinc-500 font-body block mb-2">Prompt</label>
+      <div class="flex items-center justify-between mb-2">
+        <label class="text-xs text-zinc-500 font-body">Prompt</label>
+        <select
+          v-model="selectedTemplate"
+          @change="onTemplateChange"
+          class="text-xs font-mono px-3 py-1.5 rounded-sm cursor-pointer"
+          style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;max-width:220px;"
+        >
+          <option value="">Custom</option>
+          <option v-for="tpl in store.promptTemplates" :key="tpl.key" :value="tpl.key">
+            {{ tpl.label }}
+          </option>
+        </select>
+      </div>
       <textarea
         :value="store.prompt"
         rows="3"
@@ -72,8 +85,17 @@
 </template>
 
 <script setup>
+import { ref } from 'vue'
 import TierChips from '../ui/TierChips.vue'
 import { useBenchmarkStore } from '../../stores/benchmark.js'
 
 const store = useBenchmarkStore()
+
+const selectedTemplate = ref('')
+
+function onTemplateChange() {
+  if (selectedTemplate.value) {
+    store.applyPromptTemplate(selectedTemplate.value)
+  }
+}
 </script>

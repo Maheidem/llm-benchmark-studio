@@ -1,5 +1,5 @@
 <template>
-  <div class="card rounded-md p-5">
+  <div class="card rounded-md p-5" data-section="system-prompt">
     <div class="flex items-center justify-between mb-3 cursor-pointer" @click="expanded = !expanded">
       <div class="flex items-center gap-2">
         <span class="section-label" style="cursor:pointer;">System Prompt</span>
@@ -69,8 +69,9 @@ const activeTab = ref('_global')
 const tabs = computed(() => {
   const result = [{ key: '_global', label: 'Default (All)' }]
   for (const m of props.models) {
-    const id = typeof m === 'string' ? m : m.model_id || m.id
-    const name = typeof m === 'string' ? m.split('/').pop() : (m.display_name || m.model_id || m.id)
+    const id = typeof m === 'string' ? m : (m.model_id || m.id || '')
+    if (!id) continue
+    const name = typeof m === 'string' ? m.split('/').pop() : (m.display_name || m.model_id || m.id || 'Model')
     result.push({ key: id, label: name })
   }
   return result

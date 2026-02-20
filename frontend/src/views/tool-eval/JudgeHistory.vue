@@ -42,59 +42,73 @@
       No judge reports yet. Run a judge assessment from the eval history.
     </div>
 
-    <div v-else class="space-y-3">
-      <div v-for="report in jgStore.sortedReports" :key="report.id"
-        class="card rounded-md px-5 py-4 cursor-pointer hover:bg-white/[0.02] transition-colors"
-        :class="{ 'ring-1 ring-blue-400/30': selectedForCompare.includes(report.id) }"
-        @click="onReportClick(report)"
-      >
-        <div class="flex items-center gap-4">
-          <!-- Compare checkbox -->
-          <div v-if="compareMode" class="flex-none">
-            <input
-              type="checkbox"
-              :checked="selectedForCompare.includes(report.id)"
-              @click.stop="toggleCompare(report.id)"
-              class="accent-blue-400"
-            >
-          </div>
-
-          <!-- Grade -->
-          <div class="text-center flex-none" style="width:50px;">
-            <div class="text-2xl font-display font-bold" :style="{ color: gradeColor(report.overall_grade) }">
-              {{ report.overall_grade || '?' }}
-            </div>
-            <div class="text-[10px] text-zinc-600 font-mono">{{ report.overall_score || 0 }}</div>
-          </div>
-
-          <!-- Info -->
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2 mb-1">
-              <span class="text-xs font-mono text-zinc-300">{{ report.judge_model?.split('/').pop() || 'Judge' }}</span>
-              <span class="text-[10px] font-mono px-1.5 py-0.5 rounded-sm"
+    <div v-else class="overflow-x-auto">
+      <table class="w-full text-xs results-table">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border-subtle)">
+            <th v-if="compareMode" class="px-3 py-3 text-left" style="width:30px;"></th>
+            <th class="px-4 py-3 text-left section-label">Date</th>
+            <th class="px-4 py-3 text-left section-label">Mode</th>
+            <th class="px-4 py-3 text-left section-label">Judge Model</th>
+            <th class="px-4 py-3 text-center section-label">Grade</th>
+            <th class="px-4 py-3 text-right section-label">Score</th>
+            <th class="px-4 py-3 text-center section-label">Status</th>
+            <th class="px-4 py-3 text-right section-label">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="report in jgStore.sortedReports"
+            :key="report.id"
+            class="cursor-pointer hover:bg-white/[0.02] transition-colors"
+            :class="{ 'ring-1 ring-blue-400/30': selectedForCompare.includes(report.id) }"
+            style="border-top:1px solid var(--border-subtle)"
+            @click="onReportClick(report)"
+          >
+            <td v-if="compareMode" class="px-3 py-2.5" @click.stop>
+              <input
+                type="checkbox"
+                :checked="selectedForCompare.includes(report.id)"
+                @click.stop="toggleCompare(report.id)"
+                class="accent-blue-400"
+              >
+            </td>
+            <td class="px-4 py-2.5 text-zinc-400 font-body whitespace-nowrap">
+              {{ formatDate(report.timestamp || report.created_at) }}
+            </td>
+            <td class="px-4 py-2.5 text-zinc-500 font-body">
+              {{ report.mode || '-' }}
+            </td>
+            <td class="px-4 py-2.5 font-mono text-zinc-300">
+              {{ report.judge_model?.split('/').pop() || 'Judge' }}
+            </td>
+            <td class="px-4 py-2.5 text-center">
+              <span class="text-lg font-display font-bold" :style="{ color: gradeColor(report.overall_grade) }">
+                {{ report.overall_grade || '?' }}
+              </span>
+            </td>
+            <td class="px-4 py-2.5 text-right font-mono text-zinc-400">
+              {{ report.overall_score ?? 0 }}
+            </td>
+            <td class="px-4 py-2.5 text-center">
+              <span
+                class="text-[10px] font-mono px-1.5 py-0.5 rounded-sm"
                 :style="statusStyle(report.status)"
               >{{ report.status || 'unknown' }}</span>
-              <span class="text-[10px] font-body text-zinc-600">{{ report.mode || '' }}</span>
-            </div>
-            <div class="text-[10px] text-zinc-600 font-body">
-              {{ formatDate(report.timestamp || report.created_at) }}
-              <span v-if="report.eval_run_id" class="ml-2">Eval: {{ report.eval_run_id?.slice(0, 8) }}</span>
-            </div>
-          </div>
-
-          <!-- Actions -->
-          <div class="flex items-center gap-2">
-            <button
-              @click.stop="deleteReport(report)"
-              class="text-[10px] text-zinc-600 hover:text-red-400 transition-colors"
-              style="background:none;border:none;cursor:pointer;"
-              title="Delete report"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-            </button>
-          </div>
-        </div>
-      </div>
+            </td>
+            <td class="px-4 py-2.5 text-right">
+              <button
+                @click.stop="deleteReport(report)"
+                class="text-[10px] text-zinc-600 hover:text-red-400 transition-colors"
+                style="background:none;border:none;cursor:pointer;"
+                title="Delete report"
+              >
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
 
     <!-- Report Detail Modal -->

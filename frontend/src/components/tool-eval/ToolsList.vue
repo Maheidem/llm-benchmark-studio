@@ -28,31 +28,36 @@
     </div>
 
     <div v-else class="flex flex-col gap-2">
-      <div
-        v-for="(tool, index) in tools"
-        :key="index"
-        class="flex items-center justify-between px-3 py-2 rounded-sm"
-        style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);"
-      >
-        <div class="flex-1 min-w-0">
-          <span class="text-sm font-mono text-zinc-200">{{ tool.function?.name || 'unnamed' }}</span>
-          <span class="text-xs text-zinc-600 ml-2 font-body">{{ tool.function?.description || '' }}</span>
-          <div v-if="paramNames(tool).length" class="text-[10px] text-zinc-700 font-mono mt-0.5">
-            params: {{ paramNames(tool).join(', ') }}
+      <template v-for="(tool, index) in tools" :key="index">
+        <div
+          class="flex items-center justify-between px-3 py-2 rounded-sm"
+          style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);"
+        >
+          <div class="flex-1 min-w-0">
+            <span class="text-sm font-mono text-zinc-200">{{ tool.function?.name || 'unnamed' }}</span>
+            <span class="text-xs text-zinc-600 ml-2 font-body">{{ tool.function?.description || '' }}</span>
+            <div v-if="paramNames(tool).length" class="text-[10px] text-zinc-700 font-mono mt-0.5">
+              params: {{ paramNames(tool).join(', ') }}
+            </div>
+          </div>
+          <div class="flex gap-2 ml-3 flex-shrink-0">
+            <button
+              @click="$emit('editTool', index)"
+              class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300"
+            >Edit</button>
+            <button
+              @click="$emit('deleteTool', index)"
+              class="text-[10px] font-display tracking-wider uppercase text-zinc-700 hover:text-red-400"
+            >Delete</button>
           </div>
         </div>
-        <div class="flex gap-2 ml-3 flex-shrink-0">
-          <button
-            @click="$emit('editTool', index)"
-            class="text-[10px] font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300"
-          >Edit</button>
-          <button
-            @click="$emit('deleteTool', index)"
-            class="text-[10px] font-display tracking-wider uppercase text-zinc-700 hover:text-red-400"
-          >Delete</button>
-        </div>
-      </div>
+        <!-- Inline editor slot for this tool -->
+        <slot name="editor" :index="index"></slot>
+      </template>
     </div>
+
+    <!-- New tool editor (when adding, not editing existing) -->
+    <slot name="add-editor"></slot>
   </div>
 </template>
 

@@ -27,7 +27,7 @@
     <div class="card rounded-md p-5 mb-6">
       <div class="flex items-center justify-between mb-3">
         <span class="section-label">Models</span>
-        <span class="text-xs font-mono text-zinc-600">{{ selectedModels.size }} selected</span>
+        <span class="text-xs font-mono text-zinc-600">{{ selectedModels.value.size }} selected</span>
       </div>
 
       <div v-if="loadingConfig" class="text-xs text-zinc-600 font-body">Loading models...</div>
@@ -55,8 +55,8 @@
               v-for="m in group.models"
               :key="m.key"
               class="model-card rounded-sm px-3 py-2 flex items-center gap-2"
-              :class="{ selected: selectedModels.has(m.key) }"
-              @click="toggleModel(m.key)"
+              :class="{ selected: selectedModels.value.has(m.key) }"
+              @click.stop="toggleModel(m.key)"
             >
               <div class="check-dot"></div>
               <div class="flex-1 min-w-0">
@@ -107,7 +107,7 @@
           >Cancel</button>
           <button
             @click="startEval"
-            :disabled="store.isEvaluating || selectedModels.size === 0 || !selectedSuiteId"
+            :disabled="store.isEvaluating || selectedModels.value.size === 0 || !selectedSuiteId"
             class="run-btn px-6 py-2 rounded-sm text-xs flex items-center gap-2"
           >
             <svg v-if="store.isEvaluating" class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
@@ -120,7 +120,7 @@
 
     <!-- System Prompt -->
     <SystemPromptEditor
-      v-if="selectedModels.size > 0"
+      v-if="selectedModels.value.size > 0"
       :models="selectedModelsList"
       :system-prompts="systemPrompts"
       @update:system-prompts="systemPrompts = $event"
@@ -200,7 +200,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useToolEvalStore } from '../../stores/toolEval.js'
 import { useToast } from '../../composables/useToast.js'
 import { useSharedContext } from '../../composables/useSharedContext.js'
@@ -217,7 +217,7 @@ const { context, setSuite, setModels, setConfig } = useSharedContext()
 
 // --- State ---
 const selectedSuiteId = ref('')
-const selectedModels = reactive(new Set())
+const selectedModels = ref(new Set())
 const temperature = ref(0.0)
 const toolChoice = ref('required')
 const systemPrompts = ref({})
@@ -232,14 +232,17 @@ const detailModalVisible = ref(false)
 const detailModelId = ref('')
 
 const selectedModelsList = computed(() => {
-  return Array.from(selectedModels).map(key => {
-    const idx = key.indexOf('::')
-    return {
-      id: key,
-      model_id: key.substring(idx + 2),
-      display_name: key.substring(idx + 2).split('/').pop(),
-    }
-  })
+  return Array.from(selectedModels.value)
+    .filter(key => key && key.includes('::'))
+    .map(key => {
+      const idx = key.indexOf('::')
+      const modelId = key.substring(idx + 2)
+      return {
+        id: key,
+        model_id: modelId,
+        display_name: modelId.split('/').pop() || modelId,
+      }
+    })
 })
 
 // --- Load Config ---
@@ -265,7 +268,7 @@ onMounted(async () => {
   // Restore context
   if (context.suiteId) selectedSuiteId.value = context.suiteId
   if (context.selectedModels?.length) {
-    context.selectedModels.forEach(m => selectedModels.add(m))
+    selectedModels.value = new Set(context.selectedModels)
   }
   if (context.temperature != null) temperature.value = context.temperature
   if (context.toolChoice) toolChoice.value = context.toolChoice
@@ -309,28 +312,26 @@ function buildProviderGroups(config) {
 // --- Model selection ---
 
 function toggleModel(key) {
-  if (selectedModels.has(key)) {
-    selectedModels.delete(key)
-  } else {
-    selectedModels.add(key)
-  }
-  setModels(Array.from(selectedModels))
+  const s = new Set(selectedModels.value)
+  if (s.has(key)) s.delete(key)
+  else s.add(key)
+  selectedModels.value = s
+  setModels(Array.from(s))
 }
 
 function allProviderSelected(group) {
-  return group.models.every(m => selectedModels.has(m.key))
+  return group.models.every(m => selectedModels.value.has(m.key))
 }
 
 function toggleProvider(group) {
-  const allSel = allProviderSelected(group)
+  const s = new Set(selectedModels.value)
+  const allSel = group.models.every(m => s.has(m.key))
   for (const m of group.models) {
-    if (allSel) {
-      selectedModels.delete(m.key)
-    } else {
-      selectedModels.add(m.key)
-    }
+    if (allSel) s.delete(m.key)
+    else s.add(m.key)
   }
-  setModels(Array.from(selectedModels))
+  selectedModels.value = s
+  setModels(Array.from(s))
 }
 
 // --- Suite change ---
@@ -416,7 +417,7 @@ function handleWsMessage(msg) {
 // --- Eval actions ---
 
 async function startEval() {
-  if (selectedModels.size === 0) {
+  if (selectedModels.value.size === 0) {
     showToast('Select at least one model', 'error')
     return
   }
@@ -432,7 +433,7 @@ async function startEval() {
   errorBanner.value = ''
 
   // Build request body
-  const targets = Array.from(selectedModels).map(k => {
+  const targets = Array.from(selectedModels.value).map(k => {
     const i = k.indexOf('::')
     return { provider_key: k.substring(0, i), model_id: k.substring(i + 2) }
   })

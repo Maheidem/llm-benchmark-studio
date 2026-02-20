@@ -125,6 +125,7 @@ async function loadAll() {
     benchmarkStore.applyDefaults(configStore.config)
     benchmarkStore.selectAllFromConfig(configStore.config)
     configStore.loadParamsRegistry() // async, non-blocking
+    benchmarkStore.loadPromptTemplates() // async, non-blocking
   } catch (e) {
     console.error('Failed to load config:', e)
     initError.value = true

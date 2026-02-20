@@ -14,6 +14,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
   const runs = ref(1)
   const prompt = ref('')
   const warmup = ref(false)
+  const promptTemplates = ref([])
 
   // ── Execution state ──
   const isRunning = ref(false)
@@ -364,6 +365,30 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     return Math.sqrt(variance)
   }
 
+  // ── Prompt templates ──
+  async function loadPromptTemplates() {
+    try {
+      const res = await apiFetch('/api/config/prompts')
+      const data = await res.json()
+      // API returns { key: { label, prompt }, ... }
+      promptTemplates.value = Object.entries(data).map(([key, tpl]) => ({
+        key,
+        label: tpl.label || key,
+        prompt: tpl.prompt || '',
+      }))
+    } catch (e) {
+      console.error('Failed to load prompt templates:', e)
+    }
+  }
+
+  function applyPromptTemplate(key) {
+    if (!key) return
+    const tpl = promptTemplates.value.find(t => t.key === key)
+    if (tpl) {
+      prompt.value = tpl.prompt
+    }
+  }
+
   // ── Apply defaults from config ──
   function applyDefaults(configObj) {
     if (configObj?.defaults?.prompt) {
@@ -400,6 +425,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     runs,
     prompt,
     warmup,
+    promptTemplates,
     isRunning,
     activeJobId,
     lastBenchmarkBody,
@@ -423,6 +449,8 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     startBenchmark,
     cancelBenchmark,
     restoreRunningJob,
+    loadPromptTemplates,
+    applyPromptTemplate,
     applyDefaults,
     selectAllFromConfig,
     parseCompoundKey,
