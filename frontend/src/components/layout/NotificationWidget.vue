@@ -163,9 +163,9 @@ function navigateToRunning(job) {
   notifStore.closeDropdown()
   const routes = {
     benchmark: '/benchmark',
-    tool_eval: '/tool-eval',
-    param_tune: '/tool-eval/param-tuner/history',
-    prompt_tune: '/tool-eval/prompt-tuner/history',
+    tool_eval: '/tool-eval/evaluate',
+    param_tune: '/tool-eval/param-tuner/run',
+    prompt_tune: '/tool-eval/prompt-tuner/run',
     judge: '/tool-eval/judge',
     judge_compare: '/tool-eval/judge',
     scheduled_benchmark: '/schedules',

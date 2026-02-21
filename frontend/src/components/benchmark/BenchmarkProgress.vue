@@ -8,11 +8,12 @@
       </div>
       <span class="text-xs font-mono text-zinc-500">
         {{ store.overallProgress.completed }}/{{ store.overallProgress.total }}
+        <span v-if="store.eta" class="ml-2 text-zinc-600">{{ store.eta }}</span>
       </span>
     </div>
 
     <!-- Overall progress bar -->
-    <ProgressBar :percent="overallPct" />
+    <ProgressBar :percent="overallPct" :eta="store.eta" />
 
     <!-- Per-provider progress -->
     <div class="mt-5">

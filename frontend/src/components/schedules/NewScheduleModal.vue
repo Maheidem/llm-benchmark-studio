@@ -209,9 +209,9 @@ async function loadConfig() {
       // Handle both array-style and object-style model definitions
       const rawModels = provData.models || []
       for (const m of rawModels) {
-        const modelId = provData.model_prefix
-          ? `${provData.model_prefix}${m.id}`
-          : m.id
+        const modelId = provData.model_id_prefix
+          ? `${provData.model_id_prefix}${m.model_id}`
+          : m.model_id
         models.push({
           model_id: modelId,
           display_name: m.display_name || m.id,

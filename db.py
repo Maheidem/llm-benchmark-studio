@@ -975,7 +975,7 @@ async def get_param_tune_runs(user_id: str, limit: int = 50) -> list[dict]:
     """List user's param tune runs (exclude full results_json for list view)."""
     return await _db.fetch_all(
         "SELECT id, suite_id, suite_name, models_json, total_combos, completed_combos, "
-        "best_score, status, duration_s, timestamp "
+        "best_score, best_config_json, status, duration_s, timestamp "
         "FROM param_tune_runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
         (user_id, limit),
     )
@@ -1062,7 +1062,7 @@ async def get_prompt_tune_runs(user_id: str, limit: int = 50) -> list[dict]:
     """List user's prompt tune runs (exclude large JSON for list view)."""
     return await _db.fetch_all(
         "SELECT id, suite_id, suite_name, mode, target_models_json, meta_model, "
-        "best_score, status, total_prompts, completed_prompts, duration_s, timestamp "
+        "best_score, best_prompt, status, total_prompts, completed_prompts, duration_s, timestamp "
         "FROM prompt_tune_runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
         (user_id, limit),
     )

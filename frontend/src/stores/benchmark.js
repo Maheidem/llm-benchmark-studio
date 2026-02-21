@@ -4,6 +4,7 @@ import { apiFetch } from '../utils/api.js'
 import { useConfigStore } from './config.js'
 import { getColor } from '../utils/constants.js'
 import { formatCtxSize } from '../utils/helpers.js'
+import { useActiveSession } from '../composables/useActiveSession.js'
 
 export const useBenchmarkStore = defineStore('benchmark', () => {
   // ── Selection state ──
@@ -24,6 +25,8 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
   const providerProgress = reactive({})
   const skippedModels = ref([])
   const errorBanner = ref(null)
+
+  const session = useActiveSession()
 
   // ── Computed ──
   const selectedCount = computed(() => selectedModels.value.size)
@@ -88,6 +91,12 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     return isRunning.value ? 'Benchmark running...' : ''
   })
 
+  const eta = computed(() => {
+    const { completed, total } = overallProgress.value
+    if (!isRunning.value || total === 0) return ''
+    return session.calculateETA(completed, total)
+  })
+
   // ── Model selection ──
   function toggleModel(compoundKey) {
     const s = new Set(selectedModels.value)
@@ -136,6 +145,29 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
   }
 
   // ── Progress handling ──
+  let _pendingInit = null
+
+  function _applyBenchmarkInit(msg) {
+    initProviderProgress(msg.data)
+    // On reconnect, pre-seed completed steps from progress_pct
+    // so the counter doesn't start from 0/N
+    if (msg.reconnect && msg.progress_pct > 0) {
+      const pct = msg.progress_pct / 100
+      for (const pp of Object.values(providerProgress)) {
+        const seeded = Math.round(pp.totalSteps * pct)
+        pp.completedSteps = seeded
+        if (seeded > 0) pp.status = 'running'
+      }
+    }
+    _pendingInit = null
+  }
+
+  function replayPendingInit() {
+    if (_pendingInit) {
+      _applyBenchmarkInit(_pendingInit)
+    }
+  }
+
   function initProviderProgress(body) {
     // Clear existing
     Object.keys(providerProgress).forEach(k => delete providerProgress[k])
@@ -204,6 +236,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
       }]
     }
     if (data.type === 'result') {
+      session.recordStep()
       if (prov && providerProgress[prov]) {
         const pp = providerProgress[prov]
         pp.completedSteps++
@@ -252,7 +285,13 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
 
       case 'benchmark_init':
         if (msg.data) {
-          initProviderProgress(msg.data)
+          const configStore = useConfigStore()
+          if (!configStore.config?.providers) {
+            // Config not loaded yet — save for replay after config loads
+            _pendingInit = msg
+          } else {
+            _applyBenchmarkInit(msg)
+          }
         }
         break
 
@@ -268,18 +307,21 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
         handleSSE({ type: 'complete' })
         activeJobId.value = null
         isRunning.value = false
+        session.resetTracking()
         loadFinalResults(msg.result_ref)
         break
 
       case 'job_failed':
         activeJobId.value = null
         isRunning.value = false
+        session.resetTracking()
         errorBanner.value = msg.error || msg.error_msg || 'Benchmark failed'
         break
 
       case 'job_cancelled':
         activeJobId.value = null
         isRunning.value = false
+        session.resetTracking()
         break
     }
   }
@@ -310,6 +352,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     currentResults.value = []
     skippedModels.value = []
     errorBanner.value = null
+    session.startTracking()
 
     const body = overrideBody || {
       targets: Array.from(selectedModels.value).map(k => parseCompoundKey(k)),
@@ -439,6 +482,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     aggregatedResults,
     overallProgress,
     overallLabel,
+    eta,
     // Actions
     toggleModel,
     selectAll,
@@ -449,6 +493,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     startBenchmark,
     cancelBenchmark,
     restoreRunningJob,
+    replayPendingInit,
     loadPromptTemplates,
     applyPromptTemplate,
     applyDefaults,

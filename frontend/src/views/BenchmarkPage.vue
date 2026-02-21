@@ -91,7 +91,7 @@ const { showToast } = useToast()
 const initError = ref(false)
 
 const showResults = computed(() => {
-  return !benchmarkStore.isRunning && benchmarkStore.currentResults.length > 0
+  return benchmarkStore.currentResults.length > 0
 })
 
 // WebSocket for benchmark progress
@@ -124,6 +124,7 @@ async function loadAll() {
     await configStore.loadConfig()
     benchmarkStore.applyDefaults(configStore.config)
     benchmarkStore.selectAllFromConfig(configStore.config)
+    benchmarkStore.replayPendingInit() // Replay reconnect init that arrived before config loaded
     configStore.loadParamsRegistry() // async, non-blocking
     benchmarkStore.loadPromptTemplates() // async, non-blocking
   } catch (e) {

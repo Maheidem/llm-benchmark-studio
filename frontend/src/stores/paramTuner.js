@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { apiFetch } from '../utils/api.js'
+import { useActiveSession } from '../composables/useActiveSession.js'
 
 export const useParamTunerStore = defineStore('paramTuner', () => {
   // --- State ---
@@ -15,6 +16,8 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
   const totalCombos = ref(0)
   const sortKey = ref('overall_score')
   const sortAsc = ref(false)
+
+  const session = useActiveSession()
 
   // --- Getters ---
   const bestConfig = computed(() => {
@@ -68,6 +71,12 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
   // --- Actions ---
 
   async function startTuning(body) {
+    // Clear results BEFORE API call to prevent stale data flash
+    results.value = []
+    totalCombos.value = 0
+    progress.value = { pct: 0, detail: 'Starting...', eta: '' }
+    session.startTracking()
+
     const res = await apiFetch('/api/tool-eval/param-tune', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -81,8 +90,6 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
     const data = await res.json()
     activeJobId.value = data.job_id
     isRunning.value = true
-    results.value = []
-    progress.value = { pct: 0, detail: 'Submitted...', eta: '' }
     persistJob()
     return data
   }
@@ -142,12 +149,16 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
   }
 
   function handleProgress(msg) {
+    // Ignore events for a different job
+    if (msg.job_id && activeJobId.value && msg.job_id !== activeJobId.value) return
+
     switch (msg.type) {
       case 'tune_start': {
         isRunning.value = true
         activeRunId.value = msg.tune_id || null
         totalCombos.value = msg.total_combos || 0
         results.value = []
+        session.startTracking()
         progress.value = {
           pct: 0,
           detail: `Tuning ${msg.suite_name || ''}...`,
@@ -160,13 +171,14 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
       case 'combo_result': {
         const data = msg.data || msg
         results.value = [...results.value, data]
+        session.recordStep()
         const completed = results.value.length
         const total = totalCombos.value || completed
         const pct = total > 0 ? Math.round((completed / total) * 100) : 0
         progress.value = {
           pct,
           detail: `${data.model_name || ''}, combo ${completed}/${total}`,
-          eta: '',
+          eta: session.calculateETA(completed, total),
         }
         break
       }
@@ -184,6 +196,7 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
         isRunning.value = false
         progress.value = { pct: 100, detail: 'Complete!', eta: '' }
         activeJobId.value = null
+        session.resetTracking()
         clearSession()
         break
       }
@@ -192,6 +205,7 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
         isRunning.value = false
         progress.value = { pct: 100, detail: 'Complete!', eta: '' }
         activeJobId.value = null
+        session.resetTracking()
         clearSession()
         break
       }
@@ -204,6 +218,7 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
           eta: '',
         }
         activeJobId.value = null
+        session.resetTracking()
         clearSession()
         break
       }
@@ -212,6 +227,7 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
         isRunning.value = false
         progress.value = { pct: progress.value.pct, detail: 'Cancelled', eta: '' }
         activeJobId.value = null
+        session.resetTracking()
         clearSession()
         break
       }
@@ -225,6 +241,7 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
     activeRunId.value = null
     progress.value = { pct: 0, detail: '', eta: '' }
     totalCombos.value = 0
+    session.resetTracking()
     clearSession()
   }
 

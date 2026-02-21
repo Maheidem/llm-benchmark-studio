@@ -1,6 +1,7 @@
 """WebSocket endpoint for real-time job status updates."""
 
 import asyncio
+import json
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -17,12 +18,98 @@ router = APIRouter()
 ws_manager = None
 
 
+def _build_reconnect_init(job: dict) -> dict | None:
+    """Build a job-type-specific init message for reconnecting clients.
+
+    When a client reconnects (page refresh), it needs the init event to
+    set up its progress tracking structures. This reconstructs that event
+    from the job's stored params_json and current progress.
+    """
+    job_type = job.get("job_type", "")
+    job_id = job["id"]
+    progress_pct = job.get("progress_pct", 0) or 0
+
+    try:
+        params = json.loads(job.get("params_json", "{}"))
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    if job_type == "benchmark":
+        # Reconstruct benchmark_init from stored params
+        models = params.get("models", [])
+        target_set = params.get("target_set")
+        targets = []
+        if target_set:
+            for t in target_set:
+                if len(t) >= 2:
+                    targets.append({"provider_key": t[0], "model_id": t[1]})
+        else:
+            # Legacy: model_ids only (no provider_key)
+            for mid in models:
+                targets.append({"provider_key": "", "model_id": mid})
+
+        return {
+            "type": "benchmark_init",
+            "job_id": job_id,
+            "reconnect": True,
+            "progress_pct": progress_pct,
+            "data": {
+                "targets": targets,
+                "runs": params.get("runs", 1),
+                "context_tiers": params.get("context_tiers", [0]),
+                "max_tokens": params.get("max_tokens", 512),
+            },
+        }
+
+    if job_type == "tool_eval":
+        return {
+            "type": "tool_eval_init",
+            "job_id": job_id,
+            "reconnect": True,
+            "progress_pct": progress_pct,
+            "data": {
+                "targets": [],  # Frontend doesn't need full target list for reconnect
+                "total_cases": 0,
+                "suite_name": "",
+            },
+        }
+
+    if job_type == "param_tune":
+        return {
+            "type": "tune_start",
+            "job_id": job_id,
+            "reconnect": True,
+            "progress_pct": progress_pct,
+            "tune_id": job.get("result_ref", ""),
+            "total_combos": 0,
+            "models": params.get("models", []),
+            "suite_name": "",
+        }
+
+    if job_type == "prompt_tune":
+        return {
+            "type": "tune_start",
+            "job_id": job_id,
+            "reconnect": True,
+            "progress_pct": progress_pct,
+            "tune_id": job.get("result_ref", ""),
+            "mode": params.get("mode", "quick"),
+            "total_prompts": 0,
+            "total_eval_calls": 0,
+            "suite_name": "",
+        }
+
+    return None
+
+
 @router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     """WebSocket endpoint for real-time job status updates.
 
     Auth: JWT access token passed as query param ?token=xxx
     On connect: sends a 'sync' message with active + recent jobs.
+    Then re-sends init events for any running jobs so reconnecting
+    clients can resume progress tracking.
     Listens for client messages: 'ping' (keep-alive), 'cancel' (cancel a job).
     """
     from jose import JWTError, ExpiredSignatureError
@@ -66,6 +153,14 @@ async def websocket_endpoint(ws: WebSocket):
             "active_jobs": active_jobs,
             "recent_jobs": recent_jobs,
         })
+
+        # Re-send init events for running jobs so reconnecting clients
+        # can resume progress tracking (fixes stale 0/0 after refresh)
+        for job in active_jobs:
+            if job.get("status") == "running":
+                init_msg = _build_reconnect_init(job)
+                if init_msg:
+                    await ws.send_json(init_msg)
     except Exception:
         logger.exception("WebSocket initial sync failed (user_id=%s)", user_id)
         await ws_manager.disconnect(user_id, ws)

@@ -180,7 +180,7 @@ onMounted(async () => {
   }
 
   try {
-    if (!configStore.config) await configStore.loadConfig()
+    await configStore.loadConfig()
     if (configStore.config) buildProviderGroups(configStore.config)
   } catch {
     showToast('Failed to load model config', 'error')
@@ -222,12 +222,12 @@ function buildProviderGroups(config) {
   const providers = config.providers || {}
 
   for (const [provKey, prov] of Object.entries(providers)) {
+    const pk = prov.provider_key || provKey
     const models = (prov.models || []).map(m => ({
-      key: `${provKey}::${m.id}`,
-      model_id: m.id,
-      display_name: m.display_name || m.id,
-      provider_key: provKey,
-      registryKey: prov.provider_key || provKey,
+      key: `${pk}::${m.model_id}`,
+      model_id: m.model_id,
+      display_name: m.display_name || m.model_id,
+      provider_key: pk,
     }))
     if (models.length === 0) continue
 

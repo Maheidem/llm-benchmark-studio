@@ -27,7 +27,7 @@
     <div class="card rounded-md p-5 mb-6">
       <div class="flex items-center justify-between mb-3">
         <span class="section-label">Models</span>
-        <span class="text-xs font-mono text-zinc-600">{{ selectedModels.value.size }} selected</span>
+        <span class="text-xs font-mono text-zinc-600">{{ selectedModels.size }} selected</span>
       </div>
 
       <div v-if="loadingConfig" class="text-xs text-zinc-600 font-body">Loading models...</div>
@@ -55,7 +55,7 @@
               v-for="m in group.models"
               :key="m.key"
               class="model-card rounded-sm px-3 py-2 flex items-center gap-2"
-              :class="{ selected: selectedModels.value.has(m.key) }"
+              :class="{ selected: selectedModels.has(m.key) }"
               @click.stop="toggleModel(m.key)"
             >
               <div class="check-dot"></div>
@@ -107,7 +107,7 @@
           >Cancel</button>
           <button
             @click="startEval"
-            :disabled="store.isEvaluating || selectedModels.value.size === 0 || !selectedSuiteId"
+            :disabled="store.isEvaluating || selectedModels.size === 0 || !selectedSuiteId"
             class="run-btn px-6 py-2 rounded-sm text-xs flex items-center gap-2"
           >
             <svg v-if="store.isEvaluating" class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
@@ -120,7 +120,7 @@
 
     <!-- System Prompt -->
     <SystemPromptEditor
-      v-if="selectedModels.value.size > 0"
+      v-if="selectedModels.size > 0"
       :models="selectedModelsList"
       :system-prompts="systemPrompts"
       @update:system-prompts="systemPrompts = $event"
@@ -289,11 +289,12 @@ function buildProviderGroups(config) {
   const providers = config.providers || {}
 
   for (const [provKey, prov] of Object.entries(providers)) {
+    const pk = prov.provider_key || provKey
     const models = (prov.models || []).map(m => ({
-      key: `${provKey}::${m.id}`,
-      model_id: m.id,
-      display_name: m.display_name || m.id,
-      provider_key: provKey,
+      key: `${pk}::${m.model_id}`,
+      model_id: m.model_id,
+      display_name: m.display_name || m.model_id,
+      provider_key: pk,
     }))
     if (models.length === 0) continue
 

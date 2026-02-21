@@ -7,6 +7,8 @@ export function useWebSocket(getUrl, { onMessage, onOpen, onClose } = {}) {
   const maxRetryMs = 30000
   let retryTimer = null
   let pingInterval = null
+  let refreshTimer = null
+  const REFRESH_INTERVAL_MS = 12 * 60 * 1000 // 12 minutes — well before 15-min token expiry
 
   function connect() {
     if (ws && ws.readyState <= 1) return
@@ -26,6 +28,7 @@ export function useWebSocket(getUrl, { onMessage, onOpen, onClose } = {}) {
       status.value = 'connected'
       retryMs = 1000
       startPing()
+      startTokenRefresh()
       onOpen?.()
     }
 
@@ -37,9 +40,13 @@ export function useWebSocket(getUrl, { onMessage, onOpen, onClose } = {}) {
 
     ws.onclose = (evt) => {
       stopPing()
+      stopTokenRefresh()
       status.value = 'disconnected'
       onClose?.()
-      if (evt.code !== 1000) {
+      if (evt.code === 4001 || evt.code === 4003) {
+        // Auth failure — try refreshing token before retry
+        handleAuthFailure()
+      } else if (evt.code !== 1000) {
         scheduleRetry()
       }
     }
@@ -53,6 +60,7 @@ export function useWebSocket(getUrl, { onMessage, onOpen, onClose } = {}) {
     clearTimeout(retryTimer)
     retryTimer = null
     stopPing()
+    stopTokenRefresh()
     if (ws) {
       ws.close(1000)
       ws = null
@@ -86,6 +94,75 @@ export function useWebSocket(getUrl, { onMessage, onOpen, onClose } = {}) {
       clearInterval(pingInterval)
       pingInterval = null
     }
+  }
+
+  function startTokenRefresh() {
+    stopTokenRefresh()
+    refreshTimer = setInterval(async () => {
+      try {
+        const refresh = localStorage.getItem('refresh_token')
+        if (!refresh) return
+
+        const res = await fetch('/api/auth/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refresh }),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          if (data.access_token) {
+            localStorage.setItem('auth_token', data.access_token)
+            if (data.refresh_token) {
+              localStorage.setItem('refresh_token', data.refresh_token)
+            }
+            // Reconnect WS with fresh token
+            if (ws && ws.readyState === 1) {
+              ws.close(1000)
+              // code=1000 won't trigger scheduleRetry, so reconnect manually
+              setTimeout(() => connect(), 500)
+            }
+          }
+        }
+      } catch {
+        // Refresh failed — keep existing connection alive
+      }
+    }, REFRESH_INTERVAL_MS)
+  }
+
+  function stopTokenRefresh() {
+    if (refreshTimer) {
+      clearInterval(refreshTimer)
+      refreshTimer = null
+    }
+  }
+
+  async function handleAuthFailure() {
+    try {
+      const refresh = localStorage.getItem('refresh_token')
+      if (!refresh) {
+        scheduleRetry()
+        return
+      }
+
+      const res = await fetch('/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refresh }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.access_token) {
+          localStorage.setItem('auth_token', data.access_token)
+          if (data.refresh_token) {
+            localStorage.setItem('refresh_token', data.refresh_token)
+          }
+          setTimeout(() => connect(), 500)
+          return
+        }
+      }
+    } catch { /* ignore */ }
+    // If refresh failed, do normal retry (which will eventually fail with bad token)
+    scheduleRetry()
   }
 
   return { status, connect, disconnect, send }

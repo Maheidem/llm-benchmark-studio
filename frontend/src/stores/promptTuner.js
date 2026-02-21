@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { apiFetch } from '../utils/api.js'
+import { useActiveSession } from '../composables/useActiveSession.js'
 
 export const usePromptTunerStore = defineStore('promptTuner', () => {
   // --- State ---
@@ -15,6 +16,8 @@ export const usePromptTunerStore = defineStore('promptTuner', () => {
   const mode = ref('quick')
   const totalPrompts = ref(0)
   const completedPrompts = ref(0)
+
+  const session = useActiveSession()
 
   // --- Getters ---
   const currentGeneration = computed(() => {
@@ -64,6 +67,15 @@ export const usePromptTunerStore = defineStore('promptTuner', () => {
   // --- Actions ---
 
   async function startTuning(body) {
+    // Clear results BEFORE API call to prevent stale data flash
+    generations.value = []
+    bestPrompt.value = null
+    bestScore.value = 0
+    completedPrompts.value = 0
+    totalPrompts.value = 0
+    progress.value = { pct: 0, detail: 'Starting...', generation: 0, totalGenerations: 0 }
+    session.startTracking()
+
     const res = await apiFetch('/api/tool-eval/prompt-tune', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -77,11 +89,6 @@ export const usePromptTunerStore = defineStore('promptTuner', () => {
     const data = await res.json()
     activeJobId.value = data.job_id
     isRunning.value = true
-    generations.value = []
-    bestPrompt.value = null
-    bestScore.value = 0
-    completedPrompts.value = 0
-    progress.value = { pct: 0, detail: 'Submitted...', generation: 0, totalGenerations: 0 }
     persistJob()
     return data
   }
@@ -135,6 +142,9 @@ export const usePromptTunerStore = defineStore('promptTuner', () => {
   }
 
   function handleProgress(msg) {
+    // Ignore events for a different job
+    if (msg.job_id && activeJobId.value && msg.job_id !== activeJobId.value) return
+
     switch (msg.type) {
       case 'tune_start': {
         isRunning.value = true
@@ -145,6 +155,7 @@ export const usePromptTunerStore = defineStore('promptTuner', () => {
         generations.value = []
         bestPrompt.value = null
         bestScore.value = 0
+        session.startTracking()
         progress.value = {
           pct: 0,
           detail: `Tuning ${msg.suite_name || ''}...`,
@@ -171,6 +182,7 @@ export const usePromptTunerStore = defineStore('promptTuner', () => {
       }
 
       case 'prompt_eval_start': {
+        session.recordStep()
         progress.value = {
           ...progress.value,
           detail: `Gen ${msg.generation}: evaluating prompt ${msg.prompt_index + 1} on ${msg.model}`,
@@ -203,10 +215,14 @@ export const usePromptTunerStore = defineStore('promptTuner', () => {
         completedPrompts.value = Math.round(
           (msg.progress_pct || 0) / 100 * totalPrompts.value
         )
+        const eta = totalPrompts.value > 0
+          ? session.calculateETA(completedPrompts.value, totalPrompts.value)
+          : ''
         progress.value = {
           ...progress.value,
           pct: msg.progress_pct || progress.value.pct,
           detail: msg.progress_detail || progress.value.detail,
+          eta,
         }
         break
       }
@@ -217,6 +233,7 @@ export const usePromptTunerStore = defineStore('promptTuner', () => {
         bestScore.value = msg.best_score || 0
         progress.value = { pct: 100, detail: 'Complete!', generation: 0, totalGenerations: 0 }
         activeJobId.value = null
+        session.resetTracking()
         clearSession()
         break
       }
@@ -225,6 +242,7 @@ export const usePromptTunerStore = defineStore('promptTuner', () => {
         isRunning.value = false
         progress.value = { pct: 100, detail: 'Complete!', generation: 0, totalGenerations: 0 }
         activeJobId.value = null
+        session.resetTracking()
         clearSession()
         break
       }
@@ -236,6 +254,7 @@ export const usePromptTunerStore = defineStore('promptTuner', () => {
           detail: msg.error || msg.error_msg || 'Failed',
         }
         activeJobId.value = null
+        session.resetTracking()
         clearSession()
         break
       }
@@ -244,6 +263,7 @@ export const usePromptTunerStore = defineStore('promptTuner', () => {
         isRunning.value = false
         progress.value = { ...progress.value, detail: 'Cancelled' }
         activeJobId.value = null
+        session.resetTracking()
         clearSession()
         break
       }
@@ -260,6 +280,7 @@ export const usePromptTunerStore = defineStore('promptTuner', () => {
     completedPrompts.value = 0
     totalPrompts.value = 0
     progress.value = { pct: 0, detail: '', generation: 0, totalGenerations: 0 }
+    session.resetTracking()
     clearSession()
   }
 
