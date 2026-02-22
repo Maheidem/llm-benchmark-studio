@@ -120,15 +120,15 @@
 
         <!-- Modal body -->
         <div class="px-5 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
-          <!-- Model ID (only for create) -->
+          <!-- Model (only for create) -->
           <div v-if="!editingProfile">
-            <label class="field-label">Model ID *</label>
-            <input
-              v-model="form.model_id"
-              type="text"
-              placeholder="e.g. openai/gpt-4o"
-              class="settings-input"
-            />
+            <label class="field-label">Model *</label>
+            <select v-model="form.model_id" class="settings-input">
+              <option value="" disabled>Select a model...</option>
+              <option v-for="m in configStore.allModels" :key="m.compoundKey" :value="m.model_id">
+                {{ m.display_name || m.model_id }} ({{ m.provider }})
+              </option>
+            </select>
           </div>
 
           <!-- Name -->
@@ -238,10 +238,12 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { useProfilesStore } from '../../stores/profiles.js'
+import { useConfigStore } from '../../stores/config.js'
 import { useToast } from '../../composables/useToast.js'
 import { useModal } from '../../composables/useModal.js'
 
 const store = useProfilesStore()
+const configStore = useConfigStore()
 const { showToast } = useToast()
 const { confirm } = useModal()
 
@@ -406,7 +408,10 @@ async function handleDelete(profile) {
   }
 }
 
-onMounted(() => store.fetchProfiles())
+onMounted(() => {
+  store.fetchProfiles()
+  if (!configStore.config) configStore.loadConfig()
+})
 </script>
 
 <style scoped>
@@ -424,6 +429,18 @@ onMounted(() => store.fetchProfiles())
 }
 .settings-input:focus {
   border-color: rgba(191,255,0,0.3);
+}
+select.settings-input {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2371717A' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px;
+  cursor: pointer;
+}
+select.settings-input option {
+  background: #18181B;
+  color: #E4E4E7;
 }
 .field-label {
   font-size: 10px;
