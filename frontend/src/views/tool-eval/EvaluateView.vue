@@ -68,12 +68,34 @@
       </div>
     </div>
 
+    <!-- Profile Picker (shown when models are selected and profiles exist) -->
+    <div v-if="selectedModelsList.length > 0 && profilesStore.profiles.length > 0" class="card rounded-md p-5 mb-6">
+      <span class="section-label block mb-3">Profiles (optional)</span>
+      <div class="flex flex-col gap-2">
+        <div v-for="m in selectedModelsList" :key="m.id" class="flex items-center gap-3">
+          <span class="text-xs font-mono text-zinc-400 w-40 truncate" :title="m.model_id">{{ m.display_name }}</span>
+          <select
+            v-model="selectedProfiles[m.model_id]"
+            class="text-xs font-mono px-2 py-1 rounded-sm flex-1"
+            style="background:var(--surface);border:1px solid var(--border-subtle);color:var(--zinc-200);outline:none;"
+          >
+            <option value="">No Profile</option>
+            <option
+              v-for="p in (profilesStore.profilesByModel[m.model_id] || [])"
+              :key="p.id"
+              :value="p.id"
+            >{{ p.name }}{{ p.is_default ? ' (default)' : '' }}</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
     <!-- Eval Settings -->
     <div class="card rounded-md p-5 mb-6">
       <div class="flex items-center justify-between mb-4">
         <span class="section-label">Eval Settings</span>
       </div>
-      <div class="flex items-center gap-4">
+      <div class="flex items-center gap-4 flex-wrap">
         <div>
           <span class="text-zinc-500 font-body text-xs">Temperature</span>
           <input
@@ -98,6 +120,10 @@
             <option value="none">None</option>
           </select>
         </div>
+        <label class="flex items-center gap-2 cursor-pointer" title="Automatically run judge analysis after eval completes">
+          <input type="checkbox" v-model="autoJudge" class="accent-amber-400">
+          <span class="text-xs font-body text-zinc-400">Auto-run Judge</span>
+        </label>
         <div class="ml-auto flex gap-2">
           <button
             v-if="store.isEvaluating"
@@ -202,6 +228,7 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { useToolEvalStore } from '../../stores/toolEval.js'
+import { useProfilesStore } from '../../stores/profiles.js'
 import { useToast } from '../../composables/useToast.js'
 import { useSharedContext } from '../../composables/useSharedContext.js'
 import { useWebSocket } from '../../composables/useWebSocket.js'
@@ -212,6 +239,7 @@ import EvalResultsTable from '../../components/tool-eval/EvalResultsTable.vue'
 import ModelDetailModal from '../../components/tool-eval/ModelDetailModal.vue'
 
 const store = useToolEvalStore()
+const profilesStore = useProfilesStore()
 const { showToast } = useToast()
 const { context, setSuite, setModels, setConfig } = useSharedContext()
 
@@ -220,6 +248,7 @@ const selectedSuiteId = ref('')
 const selectedModels = ref(new Set())
 const temperature = ref(0.0)
 const toolChoice = ref('required')
+const autoJudge = ref(false)
 const systemPrompts = ref({})
 const loadingConfig = ref(true)
 const providerGroups = ref([])
@@ -230,6 +259,9 @@ const errorBanner = ref('')
 
 const detailModalVisible = ref(false)
 const detailModelId = ref('')
+
+// Profile picker: map of model_id -> selected profile id ('' = no profile)
+const selectedProfiles = ref({})
 
 const selectedModelsList = computed(() => {
   return Array.from(selectedModels.value)
@@ -273,6 +305,18 @@ onMounted(async () => {
   if (context.temperature != null) temperature.value = context.temperature
   if (context.toolChoice) toolChoice.value = context.toolChoice
   if (context.systemPrompts) systemPrompts.value = { ...context.systemPrompts }
+
+  // Load profiles
+  try { await profilesStore.fetchProfiles() } catch { /* non-fatal */ }
+
+  // Load judge settings to get default auto_judge value
+  try {
+    const jRes = await apiFetch('/api/settings/judge')
+    if (jRes.ok) {
+      const jSettings = await jRes.json()
+      autoJudge.value = !!jSettings.auto_judge_after_eval
+    }
+  } catch { /* non-fatal */ }
 
   // Restore running eval
   const storedJobId = sessionStorage.getItem('_teJobId')
@@ -444,6 +488,7 @@ async function startEval() {
     targets,
     temperature: temperature.value,
     tool_choice: toolChoice.value,
+    auto_judge: autoJudge.value,
   }
 
   // System prompts
@@ -453,6 +498,15 @@ async function startEval() {
   }
   if (Object.keys(spDict).length > 0) {
     body.system_prompt = spDict
+  }
+
+  // Profiles — only include models that have a profile selected
+  const profilesMap = {}
+  for (const [modelId, profileId] of Object.entries(selectedProfiles.value)) {
+    if (profileId) profilesMap[modelId] = profileId
+  }
+  if (Object.keys(profilesMap).length > 0) {
+    body.profiles = profilesMap
   }
 
   // Experiment

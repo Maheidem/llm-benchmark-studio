@@ -68,6 +68,7 @@ const routes = [
       { path: 'providers', name: 'Providers', component: () => import('../views/settings/ProvidersPanel.vue') },
       { path: 'judge', name: 'JudgeSettings', component: () => import('../views/settings/JudgePanel.vue') },
       { path: 'tuning', name: 'TuningSettings', component: () => import('../views/settings/TuningPanel.vue') },
+      { path: 'profiles', name: 'ProfilesSettings', component: () => import('../views/settings/ProfilesPanel.vue') },
     ],
   },
   {

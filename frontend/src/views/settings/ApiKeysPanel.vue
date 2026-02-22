@@ -5,7 +5,14 @@
     <div v-else class="card rounded-md overflow-hidden">
       <div class="px-5 py-3 flex items-center justify-between" style="border-bottom:1px solid var(--border-subtle)">
         <span class="section-label">My API Keys</span>
-        <span class="text-[10px] text-zinc-600 font-body">Your keys are encrypted and only used for your benchmarks</span>
+        <div class="flex items-center gap-3">
+          <span class="text-[10px] text-zinc-600 font-body">Your keys are encrypted and only used for your benchmarks</span>
+          <button
+            @click="addCustomKey()"
+            class="text-[10px] font-display tracking-wider uppercase px-2 py-0.5 rounded-sm transition-colors"
+            style="color:var(--lime);border:1px solid rgba(191,255,0,0.2)"
+          >+ Custom Key</button>
+        </div>
       </div>
       <div class="divide-y" style="border-color:var(--border-subtle)">
         <div v-if="keys.length === 0" class="px-5 py-3 text-zinc-700 text-xs font-body">
@@ -19,6 +26,11 @@
           <div class="flex items-center gap-3">
             <span class="text-xs font-body text-zinc-300">{{ k.display_name }}</span>
             <span class="text-[10px] font-mono text-zinc-600">{{ k.key_env_name || k.provider_key }}</span>
+            <span
+              v-if="k.standalone"
+              class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm"
+              style="background:rgba(251,146,60,0.08);color:#FB923C;border:1px solid rgba(251,146,60,0.2)"
+            >STANDALONE</span>
             <span
               v-if="k.has_user_key"
               class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm"
@@ -61,7 +73,7 @@ import { useToast } from '../../composables/useToast.js'
 import { useModal } from '../../composables/useModal.js'
 
 const { showToast } = useToast()
-const { inputModal, confirm } = useModal()
+const { inputModal, multiFieldModal, confirm } = useModal()
 
 const keys = ref([])
 const loading = ref(true)
@@ -120,6 +132,35 @@ async function removeKey(k) {
     await loadKeys()
   } catch {
     showToast('Failed to remove key', 'error')
+  }
+}
+
+async function addCustomKey() {
+  const result = await multiFieldModal('Add Custom API Key', [
+    { key: 'provider_key', label: 'Provider Key', placeholder: 'e.g. my_provider', type: 'text' },
+    { key: 'key_name', label: 'Key Name (optional)', placeholder: 'e.g. My OpenAI Key', type: 'text' },
+    { key: 'value', label: 'API Key Value', placeholder: 'sk-...', type: 'password' },
+  ], { confirmLabel: 'Save Key' })
+  if (!result) return
+  const { provider_key, value } = result
+  if (!provider_key || !value) {
+    showToast('Provider key and API key value are required', 'error')
+    return
+  }
+  try {
+    const body = { provider_key: provider_key.trim(), value }
+    if (result.key_name && result.key_name.trim()) {
+      body.key_name = result.key_name.trim()
+    }
+    await apiFetch('/api/keys', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    showToast('Custom key saved', 'success')
+    await loadKeys()
+  } catch {
+    showToast('Failed to save key', 'error')
   }
 }
 

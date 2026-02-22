@@ -68,6 +68,7 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
     progress_detail = f"Benchmark: {model_count} model{'s' if model_count != 1 else ''}, {runs} run{'s' if runs != 1 else ''} each"
 
     # Submit to job registry (starts immediately or queues based on concurrency limit)
+    profiles = raw.get("profiles")
     params = {
         "user_id": user["id"],
         "user_email": user.get("email", ""),
@@ -80,6 +81,7 @@ async def run_benchmark(request: Request, user: dict = Depends(auth.get_current_
         "context_tiers": context_tiers,
         "warmup": warmup,
         "provider_params": provider_params,
+        "profiles": profiles,
     }
 
     job_id = await job_registry.submit(
@@ -183,6 +185,12 @@ async def get_history_run(run_id: str, user: dict = Depends(auth.get_current_use
             run["context_tiers"] = json.loads(run["context_tiers"])
         except (json.JSONDecodeError, TypeError):
             logger.debug("Failed to parse context_tiers for run %s", run_id)
+    if isinstance(run.get("config_json"), str):
+        try:
+            run["config"] = json.loads(run["config_json"])
+        except (json.JSONDecodeError, TypeError):
+            run["config"] = None
+        del run["config_json"]
     return run
 
 

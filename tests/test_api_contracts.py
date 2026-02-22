@@ -326,11 +326,39 @@ class TestApiKeyManagement:
         assert resp.status_code == 422  # Pydantic validation rejects missing api_key
 
     async def test_set_key_nonexistent_provider(self, app_client, auth_headers):
+        """Standalone keys: provider doesn't need to exist in config."""
         resp = await app_client.put("/api/keys", headers=auth_headers, json={
             "provider_key": "fake_provider_xyz",
             "value": "some-key",
         })
-        assert resp.status_code == 404
+        assert resp.status_code == 200
+
+    async def test_standalone_key_returns_key_id(self, app_client, auth_headers):
+        """Phase A: standalone key creation returns key_id and provider_key."""
+        resp = await app_client.put("/api/keys", headers=auth_headers, json={
+            "provider_key": "standalone_provider_abc",
+            "value": "sk-standalone-test-key",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["provider_key"] == "standalone_provider_abc"
+        assert "key_id" in data
+
+    async def test_orphaned_key_appears_in_get_with_standalone_flag(self, app_client, auth_headers):
+        """Phase A: orphaned key (no config provider) appears in GET /api/keys with standalone=True."""
+        # Set a key for a provider not in config
+        await app_client.put("/api/keys", headers=auth_headers, json={
+            "provider_key": "orphaned_provider_zzz",
+            "value": "sk-orphan-key",
+        })
+        resp = await app_client.get("/api/keys", headers=auth_headers)
+        assert resp.status_code == 200
+        keys = resp.json()["keys"]
+        orphan = next((k for k in keys if k["provider_key"] == "orphaned_provider_zzz"), None)
+        assert orphan is not None, "Orphaned key should appear in GET /api/keys"
+        assert orphan.get("standalone") is True
+        assert orphan["has_user_key"] is True
 
     async def test_delete_key(self, app_client, auth_headers):
         # Set it first
@@ -449,6 +477,26 @@ class TestHistoryEndpoints:
     async def test_delete_history_run_not_found(self, app_client, auth_headers):
         resp = await app_client.delete("/api/history/nonexistent-id", headers=auth_headers)
         assert resp.status_code == 404
+
+    async def test_history_run_config_json_stored_and_returned(self, app_client, auth_headers, test_user):
+        """Phase A: config_json is saved to benchmark_runs and parsed into 'config' on retrieval."""
+        import json
+        import db
+
+        user, _ = test_user
+        run_id = await db.save_benchmark_run(
+            user_id=user["id"],
+            prompt="test prompt",
+            context_tiers="[0]",
+            results_json="[]",
+            config_json=json.dumps({"provider_params": {"temperature": 0.5}}),
+        )
+        resp = await app_client.get(f"/api/history/{run_id}", headers=auth_headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "config" in data, "config field should be present when config_json was stored"
+        assert data["config"]["provider_params"]["temperature"] == 0.5
+        assert "config_json" not in data, "config_json raw field should be removed from response"
 
 
 # =========================================================================
@@ -720,6 +768,75 @@ class TestToolEvalHistory:
         resp = await app_client.get("/api/tool-eval/prompt-tune/history", headers=auth_headers)
         assert resp.status_code == 200
         assert "runs" in resp.json()
+
+    async def test_prompt_tune_best_prompt_origin_json_stored(self, app_client, auth_headers, test_user):
+        """Phase A: best_prompt_origin_json is stored on a prompt tune run and readable via detail endpoint."""
+        import json
+        import db
+
+        user, _ = test_user
+        # Create a real suite to satisfy the FK constraint on prompt_tune_runs.suite_id
+        suite_id = await db.create_tool_suite(
+            user["id"], "PT Origin Test Suite", "", "[]"
+        )
+        tune_id = await db.save_prompt_tune_run(
+            user_id=user["id"],
+            suite_id=suite_id,
+            suite_name="PT Origin Test Suite",
+            mode="quick",
+            target_models_json='["gpt-4o"]',
+            meta_model="gpt-4o",
+            base_prompt="Test base prompt",
+            config_json="{}",
+            total_prompts=3,
+        )
+        origin = {"generation": 1, "prompt_index": 0, "style": "direct", "parent_index": None}
+        await db.update_prompt_tune_run(
+            tune_id, user["id"],
+            best_prompt="Improved prompt text",
+            best_score=0.85,
+            best_prompt_origin_json=json.dumps(origin),
+            status="completed",
+        )
+        resp = await app_client.get(
+            f"/api/tool-eval/prompt-tune/history/{tune_id}", headers=auth_headers
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["best_score"] == 0.85
+        assert data["best_prompt"] == "Improved prompt text"
+        assert data["best_prompt_origin_json"] is not None
+        stored_origin = json.loads(data["best_prompt_origin_json"])
+        assert stored_origin["generation"] == 1
+        assert stored_origin["style"] == "direct"
+
+    async def test_prompt_tune_meta_provider_key_stored(self, app_client, auth_headers, test_user):
+        """Phase A: meta_provider_key is persisted on a prompt tune run."""
+        import db
+
+        user, _ = test_user
+        # Create a real suite to satisfy the FK constraint on prompt_tune_runs.suite_id
+        suite_id = await db.create_tool_suite(
+            user["id"], "PT MetaKey Test Suite", "", "[]"
+        )
+        tune_id = await db.save_prompt_tune_run(
+            user_id=user["id"],
+            suite_id=suite_id,
+            suite_name="PT MetaKey Test Suite",
+            mode="quick",
+            target_models_json='["gpt-4o"]',
+            meta_model="gpt-4o",
+            base_prompt=None,
+            config_json="{}",
+            total_prompts=1,
+            meta_provider_key="my_custom_provider",
+        )
+        resp = await app_client.get(
+            f"/api/tool-eval/prompt-tune/history/{tune_id}", headers=auth_headers
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["meta_provider_key"] == "my_custom_provider"
 
 
 # =========================================================================

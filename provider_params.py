@@ -630,6 +630,19 @@ def validate_params(provider: str, model_id: str, params: dict) -> dict:
     resolved, conflict_adjustments = resolve_conflicts(resolved, provider, model_id)
     adjustments.extend(conflict_adjustments)
 
+    # --- Passthrough badges for Tier-3 / custom params ---
+    known_params = set(reg.get("tier1", {}).keys()) | set(reg.get("tier2", {}).keys())
+    already_adjusted = {a["param"] for a in adjustments}
+    for param_name, val in resolved.items():
+        if param_name not in known_params and param_name not in already_adjusted and val is not None:
+            adjustments.append({
+                "param": param_name,
+                "original": val,
+                "adjusted": val,
+                "action": "passthrough",
+                "reason": f"Custom param '{param_name}' passed through without validation (Tier 3)",
+            })
+
     # --- Provider-specific warnings ---
     if provider == "anthropic":
         warnings.append("max_tokens is required for Anthropic and will always be included")
@@ -644,7 +657,9 @@ def validate_params(provider: str, model_id: str, params: dict) -> dict:
     # invalidate the request.
     has_drops = any(a.get("action") == "drop" for a in adjustments)
     has_warns = any(a.get("action") == "warn" for a in adjustments)
-    valid = not has_drops and len(adjustments) == 0
+    # passthrough and warn are informational — only drops and clamps invalidate
+    hard_actions = {"drop", "clamp"}
+    valid = not any(a.get("action") in hard_actions for a in adjustments)
     return {
         "valid": valid,
         "has_warnings": has_warns,

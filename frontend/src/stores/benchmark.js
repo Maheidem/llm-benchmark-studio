@@ -308,7 +308,10 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
         activeJobId.value = null
         isRunning.value = false
         session.resetTracking()
-        loadFinalResults(msg.result_ref)
+        // Only fetch from DB if we have no live results (e.g. reconnect scenario)
+        if (currentResults.value.length === 0 && msg.result_ref) {
+          loadFinalResults(msg.result_ref)
+        }
         break
 
       case 'job_failed':
@@ -445,6 +448,30 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     }
   }
 
+  // ── Re-run pre-fill ──
+  // Called from HistoryPage before navigating to /benchmark to pre-fill settings
+  function prefillFromRun(run) {
+    // Models: results array has { provider, model, model_id }
+    if (run.results && run.results.length > 0) {
+      const s = new Set()
+      for (const r of run.results) {
+        const provKey = r.provider_key || r.provider
+        const modelId = r.model_id || r.model
+        if (provKey && modelId) s.add(`${provKey}::${modelId}`)
+      }
+      if (s.size > 0) selectedModels.value = s
+    }
+    // Config fields
+    if (run.max_tokens != null) maxTokens.value = run.max_tokens
+    if (run.temperature != null) temperature.value = run.temperature
+    if (run.runs != null) runs.value = run.runs
+    if (run.prompt) prompt.value = run.prompt
+    if (run.context_tiers && Array.isArray(run.context_tiers)) {
+      contextTiers.value = new Set(run.context_tiers)
+    }
+    if (run.warmup != null) warmup.value = run.warmup
+  }
+
   // ── Initialize selectedModels to all ──
   function selectAllFromConfig(configObj) {
     if (!configObj?.providers) return
@@ -499,5 +526,6 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     applyDefaults,
     selectAllFromConfig,
     parseCompoundKey,
+    prefillFromRun,
   }
 })

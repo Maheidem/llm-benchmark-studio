@@ -25,6 +25,7 @@ class BenchmarkRequest(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     context_tiers: List[int] = Field(default_factory=lambda: [0])
     runs: int = Field(default=1, ge=1, le=20)
+    profiles: Optional[dict] = None  # {"model_id": "profile_id"}
 
     @model_validator(mode="after")
     def check_models_or_targets(self):
@@ -78,6 +79,8 @@ class ToolEvalRequest(BaseModel):
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     system_prompt: Optional[Any] = None  # str or dict (per-model prompts)
     experiment_id: Optional[str] = None
+    profiles: Optional[dict] = None  # {"model_id": "profile_id"}
+    auto_judge: bool = False
 
     @model_validator(mode="after")
     def check_models_or_targets(self):
@@ -119,6 +122,15 @@ class JudgeRequest(BaseModel):
     judge_model: str = Field(..., min_length=1)
     mode: Literal["post_eval", "live_inline"] = "post_eval"
     experiment_id: Optional[str] = None
+    tune_run_id: Optional[str] = None
+    tune_type: Optional[Literal["param_tuner", "prompt_tuner"]] = None
+
+    @model_validator(mode="after")
+    def check_tune_fields(self):
+        """If tune_type is provided, tune_run_id must also be provided."""
+        if self.tune_type and not self.tune_run_id:
+            raise ValueError("tune_run_id is required when tune_type is provided")
+        return self
 
 
 class JudgeCompareRequest(BaseModel):
@@ -126,6 +138,25 @@ class JudgeCompareRequest(BaseModel):
     eval_run_id_b: str = Field(..., min_length=1)
     judge_model: str = Field(..., min_length=1)
     experiment_id: Optional[str] = None
+
+
+class JudgeRerunRequest(BaseModel):
+    parent_report_id: str = Field(..., min_length=1)
+    judge_model: Optional[str] = None  # If None, reuse parent's model
+    judge_provider_key: Optional[str] = None
+    custom_instructions: Optional[str] = Field(None, max_length=10_000)
+    score_override_enabled: bool = True
+    concurrency: int = Field(default=4, ge=1, le=20)
+
+
+class JudgeSettingsUpdate(BaseModel):
+    default_judge_model: Optional[str] = Field(None, max_length=256)
+    default_judge_provider_key: Optional[str] = Field(None, max_length=64)
+    default_mode: Optional[Literal["post_eval", "live_inline"]] = None
+    custom_instructions_template: Optional[str] = Field(None, max_length=10_000)
+    score_override_policy: Optional[Literal["always_allow", "require_confirmation", "never"]] = None
+    auto_judge_after_eval: Optional[bool] = None
+    concurrency: Optional[int] = Field(None, ge=1, le=20)
 
 
 class ScheduleCreate(BaseModel):
@@ -214,3 +245,34 @@ class JobCreatedResponse(BaseModel):
     job_id: str
     status: str = "pending"
     message: Optional[str] = None
+
+
+# ──────────────────── Model Profiles ─────────────────────
+
+class ProfileCreate(BaseModel):
+    model_id: str = Field(..., min_length=1, max_length=256)
+    name: str = Field(..., min_length=1, max_length=128)
+    description: Optional[str] = Field(None, max_length=2000)
+    params_json: Optional[dict] = Field(default_factory=dict)
+    system_prompt: Optional[str] = Field(None, max_length=50_000)
+    is_default: bool = False
+    origin_type: Literal["manual", "param_tuner", "prompt_tuner", "import"] = "manual"
+    origin_ref: Optional[str] = None
+
+
+class ProfileUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=128)
+    description: Optional[str] = Field(None, max_length=2000)
+    params_json: Optional[dict] = None
+    system_prompt: Optional[str] = Field(None, max_length=50_000)
+    is_default: Optional[bool] = None
+
+
+class ProfileFromTuner(BaseModel):
+    model_id: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1, max_length=128)
+    source_type: Literal["param_tuner", "prompt_tuner"]
+    source_id: str = Field(..., min_length=1)
+    params_json: Optional[dict] = None
+    system_prompt: Optional[str] = Field(None, max_length=50_000)
+    set_as_default: bool = False

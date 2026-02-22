@@ -58,6 +58,20 @@
             title="Apply best config to shared context"
           >Apply</button>
           <button
+            v-if="run.best_score"
+            @click.stop="saveAsProfile(run)"
+            class="text-[10px] font-display tracking-wider uppercase px-2 py-1 rounded-sm"
+            style="background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.2);color:#38BDF8;"
+            title="Save best config as a profile"
+          >Save Profile</button>
+          <button
+            v-if="run.eval_run_id"
+            @click.stop="runJudge(run)"
+            class="text-[10px] font-display tracking-wider uppercase px-2 py-1 rounded-sm"
+            style="background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.2);color:#FBBF24;"
+            title="Run judge analysis on winning parameters"
+          >Judge</button>
+          <button
             @click.stop="deleteRun(run)"
             class="text-[10px] text-zinc-600 hover:text-red-400 transition-colors"
             style="background:none;border:none;cursor:pointer;"
@@ -94,13 +108,20 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useParamTunerStore } from '../../stores/paramTuner.js'
+import { useProfilesStore } from '../../stores/profiles.js'
+import { useJudgeStore } from '../../stores/judge.js'
 import { useSharedContext } from '../../composables/useSharedContext.js'
 import { useToast } from '../../composables/useToast.js'
+import { useModal } from '../../composables/useModal.js'
+import { apiFetch } from '../../utils/api.js'
 import ParamTunerResults from '../../components/tool-eval/ParamTunerResults.vue'
 
 const store = useParamTunerStore()
+const profilesStore = useProfilesStore()
+const judgeStore = useJudgeStore()
 const { setConfig } = useSharedContext()
 const { showToast } = useToast()
+const { inputModal } = useModal()
 
 const loading = ref(true)
 const selectedRun = ref(null)
@@ -156,6 +177,75 @@ function applyBest(run) {
 
   setConfig(updates)
   showToast('Best config applied to shared context', 'success')
+}
+
+async function saveAsProfile(run) {
+  let bestConfig = null
+  if (run.best_config_json) {
+    try {
+      bestConfig = typeof run.best_config_json === 'string' ? JSON.parse(run.best_config_json) : run.best_config_json
+    } catch { /* ignore */ }
+  }
+  if (!bestConfig) {
+    showToast('No best config available', 'error')
+    return
+  }
+
+  const models = run.models_json
+    ? (typeof run.models_json === 'string' ? JSON.parse(run.models_json) : run.models_json)
+    : []
+  const modelId = Array.isArray(models) && models.length > 0 ? models[0] : null
+
+  const result = await inputModal('Save as Profile', 'Profile name', { confirmLabel: 'Save' })
+  if (!result?.value?.trim()) return
+
+  try {
+    await profilesStore.createFromTuner({
+      source_type: 'param_tuner',
+      source_id: run.id,
+      model_id: modelId,
+      name: result.value.trim(),
+      params_json: bestConfig,
+      system_prompt: null,
+    })
+    showToast('Profile saved', 'success')
+  } catch (e) {
+    showToast(e.message || 'Failed to save profile', 'error')
+  }
+}
+
+async function runJudge(run) {
+  if (!run.eval_run_id) {
+    showToast('No eval run linked to this tuning run', 'error')
+    return
+  }
+
+  // Get default judge model from settings
+  let judgeModel = ''
+  try {
+    const res = await apiFetch('/api/settings/judge')
+    if (res.ok) {
+      const s = await res.json()
+      judgeModel = s.default_judge_model || ''
+    }
+  } catch { /* non-fatal */ }
+
+  if (!judgeModel) {
+    showToast('No default judge model configured. Set one in Settings > Judge.', 'error')
+    return
+  }
+
+  try {
+    await judgeStore.runJudge({
+      eval_run_id: run.eval_run_id,
+      judge_model: judgeModel,
+      tune_run_id: run.id,
+      tune_type: 'param_tuner',
+    })
+    showToast('Judge analyzing winning parameters...', 'success')
+  } catch (e) {
+    showToast(e.message || 'Failed to start judge', 'error')
+  }
 }
 
 function formatDate(ts) {

@@ -59,6 +59,20 @@
               title="Apply best prompt to shared context"
             >Apply</button>
             <button
+              v-if="run.best_prompt"
+              @click.stop="saveAsProfile(run)"
+              class="text-[10px] font-display tracking-wider uppercase px-2 py-1 rounded-sm"
+              style="background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.2);color:#38BDF8;"
+              title="Save best prompt as a profile"
+            >Save Profile</button>
+            <button
+              v-if="run.eval_run_id"
+              @click.stop="runJudge(run)"
+              class="text-[10px] font-display tracking-wider uppercase px-2 py-1 rounded-sm"
+              style="background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.2);color:#FBBF24;"
+              title="Run judge analysis on winning prompt"
+            >Judge</button>
+            <button
               @click.stop="deleteRun(run)"
               class="text-[10px] text-zinc-600 hover:text-red-400 transition-colors"
               style="background:none;border:none;cursor:pointer;"
@@ -90,7 +104,10 @@
         <!-- Best prompt -->
         <div v-if="store.bestPrompt" class="mb-4 rounded-sm px-4 py-3" style="border:1px solid rgba(191,255,0,0.2);background:rgba(191,255,0,0.03);">
           <div class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1">Best Prompt ({{ (store.bestScore * 100).toFixed(1) }}%)</div>
-          <div class="text-xs text-zinc-400 font-body">{{ store.bestPrompt }}</div>
+          <div class="text-xs text-zinc-400 font-body mb-2">{{ store.bestPrompt }}</div>
+          <div v-if="formatPromptOrigin(selectedRun)" class="text-[10px] text-zinc-600 font-body italic">
+            {{ formatPromptOrigin(selectedRun) }}
+          </div>
         </div>
 
         <!-- Timeline -->
@@ -106,13 +123,20 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { usePromptTunerStore } from '../../stores/promptTuner.js'
+import { useProfilesStore } from '../../stores/profiles.js'
+import { useJudgeStore } from '../../stores/judge.js'
 import { useSharedContext } from '../../composables/useSharedContext.js'
 import { useToast } from '../../composables/useToast.js'
+import { useModal } from '../../composables/useModal.js'
+import { apiFetch } from '../../utils/api.js'
 import PromptTimeline from '../../components/tool-eval/PromptTimeline.vue'
 
 const store = usePromptTunerStore()
+const profilesStore = useProfilesStore()
+const judgeStore = useJudgeStore()
 const { setSystemPrompt, setConfig } = useSharedContext()
 const { showToast } = useToast()
+const { inputModal } = useModal()
 
 const loading = ref(true)
 const selectedRun = ref(null)
@@ -155,6 +179,81 @@ function applyBest(run) {
   setSystemPrompt('_global', run.best_prompt)
   setConfig({ lastUpdatedBy: 'prompt_tuner' })
   showToast('Best prompt applied to shared context', 'success')
+}
+
+async function saveAsProfile(run) {
+  if (!run.best_prompt) {
+    showToast('No best prompt available', 'error')
+    return
+  }
+
+  const modelId = run.model_id || run.target?.model_id || null
+
+  const result = await inputModal('Save as Profile', 'Profile name', { confirmLabel: 'Save' })
+  if (!result?.value?.trim()) return
+
+  try {
+    await profilesStore.createFromTuner({
+      source_type: 'prompt_tuner',
+      source_id: run.id,
+      model_id: modelId,
+      name: result.value.trim(),
+      system_prompt: run.best_prompt,
+      params_json: null,
+    })
+    showToast('Profile saved', 'success')
+  } catch (e) {
+    showToast(e.message || 'Failed to save profile', 'error')
+  }
+}
+
+async function runJudge(run) {
+  if (!run.eval_run_id) {
+    showToast('No eval run linked to this tuning run', 'error')
+    return
+  }
+
+  // Get default judge model from settings
+  let judgeModel = ''
+  try {
+    const res = await apiFetch('/api/settings/judge')
+    if (res.ok) {
+      const s = await res.json()
+      judgeModel = s.default_judge_model || ''
+    }
+  } catch { /* non-fatal */ }
+
+  if (!judgeModel) {
+    showToast('No default judge model configured. Set one in Settings > Judge.', 'error')
+    return
+  }
+
+  try {
+    await judgeStore.runJudge({
+      eval_run_id: run.eval_run_id,
+      judge_model: judgeModel,
+      tune_run_id: run.id,
+      tune_type: 'prompt_tuner',
+    })
+    showToast('Judge analyzing winning prompt...', 'success')
+  } catch (e) {
+    showToast(e.message || 'Failed to start judge', 'error')
+  }
+}
+
+function formatPromptOrigin(run) {
+  const raw = run.best_prompt_origin_json || run.best_prompt_origin
+  if (!raw) return null
+  try {
+    const o = typeof raw === 'string' ? JSON.parse(raw) : raw
+    const parts = []
+    if (o.generation != null) parts.push(`Generation ${o.generation}`)
+    if (o.prompt_index != null) parts.push(`prompt ${o.prompt_index}`)
+    if (o.style) parts.push(`style: ${o.style}`)
+    return parts.length > 0 ? `Best prompt found in ${parts.join(', ')}` : null
+  } catch {
+    return null
+  }
 }
 
 function formatDate(ts) {

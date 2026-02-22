@@ -8,43 +8,55 @@
           <span class="section-label">Judge Model</span>
         </div>
         <div class="px-5 py-4 space-y-4">
-          <!-- Enabled toggle -->
-          <div class="flex items-center gap-3">
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" v-model="judge.enabled" @change="debounceSave" class="accent-lime-400">
-              <span class="text-xs font-body text-zinc-300">Auto-judge enabled</span>
-            </label>
-          </div>
-
-          <!-- Model selector -->
+          <!-- Default Judge Model selector -->
           <div>
-            <label class="field-label">Judge Model</label>
-            <select v-model="judge.selectedModel" @change="debounceSave" class="settings-select">
+            <label class="field-label">Default Judge Model</label>
+            <select v-model="judge.default_judge_model" @change="debounceSave" class="settings-select">
               <option value="">-- Select a model --</option>
               <option v-for="m in allModels" :key="m.value" :value="m.value">{{ m.label }}</option>
             </select>
           </div>
 
+          <!-- Default Judge Provider Key -->
+          <div>
+            <label class="field-label">Default Judge Provider Key</label>
+            <input
+              v-model="judge.default_judge_provider_key"
+              type="text"
+              @change="debounceSave"
+              class="settings-input"
+              placeholder="e.g. openai, anthropic, lm_studio"
+            >
+          </div>
+
           <!-- Mode -->
           <div>
-            <label class="field-label">Judge Mode</label>
-            <select v-model="judge.mode" @change="debounceSave" class="settings-select">
+            <label class="field-label">Default Mode</label>
+            <select v-model="judge.default_mode" @change="debounceSave" class="settings-select">
               <option value="post_eval">Post-evaluation (after each eval run)</option>
-              <option value="manual">Manual only</option>
+              <option value="live_inline">Live inline</option>
             </select>
           </div>
 
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <!-- Temperature -->
-            <div>
-              <label class="field-label">Temperature</label>
-              <input v-model.number="judge.temperature" type="number" step="0.1" min="0" max="2" @change="debounceSave" class="settings-input">
-            </div>
+          <!-- Score Override Policy -->
+          <div>
+            <label class="field-label">Score Override Policy</label>
+            <select v-model="judge.score_override_policy" @change="debounceSave" class="settings-select">
+              <option value="always_allow">Always Allow</option>
+              <option value="require_confirmation">Require Confirmation</option>
+              <option value="never">Never</option>
+            </select>
+            <p class="text-[10px] text-zinc-700 font-body mt-1">Controls whether the judge can override automated scores when it detects functional equivalence.</p>
+          </div>
 
-            <!-- Max Tokens -->
-            <div>
-              <label class="field-label">Max Tokens</label>
-              <input v-model.number="judge.max_tokens" type="number" step="256" min="256" @change="debounceSave" class="settings-input">
+          <!-- Auto Judge After Eval + Concurrency row -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <!-- Auto Judge After Eval -->
+            <div class="flex items-center gap-3 pt-4">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" v-model="judge.auto_judge_after_eval" @change="debounceSave" class="accent-lime-400">
+                <span class="text-xs font-body text-zinc-300">Auto-judge after eval</span>
+              </label>
             </div>
 
             <!-- Concurrency -->
@@ -54,12 +66,12 @@
             </div>
           </div>
 
-          <!-- Custom Instructions -->
+          <!-- Custom Instructions Template -->
           <div>
-            <label class="field-label">Custom Instructions</label>
-            <p class="text-[10px] text-zinc-700 font-body mb-2">Additional instructions appended to the judge system prompt.</p>
+            <label class="field-label">Custom Instructions Template</label>
+            <p class="text-[10px] text-zinc-700 font-body mb-2">Additional instructions appended to the judge system prompt. Used as default for new judge runs.</p>
             <textarea
-              v-model="judge.custom_instructions"
+              v-model="judge.custom_instructions_template"
               @input="debounceSave"
               rows="4"
               class="w-full px-3 py-2 rounded-sm text-xs font-mono text-zinc-200"
@@ -91,13 +103,13 @@ const saveOk = ref(true)
 let saveTimer = null
 
 const judge = reactive({
-  enabled: false,
-  selectedModel: '',
-  mode: 'post_eval',
-  temperature: 0.0,
-  max_tokens: 4096,
+  default_judge_model: '',
+  default_judge_provider_key: '',
+  default_mode: 'post_eval',
+  custom_instructions_template: '',
+  score_override_policy: 'always_allow',
+  auto_judge_after_eval: false,
   concurrency: 4,
-  custom_instructions: '',
 })
 
 const allModels = ref([])
@@ -121,23 +133,17 @@ async function loadSettings() {
     }
     allModels.value = models
 
-    // Load phase10 settings
-    const settingsRes = await apiFetch('/api/settings/phase10')
+    // Load judge settings from correct endpoint
+    const settingsRes = await apiFetch('/api/settings/judge')
     if (settingsRes.ok) {
-      const settings = await settingsRes.json()
-      const j = settings.judge || {}
-      judge.enabled = !!j.enabled
-      judge.mode = j.mode || 'post_eval'
-      judge.temperature = j.temperature ?? 0.0
-      judge.max_tokens = j.max_tokens || 4096
-      judge.concurrency = j.concurrency || 4
-      judge.custom_instructions = j.custom_instructions || ''
-      // Reconstruct selected model compound key
-      if (j.provider_key && j.model_id) {
-        judge.selectedModel = j.provider_key + '::' + j.model_id
-      } else if (j.model_id) {
-        judge.selectedModel = j.model_id
-      }
+      const s = await settingsRes.json()
+      judge.default_judge_model = s.default_judge_model || ''
+      judge.default_judge_provider_key = s.default_judge_provider_key || ''
+      judge.default_mode = s.default_mode || 'post_eval'
+      judge.custom_instructions_template = s.custom_instructions_template || ''
+      judge.score_override_policy = s.score_override_policy || 'always_allow'
+      judge.auto_judge_after_eval = !!s.auto_judge_after_eval
+      judge.concurrency = s.concurrency || 4
     }
   } catch (e) {
     showToast('Failed to load settings', 'error')
@@ -152,32 +158,18 @@ function debounceSave() {
 }
 
 async function save() {
-  // Parse compound key
-  let provider_key = ''
-  let model_id = ''
-  if (judge.selectedModel.includes('::')) {
-    const i = judge.selectedModel.indexOf('::')
-    provider_key = judge.selectedModel.substring(0, i)
-    model_id = judge.selectedModel.substring(i + 2)
-  } else {
-    model_id = judge.selectedModel
-  }
-
   const data = {
-    judge: {
-      enabled: judge.enabled,
-      model_id,
-      provider_key,
-      mode: judge.mode,
-      temperature: parseFloat(judge.temperature) || 0.0,
-      max_tokens: parseInt(judge.max_tokens) || 4096,
-      custom_instructions: judge.custom_instructions,
-      concurrency: parseInt(judge.concurrency) || 4,
-    },
+    default_judge_model: judge.default_judge_model || null,
+    default_judge_provider_key: judge.default_judge_provider_key || null,
+    default_mode: judge.default_mode,
+    custom_instructions_template: judge.custom_instructions_template,
+    score_override_policy: judge.score_override_policy,
+    auto_judge_after_eval: judge.auto_judge_after_eval,
+    concurrency: parseInt(judge.concurrency) || 4,
   }
 
   try {
-    const res = await apiFetch('/api/settings/phase10', {
+    const res = await apiFetch('/api/settings/judge', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),

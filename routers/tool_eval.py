@@ -1006,6 +1006,7 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
 
     # Submit to job registry
     experiment_id = body.get("experiment_id")
+    profiles = body.get("profiles")
     job_params = {
         "user_id": user["id"],
         "user_email": user.get("email", ""),
@@ -1019,6 +1020,8 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
         "judge": judge_config,
         "judge_concurrency": body.get("judge_concurrency", 4),
         "experiment_id": experiment_id,
+        "profiles": profiles,
+        "auto_judge": validated.auto_judge,
     }
 
     job_id = await job_registry.submit(

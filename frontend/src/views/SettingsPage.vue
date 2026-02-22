@@ -26,6 +26,7 @@ const tabs = [
   { path: '/settings/providers', label: 'Providers', icon: '\u2699\uFE0F' },
   { path: '/settings/judge', label: 'Judge', icon: '\u2696\uFE0F' },
   { path: '/settings/tuning', label: 'Tuning', icon: '\uD83C\uDF9B\uFE0F' },
+  { path: '/settings/profiles', label: 'Model Profiles', icon: '\uD83D\uDDC2\uFE0F' },
 ]
 
 function isActiveTab(path) {

@@ -42,6 +42,16 @@ async def get_my_keys(user: dict = Depends(auth.get_current_user)):
         if pk in providers:
             providers[pk]["has_user_key"] = True
             providers[pk]["user_key_updated_at"] = uk["updated_at"]
+        else:
+            providers[pk] = {
+                "provider_key": pk,
+                "display_name": pk,
+                "key_env_name": uk.get("key_name", f"{pk.upper()}_API_KEY"),
+                "has_global_key": False,
+                "has_user_key": True,
+                "user_key_updated_at": uk["updated_at"],
+                "standalone": True,
+            }
 
     return {"keys": list(providers.values())}
 
@@ -65,10 +75,11 @@ async def set_my_key(request: Request, user: dict = Depends(auth.get_current_use
 
     config = await _get_user_config(user["id"])
     prov_cfg = config.get("providers", {}).get(provider_key)
-    if not prov_cfg:
-        return JSONResponse({"error": f"Provider '{provider_key}' not found"}, status_code=404)
-
-    key_name = prov_cfg.get("api_key_env", f"{provider_key.upper()}_API_KEY")
+    key_name = (
+        prov_cfg.get("api_key_env", f"{provider_key.upper()}_API_KEY")
+        if prov_cfg
+        else body.get("key_name") or f"{provider_key.upper()}_API_KEY"
+    )
     encrypted = vault.encrypt(value)
     key_id = await db.upsert_user_key(user["id"], provider_key, key_name, encrypted)
     logger.info("API key set: user_id=%s provider=%s", user["id"], provider_key)

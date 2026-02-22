@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import replace
 
 import db
 from benchmark import Target, build_targets, save_results
@@ -70,11 +71,21 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
     context_tiers = params.get("context_tiers", [0])
     warmup = params.get("warmup", True)
     provider_params = params.get("provider_params")
+    profiles_map = params.get("profiles")  # {"model_id": "profile_id"} or None
 
     logger.info(
         "Benchmark started: job_id=%s user_id=%s models=%d tiers=%s runs=%d",
         job_id, user_id, len(model_ids) if model_ids else 0, context_tiers, runs,
     )
+
+    # Load model profiles if specified (B3)
+    loaded_profiles = {}
+    if profiles_map and isinstance(profiles_map, dict):
+        for model_id, profile_id in profiles_map.items():
+            profile = await db.get_profile(profile_id, user_id)
+            if profile:
+                loaded_profiles[model_id] = profile
+                logger.debug("Loaded profile %s for model %s", profile_id, model_id)
 
     config = await _get_user_config(user_id)
     defaults = config.get("defaults", {})
@@ -140,11 +151,31 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
                 if tier > 0 and tier > headroom:
                     continue  # Skip tier exceeding context window
 
+                # Apply model profile if available (B3)
+                bench_target = target
+                bench_provider_params = provider_params
+                profile = loaded_profiles.get(target.model_id)
+                if profile:
+                    # Profile system_prompt replaces config-level baseline
+                    profile_sys = profile.get("system_prompt")
+                    if profile_sys:
+                        bench_target = replace(target, system_prompt=profile_sys)
+
+                    # Profile params: defaults < profile < per-request overrides
+                    profile_params_raw = profile.get("params_json")
+                    if profile_params_raw:
+                        profile_params = json.loads(profile_params_raw) if isinstance(profile_params_raw, str) else profile_params_raw
+                        if profile_params:
+                            merged = dict(profile_params)
+                            if bench_provider_params:
+                                merged.update(bench_provider_params)
+                            bench_provider_params = merged
+
                 # Warm-up run (discarded)
                 if warmup:
                     await async_run_single(
-                        target, prompt, max_tokens, temperature, tier,
-                        provider_params=provider_params,
+                        bench_target, prompt, max_tokens, temperature, tier,
+                        provider_params=bench_provider_params,
                     )
 
                 for r in range(runs):
@@ -167,8 +198,8 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
                     })
 
                     result = await async_run_single(
-                        target, prompt, max_tokens, temperature, tier,
-                        provider_params=provider_params,
+                        bench_target, prompt, max_tokens, temperature, tier,
+                        provider_params=bench_provider_params,
                     )
                     await results_queue.put({
                         "type": "result",
@@ -233,11 +264,31 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
         agg_results = _aggregate(all_results, config)
         save_results(agg_results, prompt, context_tiers=context_tiers)
 
+        # Build config_json for re-run support
+        bench_config = {
+            "models": model_ids,
+            "context_tiers": context_tiers,
+            "runs": runs,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "warmup": warmup,
+        }
+        if provider_params:
+            bench_config["provider_params"] = provider_params
+        if target_set:
+            bench_config["target_set"] = [list(t) for t in target_set]
+        if profiles_map:
+            bench_config["profiles"] = profiles_map
+
         run_id = await db.save_benchmark_run(
             user_id=user_id,
             prompt=prompt,
             context_tiers=json.dumps(context_tiers),
             results_json=json.dumps(all_results),
+            max_tokens=max_tokens,
+            temperature=temperature,
+            warmup=warmup,
+            config_json=json.dumps(bench_config),
         )
 
         logger.info(
@@ -280,11 +331,21 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
     judge_config = params.get("judge")
     judge_concurrency = int(params.get("judge_concurrency", 4))
     experiment_id = params.get("experiment_id")
+    profiles_map = params.get("profiles")  # {"model_id": "profile_id"} or None
 
     logger.info(
         "Tool eval started: job_id=%s user_id=%s models=%d",
         job_id, user_id, len(model_ids) if model_ids else 0,
     )
+
+    # Load model profiles if specified
+    loaded_profiles = {}
+    if profiles_map and isinstance(profiles_map, dict):
+        for model_id, profile_id in profiles_map.items():
+            profile = await db.get_profile(profile_id, user_id)
+            if profile:
+                loaded_profiles[model_id] = profile
+                logger.debug("Loaded profile %s for model %s", profile_id, model_id)
 
     # Load suite + test cases
     suite = await db.get_tool_suite(suite_id, user_id)
@@ -390,6 +451,31 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
         """Run all test cases for models in this provider."""
         for target in prov_targets:
             system_prompt = _resolve_system_prompt(target)
+
+            # Apply model profile if available (B3)
+            eval_target = target
+            eval_provider_params = provider_params
+            profile = loaded_profiles.get(target.model_id)
+            if profile:
+                # Profile system_prompt replaces config-level baseline
+                # Per-request system_prompt (if any) still overrides profile
+                profile_sys = profile.get("system_prompt")
+                if profile_sys and not system_prompt:
+                    system_prompt = profile_sys
+                elif profile_sys and system_prompt:
+                    # Per-request override wins over profile
+                    pass
+
+                # Profile params: defaults < profile < per-request overrides
+                profile_params_raw = profile.get("params_json")
+                if profile_params_raw:
+                    profile_params = json.loads(profile_params_raw) if isinstance(profile_params_raw, str) else profile_params_raw
+                    if profile_params:
+                        merged = dict(profile_params)
+                        if eval_provider_params:
+                            merged.update(eval_provider_params)
+                        eval_provider_params = merged
+
             for case in cases:
                 if cancel_event.is_set():
                     return
@@ -403,9 +489,9 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
 
                 if mt_config and mt_config.get("multi_turn"):
                     case_with_mt = {**case, "_mt_config": mt_config}
-                    result = await run_multi_turn_eval(target, tools, case_with_mt, temperature, tool_choice, provider_params=provider_params, system_prompt=system_prompt)
+                    result = await run_multi_turn_eval(eval_target, tools, case_with_mt, temperature, tool_choice, provider_params=eval_provider_params, system_prompt=system_prompt)
                 else:
-                    result = await run_single_eval(target, tools, case, temperature, tool_choice, provider_params=provider_params, system_prompt=system_prompt)
+                    result = await run_single_eval(eval_target, tools, case, temperature, tool_choice, provider_params=eval_provider_params, system_prompt=system_prompt)
                 await results_queue.put(result)
 
     # Launch provider groups in parallel
@@ -493,6 +579,8 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                             "reasoning": "Judge model call failed",
                             "tool_selection_assessment": "unknown",
                             "param_assessment": "unknown",
+                            "judge_override_score": None,
+                            "override_reason": None,
                         })
             judge_tasks.append(asyncio.create_task(
                 _judge_async(judge_target, tool_defs_text, item, judge_queue, judge_sem)
@@ -534,9 +622,12 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
     target_set_cleaned = [ts for ts in target_set_list if ts[0] or ts[1]]
     if target_set_cleaned:
         config["target_set"] = target_set_cleaned
+    if profiles_map:
+        config["profiles"] = profiles_map
     config_json_str = json.dumps(config)
 
-    # Save to DB
+    # Save to DB (include profiles_json for reproducibility)
+    profiles_json_str = json.dumps(profiles_map) if profiles_map else None
     eval_id = await db.save_tool_eval_run(
         user_id=user_id,
         suite_id=suite["id"],
@@ -547,6 +638,7 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
         temperature=temperature,
         config_json=config_json_str,
         experiment_id=experiment_id,
+        profiles_json=profiles_json_str,
     )
 
     # Store result_ref so frontend can discover eval_id on reconnect
@@ -744,6 +836,42 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
         "Tool eval completed: job_id=%s user_id=%s results=%d eval_id=%s",
         job_id, user_id, len(all_results), eval_id,
     )
+
+    # --- Auto-judge: submit a separate judge job if requested ---
+    auto_judge = params.get("auto_judge", False)
+    if auto_judge and eval_id and not judge_report_id:
+        # Only auto-judge if no judge was already run inline/post-eval
+        try:
+            # Load user's judge settings for default model
+            d = db.DatabaseManager()
+            user_settings = await d.fetch_one(
+                "SELECT config_yaml FROM user_configs WHERE user_id = ?", (user_id,)
+            )
+            judge_settings = {}
+            if user_settings:
+                import yaml
+                cfg = yaml.safe_load(user_settings.get("config_yaml", ""))
+                if isinstance(cfg, dict):
+                    judge_settings = cfg.get("judge_settings", {})
+
+            default_judge_model = judge_settings.get("default_judge_model")
+            if default_judge_model:
+                judge_params = {
+                    "user_id": user_id,
+                    "user_email": params.get("user_email", ""),
+                    "eval_run_id": eval_id,
+                    "judge_model": default_judge_model,
+                    "judge_provider_key": judge_settings.get("default_judge_provider_key"),
+                    "custom_instructions": judge_settings.get("custom_instructions_template", ""),
+                    "concurrency": judge_settings.get("concurrency", 4),
+                    "experiment_id": experiment_id,
+                }
+                await job_registry.submit("judge", user_id, judge_params)
+                logger.info("Auto-judge submitted for eval_id=%s judge_model=%s", eval_id, default_judge_model)
+            else:
+                logger.debug("Auto-judge skipped: no default_judge_model configured for user=%s", user_id)
+        except Exception as e:
+            logger.warning("Auto-judge submission failed: %s", e)
 
     return eval_id
 
@@ -1203,6 +1331,7 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
         config_json=json.dumps(cfg),
         total_prompts=total_prompts,
         experiment_id=experiment_id,
+        meta_provider_key=meta_provider_key,
     )
 
     # Store result_ref early so the frontend can discover tune_id on reconnect
@@ -1229,6 +1358,7 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
     completed_prompts = 0
     best_prompt = None
     best_score = 0.0
+    best_prompt_origin = None
     survivors = []  # For evolutionary mode
 
     for gen_num in range(1, generations + 1):
@@ -1389,6 +1519,12 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
             if p_info["avg_score"] > best_score:
                 best_score = p_info["avg_score"]
                 best_prompt = p_info["text"]
+                best_prompt_origin = {
+                    "generation": gen_num,
+                    "prompt_index": p_info["index"],
+                    "style": p_info.get("style"),
+                    "parent_index": p_info.get("parent_index"),
+                }
 
             # Update job progress
             pct = int((completed_prompts / total_prompts) * 100) if total_prompts > 0 else 0
@@ -1406,6 +1542,7 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
         gen_best = gen_prompts[0] if gen_prompts else None
         all_generations.append({
             "generation": gen_num,
+            "timestamp": time.time(),
             "prompts": gen_prompts,
             "best_index": gen_best["index"] if gen_best else None,
             "best_score": gen_best["avg_score"] if gen_best else 0.0,
@@ -1427,11 +1564,14 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
             generations_json=json.dumps(all_generations),
             best_prompt=best_prompt,
             best_score=best_score,
+            best_prompt_origin_json=json.dumps(best_prompt_origin) if best_prompt_origin else None,
             completed_prompts=completed_prompts,
         )
 
     # --- Tuning complete ---
     duration = time.perf_counter() - start_time
+
+    _origin_json = json.dumps(best_prompt_origin) if best_prompt_origin else None
 
     if cancel_event.is_set():
         await db.update_prompt_tune_run(
@@ -1439,6 +1579,7 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
             generations_json=json.dumps(all_generations),
             best_prompt=best_prompt,
             best_score=best_score,
+            best_prompt_origin_json=_origin_json,
             completed_prompts=completed_prompts,
             status="cancelled",
             duration_s=round(duration, 2),
@@ -1450,6 +1591,7 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
         generations_json=json.dumps(all_generations),
         best_prompt=best_prompt,
         best_score=best_score,
+        best_prompt_origin_json=_origin_json,
         completed_prompts=completed_prompts,
         status="completed",
         duration_s=round(duration, 2),
@@ -1514,14 +1656,60 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
     concurrency = int(params.get("concurrency", 4))
     experiment_id = params.get("experiment_id")
 
+    # Tuner analysis params (optional -- for analyzing winning configs)
+    tune_run_id = params.get("tune_run_id")
+    tune_type = params.get("tune_type")
+
+    # Versioning params (set by rerun endpoint, optional for normal judge)
+    parent_report_id = params.get("parent_report_id")
+    version = int(params.get("version", 1))
+    instructions_json = params.get("instructions_json")
+
     logger.info(
-        "Judge started: job_id=%s user_id=%s eval_run_id=%s concurrency=%d",
-        job_id, user_id, eval_run_id, concurrency,
+        "Judge started: job_id=%s user_id=%s eval_run_id=%s concurrency=%d version=%d",
+        job_id, user_id, eval_run_id, concurrency, version,
     )
 
     # Load eval run
     eval_run = await db.get_tool_eval_run(eval_run_id, user_id)
     results = json.loads(eval_run.get("results_json", "[]"))
+
+    # --- Build tuner analysis context (appended to cross-case prompt) ---
+    tuner_analysis_context = ""
+    if tune_run_id and tune_type:
+        try:
+            if tune_type == "param_tuner":
+                tune_run = await db.get_param_tune_run(tune_run_id, user_id)
+                if tune_run:
+                    best_config = json.loads(tune_run.get("best_config_json", "{}") or "{}")
+                    tuner_analysis_context = (
+                        "## Tuner Analysis Context\n"
+                        "The parameter tuner found this winning configuration:\n"
+                        f"{json.dumps(best_config, indent=2)}\n\n"
+                        "Analyze WHY these parameters performed best. Consider:\n"
+                        "- How the temperature setting affects tool calling precision\n"
+                        "- Whether the parameter combination reduces hallucination\n"
+                        "- If any params have diminishing returns\n"
+                    )
+                    logger.info("Tuner analysis context loaded: param_tune run_id=%s", tune_run_id)
+            elif tune_type == "prompt_tuner":
+                tune_run = await db.get_prompt_tune_run(tune_run_id, user_id)
+                if tune_run:
+                    best_prompt = tune_run.get("best_prompt", "")
+                    tuner_analysis_context = (
+                        "## Tuner Analysis Context\n"
+                        "The prompt tuner found this winning system prompt:\n"
+                        "---\n"
+                        f"{best_prompt}\n"
+                        "---\n\n"
+                        "Analyze WHY this prompt performed best. Consider:\n"
+                        "- What specific instructions improve tool selection accuracy\n"
+                        "- How the prompt structure guides parameter extraction\n"
+                        "- What linguistic patterns the model responds to most effectively\n"
+                    )
+                    logger.info("Tuner analysis context loaded: prompt_tune run_id=%s", tune_run_id)
+        except Exception:
+            logger.warning("Failed to load tuner analysis context: tune_type=%s tune_run_id=%s", tune_type, tune_run_id)
 
     # Load suite for tool definitions
     suite = await db.get_tool_suite(eval_run["suite_id"], user_id)
@@ -1552,13 +1740,16 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
         if ws_manager:
             await ws_manager.send_to_user(user_id, payload)
 
-    # Create judge report in DB
+    # Create judge report in DB (with versioning fields if present)
     report_id = await db.save_judge_report(
         user_id=user_id,
         judge_model=judge_model_id,
         mode="post_eval",
         eval_run_id=eval_run_id,
         experiment_id=experiment_id,
+        parent_report_id=parent_report_id,
+        version=version,
+        instructions_json=instructions_json,
     )
 
     # Store result_ref early
@@ -1627,7 +1818,7 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
         # Cross-case analysis per model
         tgt = target_map.get(model_id)
         mname = tgt.display_name if tgt else model_id
-        report_data = await _judge_crosscase(judge_target, mname, model_verdicts)
+        report_data = await _judge_crosscase(judge_target, mname, model_verdicts, extra_context=tuner_analysis_context)
         report_data["model_id"] = model_id
         report_data["model_name"] = mname
         all_model_reports.append(report_data)

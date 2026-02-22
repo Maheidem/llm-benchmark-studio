@@ -105,6 +105,7 @@
               <th class="px-3 py-2 text-left section-label">Model</th>
               <th class="px-3 py-2 text-center section-label">Verdict</th>
               <th class="px-3 py-2 text-center section-label">Score</th>
+              <th class="px-3 py-2 text-center section-label">Override</th>
               <th class="px-3 py-2 text-left section-label">Summary</th>
             </tr>
           </thead>
@@ -119,6 +120,27 @@
               </td>
               <td class="px-3 py-2 text-center text-xs font-mono" :style="{ color: qualityScoreColor(v.quality_score) }">
                 {{ v.quality_score || 0 }}/5
+              </td>
+              <td class="px-3 py-2 text-center">
+                <template v-if="v.judge_override_score != null">
+                  <div class="flex flex-col items-center gap-0.5">
+                    <span
+                      class="text-xs font-mono font-bold"
+                      style="color:#FBBF24;"
+                      :title="v.override_reason || 'Judge override'"
+                    >{{ (v.judge_override_score * 100).toFixed(0) }}%</span>
+                    <span
+                      v-if="v.original_score != null"
+                      class="text-[10px] font-mono line-through text-zinc-600"
+                    >{{ (v.original_score * 100).toFixed(0) }}%</span>
+                    <span
+                      v-if="v.override_reason"
+                      class="text-[9px] text-zinc-600 font-body max-w-[80px] truncate"
+                      :title="v.override_reason"
+                    >{{ v.override_reason }}</span>
+                  </div>
+                </template>
+                <span v-else class="text-zinc-700 text-xs">—</span>
               </td>
               <td class="px-3 py-2 text-xs text-zinc-500 font-body">{{ v.summary || '' }}</td>
             </tr>

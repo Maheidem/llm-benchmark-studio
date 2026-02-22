@@ -130,6 +130,34 @@ export const useJudgeStore = defineStore('judge', () => {
     reports.value = reports.value.filter(r => r.id !== id)
   }
 
+  async function rerunJudge(body) {
+    const res = await apiFetch('/api/tool-eval/judge/rerun', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (res.status === 409) throw new Error('A job is already running')
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err.error || `Server error (${res.status})`)
+    }
+    const data = await res.json()
+    activeJobId.value = data.job_id
+    isRunning.value = true
+    verdicts.value = []
+    modelReports.value = []
+    progress.value = { pct: 0, detail: `Re-running v${data.version || '?'}...` }
+    persistJob()
+    return data
+  }
+
+  async function fetchVersions(reportId) {
+    const res = await apiFetch(`/api/tool-eval/judge/reports/${reportId}/versions`)
+    if (!res.ok) throw new Error('Failed to load versions')
+    const data = await res.json()
+    return data.versions || []
+  }
+
   function handleProgress(msg) {
     switch (msg.type) {
       case 'judge_start': {
@@ -245,6 +273,8 @@ export const useJudgeStore = defineStore('judge', () => {
     loadReports,
     loadReport,
     deleteReport,
+    rerunJudge,
+    fetchVersions,
     handleProgress,
     reset,
     restoreJob,

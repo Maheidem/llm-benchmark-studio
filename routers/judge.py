@@ -13,11 +13,12 @@ from pydantic import ValidationError
 import auth
 import db
 from benchmark import Target, build_targets
-from schemas import JudgeRequest, JudgeCompareRequest
+from schemas import JudgeRequest, JudgeCompareRequest, JudgeRerunRequest, JudgeSettingsUpdate
 from job_registry import registry as job_registry
 from provider_params import build_litellm_kwargs
 from routers.helpers import (
     _get_user_config,
+    _save_user_config,
     _find_target,
     _check_rate_limit,
     _get_user_cancel,
@@ -30,6 +31,49 @@ router = APIRouter(tags=["judge"])
 
 # Module-level ws_manager -- set by app.py after import
 ws_manager = None
+
+
+# ---------------------------------------------------------------------------
+# Judge settings defaults
+# ---------------------------------------------------------------------------
+
+JUDGE_DEFAULTS = {
+    "default_judge_model": None,
+    "default_judge_provider_key": None,
+    "default_mode": "post_eval",
+    "custom_instructions_template": "",
+    "score_override_policy": "always_allow",
+    "auto_judge_after_eval": False,
+    "concurrency": 4,
+}
+
+
+# ---------------------------------------------------------------------------
+# Judge settings endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/settings/judge")
+async def get_judge_settings(user: dict = Depends(auth.get_current_user)):
+    """Get judge default settings for current user."""
+    config = await _get_user_config(user["id"])
+    stored = config.get("judge_settings", {})
+    return {**JUDGE_DEFAULTS, **stored}
+
+
+@router.put("/api/settings/judge")
+async def save_judge_settings(body: JudgeSettingsUpdate, user: dict = Depends(auth.get_current_user)):
+    """Save judge default settings (partial update -- only non-None fields are merged)."""
+    config = await _get_user_config(user["id"])
+    current = config.get("judge_settings", {})
+
+    # Merge only fields that were explicitly provided (non-None)
+    updates = body.model_dump(exclude_none=True)
+    current.update(updates)
+    config["judge_settings"] = current
+
+    await _save_user_config(user["id"], config)
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
@@ -57,13 +101,18 @@ EVALUATE:
 3. Reasoning Quality: Does the tool call show understanding of the user's intent?
 4. Edge Cases: Did the model handle ambiguity well?
 
+SCORE OVERRIDE (Optional):
+If the model's tool call is functionally equivalent to the expected answer but was scored 0 by the automated scoring system (e.g., the model used "fetch_weather" instead of "get_weather", or used equivalent parameter names), you may override the automated score. When providing an override, set "judge_override_score" to what you believe the overall score should be (0.0-1.0) and "override_reason" explaining why the automated score was incorrect. Only override when there is a clear functional equivalence. Do not override scores for genuinely wrong tool calls.
+
 Return ONLY valid JSON (no text before/after):
-{{"quality_score": 1, "verdict": "pass", "summary": "One-line summary max 100 chars", "reasoning": "Detailed 2-3 sentence explanation", "tool_selection_assessment": "correct", "param_assessment": "exact"}}
+{{"quality_score": 1, "verdict": "pass", "summary": "One-line summary max 100 chars", "reasoning": "Detailed 2-3 sentence explanation", "tool_selection_assessment": "correct", "param_assessment": "exact", "judge_override_score": null, "override_reason": null}}
 
 quality_score: integer 1-5
 verdict: "pass" or "marginal" or "fail"
 tool_selection_assessment: "correct" or "acceptable_alternative" or "wrong"
 param_assessment: "exact" or "close" or "partial" or "wrong"
+judge_override_score: float 0.0-1.0 or null (only when overriding automated score)
+override_reason: string or null (required when judge_override_score is set)
 """
 
 _JUDGE_COMPARE_PROMPT = """You are an expert judge comparing two LLMs' tool calling performance.
@@ -219,6 +268,8 @@ async def _judge_single_verdict(
             "reasoning": "Could not parse judge response",
             "tool_selection_assessment": "unknown",
             "param_assessment": "unknown",
+            "judge_override_score": None,
+            "override_reason": None,
         }
     # Ensure required keys
     verdict.setdefault("quality_score", 0)
@@ -227,6 +278,8 @@ async def _judge_single_verdict(
     verdict.setdefault("reasoning", "")
     verdict.setdefault("tool_selection_assessment", "unknown")
     verdict.setdefault("param_assessment", "unknown")
+    verdict.setdefault("judge_override_score", None)
+    verdict.setdefault("override_reason", None)
     return verdict
 
 
@@ -234,8 +287,14 @@ async def _judge_crosscase(
     judge_target: Target,
     model_name: str,
     verdicts: list[dict],
+    extra_context: str = "",
 ) -> dict:
-    """Generate cross-case analysis report from verdicts."""
+    """Generate cross-case analysis report from verdicts.
+
+    Args:
+        extra_context: Optional additional context appended to the prompt
+            (e.g., tuner analysis context explaining winning configurations).
+    """
     summary_parts = []
     for v in verdicts:
         tc_id = v.get("test_case_id", "?")
@@ -249,6 +308,8 @@ async def _judge_crosscase(
         model_name=model_name,
         verdicts_summary="\n".join(summary_parts),
     )
+    if extra_context:
+        prompt += "\n\n" + extra_context
     report = await _call_judge_model(judge_target, prompt)
     if not report:
         return {
@@ -288,6 +349,8 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
             judge_model=body.get("judge_model", ""),
             mode=body.get("mode", "post_eval"),
             experiment_id=body.get("experiment_id"),
+            tune_run_id=body.get("tune_run_id"),
+            tune_type=body.get("tune_type"),
         )
     except (ValidationError, Exception) as e:
         raise HTTPException(422, detail=str(e))
@@ -330,6 +393,12 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
         "concurrency": concurrency,
         "experiment_id": experiment_id,
     }
+
+    # Pass tuner analysis params if provided
+    if validated.tune_run_id:
+        job_params["tune_run_id"] = validated.tune_run_id
+    if validated.tune_type:
+        job_params["tune_type"] = validated.tune_type
 
     job_id = await job_registry.submit(
         job_type="judge",
@@ -458,3 +527,106 @@ async def delete_judge_report(report_id: str, user: dict = Depends(auth.get_curr
     if not deleted:
         return JSONResponse({"error": "Judge report not found"}, status_code=404)
     return {"status": "ok"}
+
+
+@router.post("/api/tool-eval/judge/rerun")
+async def rerun_judge(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Re-run a judge report with different settings, creating a new version.
+
+    Links the new report to the parent via parent_report_id, forming a flat
+    version chain (root + children).
+    """
+    body = await request.json()
+
+    try:
+        validated = JudgeRerunRequest(**body)
+    except (ValidationError, Exception) as e:
+        raise HTTPException(422, detail=str(e))
+
+    # Load parent report (check ownership)
+    parent = await db.get_judge_report(validated.parent_report_id, user["id"])
+    if not parent:
+        return JSONResponse({"error": "Parent report not found"}, status_code=404)
+
+    # Find the root: if parent already has a parent_report_id, use that as root
+    root_id = parent.get("parent_report_id") or parent["id"]
+
+    # Compute next version = max version in chain + 1
+    versions = await db.get_judge_report_versions(parent["id"], user["id"])
+    max_version = max((v.get("version", 1) for v in versions), default=1) if versions else 1
+    next_version = max_version + 1
+
+    # Determine judge model (use parent's if not overridden)
+    judge_model_id = validated.judge_model or parent["judge_model"]
+    judge_provider_key = validated.judge_provider_key
+    custom_instructions = validated.custom_instructions or ""
+    concurrency = validated.concurrency
+
+    # Load eval run from parent to validate it still exists
+    eval_run_id = parent.get("eval_run_id")
+    if not eval_run_id:
+        return JSONResponse({"error": "Parent report has no linked eval run"}, status_code=400)
+
+    eval_run = await db.get_tool_eval_run(eval_run_id, user["id"])
+    if not eval_run:
+        return JSONResponse({"error": "Linked eval run not found"}, status_code=404)
+
+    results = json.loads(eval_run.get("results_json", "[]"))
+    if not results:
+        return JSONResponse({"error": "Linked eval run has no results"}, status_code=400)
+
+    # Rate limit
+    await _check_rate_limit(user["id"])
+
+    # Validate judge model exists in config
+    config = await _get_user_config(user["id"])
+    all_targets = build_targets(config)
+    judge_targets = _find_target(all_targets, judge_model_id, judge_provider_key)
+    if not judge_targets:
+        return JSONResponse({"error": f"Judge model '{judge_model_id}' not found in config"}, status_code=400)
+
+    # Build instructions_json to record the config used for this version
+    instructions_json = json.dumps({
+        "custom_instructions": custom_instructions,
+        "judge_model": judge_model_id,
+        "judge_provider_key": judge_provider_key,
+        "score_override_enabled": validated.score_override_enabled,
+        "concurrency": concurrency,
+    })
+
+    progress_detail = f"Judge v{next_version}: {len(results)} verdicts, {judge_targets[0].display_name}"
+
+    job_params = {
+        "user_id": user["id"],
+        "user_email": user.get("email", ""),
+        "eval_run_id": eval_run_id,
+        "judge_model": judge_model_id,
+        "judge_provider_key": judge_provider_key,
+        "custom_instructions": custom_instructions,
+        "concurrency": concurrency,
+        "experiment_id": parent.get("experiment_id"),
+        "parent_report_id": root_id,
+        "version": next_version,
+        "instructions_json": instructions_json,
+    }
+
+    job_id = await job_registry.submit(
+        job_type="judge",
+        user_id=user["id"],
+        params=job_params,
+        progress_detail=progress_detail,
+    )
+
+    return {"job_id": job_id, "status": "submitted", "version": next_version}
+
+
+@router.get("/api/tool-eval/judge/reports/{report_id}/versions")
+async def get_judge_report_versions(report_id: str, user: dict = Depends(auth.get_current_user)):
+    """Get version history for a judge report chain.
+
+    Given any report_id in a version chain, returns all versions ordered by version ASC.
+    """
+    versions = await db.get_judge_report_versions(report_id, user["id"])
+    if not versions:
+        return JSONResponse({"error": "Report not found"}, status_code=404)
+    return {"versions": versions}

@@ -466,12 +466,58 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_experiment ON judge_reports(experiment_id)")
         await db.commit()
 
+        # --- Model Profiles ---
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS model_profiles (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                model_id TEXT NOT NULL,
+                name TEXT NOT NULL DEFAULT 'Default',
+                description TEXT DEFAULT '',
+                is_default INTEGER NOT NULL DEFAULT 0,
+                params_json TEXT NOT NULL DEFAULT '{}',
+                system_prompt TEXT,
+                origin_type TEXT NOT NULL DEFAULT 'manual'
+                    CHECK(origin_type IN ('manual', 'param_tuner', 'prompt_tuner', 'import')),
+                origin_ref TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(user_id, model_id, name)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_model_profiles_user ON model_profiles(user_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_model_profiles_model ON model_profiles(user_id, model_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_model_profiles_default ON model_profiles(user_id, model_id, is_default)")
+        await db.commit()
+
         # M6: system_prompt on tool_suites
         try:
             await db.execute("ALTER TABLE tool_suites ADD COLUMN system_prompt TEXT")
             await db.commit()
         except Exception:
             logger.debug("Column tool_suites.system_prompt already exists")
+
+        # B3: profiles_json on tool_eval_runs (stores which profiles were used)
+        try:
+            await db.execute("ALTER TABLE tool_eval_runs ADD COLUMN profiles_json TEXT")
+            await db.commit()
+        except Exception:
+            logger.debug("Column tool_eval_runs.profiles_json already exists")
+
+        # Re-run columns for benchmark_runs + meta_provider_key for prompt_tune_runs
+        for col_sql in [
+            "ALTER TABLE benchmark_runs ADD COLUMN max_tokens INTEGER",
+            "ALTER TABLE benchmark_runs ADD COLUMN temperature REAL",
+            "ALTER TABLE benchmark_runs ADD COLUMN warmup INTEGER",
+            "ALTER TABLE benchmark_runs ADD COLUMN config_json TEXT",
+            "ALTER TABLE prompt_tune_runs ADD COLUMN meta_provider_key TEXT",
+        ]:
+            try:
+                await db.execute(col_sql)
+                await db.commit()
+            except Exception:
+                pass
 
         # --- Migration: add 'interrupted' status to param_tune_runs / prompt_tune_runs ---
         # SQLite CHECK constraints can't be altered, so we recreate the tables.
@@ -503,6 +549,27 @@ async def init_db():
                         logger.info("Migration complete for %s", table_name)
             except Exception:
                 logger.exception("Failed to migrate %s CHECK constraint", table_name)
+
+        # Migration: add best_prompt_origin_json to prompt_tune_runs
+        try:
+            await db.execute("ALTER TABLE prompt_tune_runs ADD COLUMN best_prompt_origin_json TEXT")
+            await db.commit()
+        except Exception:
+            logger.debug("Column prompt_tune_runs.best_prompt_origin_json already exists")
+
+        # --- Judge versioning columns ---
+        for col_sql in [
+            "ALTER TABLE judge_reports ADD COLUMN parent_report_id TEXT",
+            "ALTER TABLE judge_reports ADD COLUMN version INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE judge_reports ADD COLUMN instructions_json TEXT",
+        ]:
+            try:
+                await db.execute(col_sql)
+                await db.commit()
+            except Exception:
+                pass
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_parent ON judge_reports(parent_report_id)")
+        await db.commit()
 
 
 # --- User CRUD ---
@@ -663,14 +730,21 @@ async def delete_user_key(user_id: str, provider_key: str) -> bool:
 # --- Benchmark runs CRUD ---
 
 async def save_benchmark_run(
-    user_id: str, prompt: str, context_tiers: str, results_json: str, metadata: str = None
+    user_id: str, prompt: str, context_tiers: str, results_json: str,
+    metadata: str = None,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+    warmup: bool | None = None,
+    config_json: str | None = None,
 ) -> str:
     """Save a benchmark run. Returns the run ID."""
     run_id = uuid.uuid4().hex
     await _db.execute(
-        "INSERT INTO benchmark_runs (id, user_id, prompt, context_tiers, results_json, metadata) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (run_id, user_id, prompt, context_tiers, results_json, metadata),
+        "INSERT INTO benchmark_runs (id, user_id, prompt, context_tiers, results_json, metadata, "
+        "max_tokens, temperature, warmup, config_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, user_id, prompt, context_tiers, results_json, metadata,
+         max_tokens, temperature, int(warmup) if warmup is not None else None, config_json),
     )
     return run_id
 
@@ -678,7 +752,8 @@ async def save_benchmark_run(
 async def get_user_benchmark_runs(user_id: str, limit: int = 50, offset: int = 0) -> list[dict]:
     """Get benchmark runs for a user, newest first."""
     return await _db.fetch_all(
-        "SELECT id, timestamp, prompt, context_tiers, results_json, metadata "
+        "SELECT id, timestamp, prompt, context_tiers, results_json, metadata, "
+        "max_tokens, temperature, warmup, config_json "
         "FROM benchmark_runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
         (user_id, limit, offset),
     )
@@ -865,13 +940,13 @@ async def delete_test_case(case_id: str, suite_id: str) -> bool:
 
 # --- Tool Eval Runs CRUD ---
 
-async def save_tool_eval_run(user_id: str, suite_id: str, suite_name: str, models_json: str, results_json: str, summary_json: str, temperature: float, config_json: str | None = None, experiment_id: str | None = None) -> str:
+async def save_tool_eval_run(user_id: str, suite_id: str, suite_name: str, models_json: str, results_json: str, summary_json: str, temperature: float, config_json: str | None = None, experiment_id: str | None = None, profiles_json: str | None = None) -> str:
     """Save eval run. Returns run_id."""
     run_id = uuid.uuid4().hex
     await _db.execute(
-        "INSERT INTO tool_eval_runs (id, user_id, suite_id, suite_name, models_json, results_json, summary_json, temperature, config_json, experiment_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (run_id, user_id, suite_id, suite_name, models_json, results_json, summary_json, temperature, config_json, experiment_id),
+        "INSERT INTO tool_eval_runs (id, user_id, suite_id, suite_name, models_json, results_json, summary_json, temperature, config_json, experiment_id, profiles_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, user_id, suite_id, suite_name, models_json, results_json, summary_json, temperature, config_json, experiment_id, profiles_json),
     )
     return run_id
 
@@ -1005,15 +1080,16 @@ async def save_prompt_tune_run(
     target_models_json: str, meta_model: str, base_prompt: str | None,
     config_json: str, total_prompts: int,
     experiment_id: str | None = None,
+    meta_provider_key: str | None = None,
 ) -> str:
     """Create a new prompt tune run (status=running). Returns run_id."""
     run_id = uuid.uuid4().hex
     await _db.execute(
         "INSERT INTO prompt_tune_runs (id, user_id, suite_id, suite_name, mode, "
-        "target_models_json, meta_model, base_prompt, config_json, total_prompts, experiment_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "target_models_json, meta_model, base_prompt, config_json, total_prompts, experiment_id, meta_provider_key) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (run_id, user_id, suite_id, suite_name, mode,
-         target_models_json, meta_model, base_prompt, config_json, total_prompts, experiment_id),
+         target_models_json, meta_model, base_prompt, config_json, total_prompts, experiment_id, meta_provider_key),
     )
     return run_id
 
@@ -1023,6 +1099,7 @@ async def update_prompt_tune_run(
     generations_json: str | None = None,
     best_prompt: str | None = None,
     best_score: float | None = None,
+    best_prompt_origin_json: str | None = None,
     completed_prompts: int | None = None,
     status: str | None = None,
     duration_s: float | None = None,
@@ -1039,6 +1116,9 @@ async def update_prompt_tune_run(
     if best_score is not None:
         updates.append("best_score = ?")
         values.append(best_score)
+    if best_prompt_origin_json is not None:
+        updates.append("best_prompt_origin_json = ?")
+        values.append(best_prompt_origin_json)
     if completed_prompts is not None:
         updates.append("completed_prompts = ?")
         values.append(completed_prompts)
@@ -1095,12 +1175,17 @@ async def save_judge_report(
     eval_run_id: str | None = None,
     eval_run_id_b: str | None = None,
     experiment_id: str | None = None,
+    parent_report_id: str | None = None,
+    version: int = 1,
+    instructions_json: str | None = None,
 ) -> str:
     """Create a new judge report (status=running). Returns report id."""
     return await _db.execute_returning_id(
-        "INSERT INTO judge_reports (user_id, eval_run_id, eval_run_id_b, judge_model, mode, experiment_id) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (user_id, eval_run_id, eval_run_id_b, judge_model, mode, experiment_id),
+        "INSERT INTO judge_reports (user_id, eval_run_id, eval_run_id_b, judge_model, mode, "
+        "experiment_id, parent_report_id, version, instructions_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, eval_run_id, eval_run_id_b, judge_model, mode,
+         experiment_id, parent_report_id, version, instructions_json),
         id_query="SELECT id FROM judge_reports WHERE rowid = ?",
     )
 
@@ -1120,7 +1205,8 @@ async def get_judge_reports(user_id: str, limit: int = 50) -> list[dict]:
     """List user's judge reports (exclude full verdicts_json for list view)."""
     return await _db.fetch_all(
         "SELECT id, eval_run_id, eval_run_id_b, judge_model, mode, "
-        "overall_grade, overall_score, status, timestamp "
+        "overall_grade, overall_score, status, timestamp, "
+        "parent_report_id, version, instructions_json "
         "FROM judge_reports WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
         (user_id, limit),
     )
@@ -1141,6 +1227,36 @@ async def delete_judge_report(report_id: str, user_id: str) -> bool:
         (report_id, user_id),
     )
     return count > 0
+
+
+async def get_judge_report_versions(report_id: str, user_id: str) -> list[dict]:
+    """Get all versions linked to a root report (including the root itself).
+
+    Given any report_id in a version chain, find the root and return all versions.
+    This is a simple 2-level model: root + children. Re-runs always point to
+    a root report, not to other re-runs.
+    Returns list of dicts ordered by version ASC.
+    """
+    # Step 1: Get the given report to determine the root
+    report = await _db.fetch_one(
+        "SELECT id, parent_report_id FROM judge_reports WHERE id = ? AND user_id = ?",
+        (report_id, user_id),
+    )
+    if not report:
+        return []
+
+    # Step 2: Find root -- if this report has a parent, that parent is the root
+    root_id = report["parent_report_id"] if report["parent_report_id"] else report["id"]
+
+    # Step 3: Get all reports in the chain (root + children pointing to root)
+    return await _db.fetch_all(
+        "SELECT id, eval_run_id, judge_model, mode, overall_grade, overall_score, "
+        "status, timestamp, parent_report_id, version, instructions_json "
+        "FROM judge_reports "
+        "WHERE user_id = ? AND (id = ? OR parent_report_id = ?) "
+        "ORDER BY version ASC",
+        (user_id, root_id, root_id),
+    )
 
 
 # --- Experiment CRUD ---
@@ -1658,3 +1774,218 @@ async def get_user_recent_job_count(user_id: str, hours: int = 1) -> int:
         (user_id, f'-{hours} hours')
     )
     return result["cnt"] if result else 0
+
+
+# --- Model Profiles CRUD ---
+
+MAX_PROFILES_PER_MODEL = 20
+
+
+async def get_profiles(user_id: str, model_id: str | None = None) -> list[dict]:
+    """List profiles for a user, optionally filtered by model_id.
+
+    Returns list of dicts ordered by model_id, is_default DESC, name.
+    """
+    if model_id:
+        return await _db.fetch_all(
+            "SELECT * FROM model_profiles WHERE user_id = ? AND model_id = ? "
+            "ORDER BY model_id, is_default DESC, name",
+            (user_id, model_id),
+        )
+    return await _db.fetch_all(
+        "SELECT * FROM model_profiles WHERE user_id = ? "
+        "ORDER BY model_id, is_default DESC, name",
+        (user_id,),
+    )
+
+
+async def get_profile(profile_id: str, user_id: str) -> dict | None:
+    """Get a single profile by ID with ownership check."""
+    return await _db.fetch_one(
+        "SELECT * FROM model_profiles WHERE id = ? AND user_id = ?",
+        (profile_id, user_id),
+    )
+
+
+async def create_profile(
+    user_id: str,
+    model_id: str,
+    name: str,
+    description: str | None = None,
+    params_json: str | None = None,
+    system_prompt: str | None = None,
+    is_default: bool = False,
+    origin_type: str = "manual",
+    origin_ref: str | None = None,
+) -> str:
+    """Create a new model profile.
+
+    Enforces max 20 profiles per model per user.
+    If is_default=True, clears existing default for this user+model first.
+    Returns profile_id.
+    Raises ValueError if the per-model limit is exceeded.
+    """
+    # Check count limit
+    count_row = await _db.fetch_one(
+        "SELECT COUNT(*) as cnt FROM model_profiles WHERE user_id = ? AND model_id = ?",
+        (user_id, model_id),
+    )
+    if count_row and count_row["cnt"] >= MAX_PROFILES_PER_MODEL:
+        raise ValueError(
+            f"Maximum of {MAX_PROFILES_PER_MODEL} profiles per model reached"
+        )
+
+    profile_id = uuid.uuid4().hex
+
+    # Multi-step: clear old default + insert, needs single connection
+    async with aiosqlite.connect(_db._path()) as conn:
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("PRAGMA foreign_keys=ON")
+
+        if is_default:
+            await conn.execute(
+                "UPDATE model_profiles SET is_default = 0, updated_at = datetime('now') "
+                "WHERE user_id = ? AND model_id = ? AND is_default = 1",
+                (user_id, model_id),
+            )
+
+        await conn.execute(
+            "INSERT INTO model_profiles "
+            "(id, user_id, model_id, name, description, is_default, params_json, "
+            "system_prompt, origin_type, origin_ref) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                profile_id, user_id, model_id, name,
+                description or "",
+                1 if is_default else 0,
+                params_json or "{}",
+                system_prompt,
+                origin_type,
+                origin_ref,
+            ),
+        )
+        await conn.commit()
+
+    return profile_id
+
+
+async def update_profile(profile_id: str, user_id: str, **kwargs) -> bool:
+    """Partial update of a model profile.
+
+    Accepted kwargs: name, description, params_json, system_prompt, is_default.
+    If is_default=True, clears existing default for the same user+model first.
+    Always updates updated_at timestamp.
+    Returns True if the profile was found and updated.
+    """
+    allowed = {"name", "description", "params_json", "system_prompt", "is_default"}
+    updates = {k: v for k, v in kwargs.items() if k in allowed and (v is not None or k == "is_default")}
+    if not updates:
+        return False
+
+    # If setting as default, we need the model_id and a multi-step transaction
+    if updates.get("is_default"):
+        async with aiosqlite.connect(_db._path()) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA foreign_keys=ON")
+
+            # Get the profile to find its model_id
+            cursor = await conn.execute(
+                "SELECT model_id FROM model_profiles WHERE id = ? AND user_id = ?",
+                (profile_id, user_id),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return False
+
+            model_id = row["model_id"]
+
+            # Clear old default
+            await conn.execute(
+                "UPDATE model_profiles SET is_default = 0, updated_at = datetime('now') "
+                "WHERE user_id = ? AND model_id = ? AND is_default = 1",
+                (user_id, model_id),
+            )
+
+            # Build SET clause
+            fields = []
+            params = []
+            for k, v in updates.items():
+                if k == "is_default":
+                    fields.append("is_default = ?")
+                    params.append(1 if v else 0)
+                else:
+                    fields.append(f"{k} = ?")
+                    params.append(v)
+            fields.append("updated_at = datetime('now')")
+            params.extend([profile_id, user_id])
+
+            cursor = await conn.execute(
+                f"UPDATE model_profiles SET {', '.join(fields)} WHERE id = ? AND user_id = ?",
+                params,
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+
+    # Simple update (no default-clearing needed)
+    fields = []
+    params = []
+    for k, v in updates.items():
+        if k == "is_default":
+            fields.append("is_default = ?")
+            params.append(1 if v else 0)
+        else:
+            fields.append(f"{k} = ?")
+            params.append(v)
+    fields.append("updated_at = datetime('now')")
+    params.extend([profile_id, user_id])
+    count = await _db.execute_returning_rowcount(
+        f"UPDATE model_profiles SET {', '.join(fields)} WHERE id = ? AND user_id = ?",
+        params,
+    )
+    return count > 0
+
+
+async def delete_profile(profile_id: str, user_id: str) -> bool:
+    """Delete a model profile with ownership check. Returns True if deleted."""
+    count = await _db.execute_returning_rowcount(
+        "DELETE FROM model_profiles WHERE id = ? AND user_id = ?",
+        (profile_id, user_id),
+    )
+    return count > 0
+
+
+async def set_default_profile(profile_id: str, user_id: str) -> bool:
+    """Set a profile as the default for its model. Clears any existing default.
+
+    Returns True if the profile was found and updated.
+    """
+    async with aiosqlite.connect(_db._path()) as conn:
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("PRAGMA foreign_keys=ON")
+
+        # Get the profile to find its model_id
+        cursor = await conn.execute(
+            "SELECT model_id FROM model_profiles WHERE id = ? AND user_id = ?",
+            (profile_id, user_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return False
+
+        model_id = row["model_id"]
+
+        # Clear existing default for this user+model
+        await conn.execute(
+            "UPDATE model_profiles SET is_default = 0, updated_at = datetime('now') "
+            "WHERE user_id = ? AND model_id = ? AND is_default = 1",
+            (user_id, model_id),
+        )
+
+        # Set new default
+        cursor = await conn.execute(
+            "UPDATE model_profiles SET is_default = 1, updated_at = datetime('now') "
+            "WHERE id = ? AND user_id = ?",
+            (profile_id, user_id),
+        )
+        await conn.commit()
+        return cursor.rowcount > 0

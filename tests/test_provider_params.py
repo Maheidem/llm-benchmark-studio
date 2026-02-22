@@ -334,6 +334,37 @@ class TestValidateParams:
         result = validate_params("openai", "gpt-4o", {"temperature": 0.7, "top_p": None})
         assert "top_p" not in result["resolved_params"]
 
+    def test_custom_param_gets_passthrough_adjustment(self):
+        """Phase A: unknown/Tier-3 params produce a 'passthrough' adjustment badge."""
+        result = validate_params("openai", "gpt-4o", {"repetition_penalty": 1.1})
+        passthrough_adj = [
+            a for a in result["adjustments"] if a["action"] == "passthrough"
+        ]
+        assert len(passthrough_adj) == 1, "Custom param should produce exactly one passthrough adjustment"
+        assert passthrough_adj[0]["param"] == "repetition_penalty"
+        assert passthrough_adj[0]["original"] == 1.1
+        assert "Tier 3" in passthrough_adj[0]["reason"]
+
+    def test_multiple_custom_params_each_get_passthrough_badge(self):
+        """Phase A: multiple unknown params each get their own passthrough adjustment."""
+        result = validate_params("openai", "gpt-4o", {
+            "repetition_penalty": 1.1,
+            "min_p": 0.05,
+        })
+        passthrough_params = {
+            a["param"] for a in result["adjustments"] if a["action"] == "passthrough"
+        }
+        assert "repetition_penalty" in passthrough_params
+        assert "min_p" in passthrough_params
+
+    def test_known_param_does_not_get_passthrough_badge(self):
+        """Phase A: a known Tier-1/Tier-2 param should not produce a passthrough adjustment."""
+        result = validate_params("openai", "gpt-4o", {"temperature": 0.7})
+        passthrough_adj = [
+            a for a in result["adjustments"] if a["action"] == "passthrough"
+        ]
+        assert len(passthrough_adj) == 0, "Known param should not be badged as passthrough"
+
 
 # ===========================================================================
 # PROVIDER_REGISTRY structure validation

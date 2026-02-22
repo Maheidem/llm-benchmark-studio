@@ -3,6 +3,17 @@
     <div class="flex items-center justify-between mb-6">
       <h2 class="section-label">Benchmark History</h2>
       <div class="flex items-center gap-3">
+        <button
+          @click="refreshHistory"
+          :disabled="loading"
+          class="text-[10px] font-display tracking-wider uppercase px-3 py-1.5 rounded-sm transition-opacity"
+          :class="loading ? 'opacity-50 cursor-not-allowed' : ''"
+          style="border:1px solid var(--border-subtle);color:var(--zinc-400);"
+          title="Refresh history"
+        >
+          <span v-if="loading">...</span>
+          <span v-else>Refresh</span>
+        </button>
         <input
           v-model="searchQuery"
           type="text"
@@ -73,15 +84,16 @@
       <div
         v-for="(h, idx) in filteredHistory"
         :key="h.id || idx"
-        class="card rounded-sm p-5 fade-in"
+        class="card rounded-sm p-5 fade-in cursor-pointer hover:bg-white/[0.02] transition-colors"
         :style="`animation-delay: ${idx * 40}ms`"
+        @click="openDetail(h)"
       >
         <div class="flex items-center justify-between mb-3">
           <div class="flex items-center gap-3">
             <!-- Compare checkbox -->
             <button
               v-if="h.id"
-              @click="toggleRunSelection(h.id)"
+              @click.stop="toggleRunSelection(h.id)"
               class="w-4 h-4 rounded-sm border flex items-center justify-center transition-all flex-shrink-0"
               :style="selectedRuns.has(h.id)
                 ? 'border-color:#38BDF8;background:rgba(56,189,248,0.15)'
@@ -103,7 +115,18 @@
           </div>
           <div class="flex items-center gap-3">
             <span v-if="getWinner(h)" class="font-mono text-sm" style="color:var(--lime)">{{ getWinner(h).avg_tokens_per_second }} tok/s</span>
-            <button v-if="h.id" @click="deleteRun(h.id)" class="text-zinc-700 hover:text-red-400 transition-colors" title="Delete run">
+            <!-- Re-run button -->
+            <button
+              v-if="h.id"
+              @click.stop="rerunBenchmark(h)"
+              class="text-zinc-500 hover:text-lime-400 transition-colors"
+              title="Re-run this benchmark"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+              </svg>
+            </button>
+            <button v-if="h.id" @click.stop="deleteRun(h.id)" class="text-zinc-700 hover:text-red-400 transition-colors" title="Delete run">
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
               </svg>
@@ -147,16 +170,152 @@
 
     <!-- Error state -->
     <div v-if="error" class="text-red-400 text-sm font-body mt-4">{{ error }}</div>
+
+    <!-- Detail Modal -->
+    <div
+      v-if="detailRun"
+      class="fixed inset-0 z-50 flex items-center justify-center"
+      style="background:rgba(0,0,0,0.75);"
+      @click.self="detailRun = null"
+    >
+      <div
+        class="card rounded-md p-6 mx-4 w-full"
+        style="max-width:680px;max-height:85vh;overflow-y:auto;"
+      >
+        <!-- Modal header -->
+        <div class="flex items-center justify-between mb-5">
+          <div>
+            <span class="section-label">Run Detail</span>
+            <p class="text-[11px] font-mono text-zinc-600 mt-0.5">{{ formatTimestamp(detailRun.timestamp) }}</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              @click="rerunBenchmark(detailRun)"
+              class="text-[10px] font-display tracking-wider uppercase px-3 py-1.5 rounded-sm transition-colors"
+              style="background:rgba(191,255,0,0.08);border:1px solid rgba(191,255,0,0.2);color:var(--lime);"
+              title="Re-run this benchmark"
+            >
+              <span class="flex items-center gap-1.5">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                Re-Run
+              </span>
+            </button>
+            <button
+              @click="detailRun = null"
+              class="text-zinc-500 hover:text-zinc-300 transition-colors"
+              style="background:none;border:none;cursor:pointer;"
+            >Close</button>
+          </div>
+        </div>
+
+        <!-- Run config summary -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+          <div class="p-3 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle)">
+            <p class="text-[10px] font-display tracking-wider uppercase text-zinc-600 mb-1">Models</p>
+            <p class="text-sm font-mono text-zinc-300">{{ getSortedResults(detailRun).length }}</p>
+          </div>
+          <div class="p-3 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle)">
+            <p class="text-[10px] font-display tracking-wider uppercase text-zinc-600 mb-1">Runs</p>
+            <p class="text-sm font-mono text-zinc-300">{{ detailRun.runs || 1 }}</p>
+          </div>
+          <div class="p-3 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle)">
+            <p class="text-[10px] font-display tracking-wider uppercase text-zinc-600 mb-1">Max Tokens</p>
+            <p class="text-sm font-mono text-zinc-300">{{ detailRun.max_tokens || '-' }}</p>
+          </div>
+          <div class="p-3 rounded-sm" style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle)">
+            <p class="text-[10px] font-display tracking-wider uppercase text-zinc-600 mb-1">Temperature</p>
+            <p class="text-sm font-mono text-zinc-300">{{ detailRun.temperature ?? '-' }}</p>
+          </div>
+        </div>
+
+        <!-- Context tiers -->
+        <div v-if="detailRun.context_tiers && detailRun.context_tiers.length > 0" class="mb-4">
+          <p class="text-[10px] font-display tracking-wider uppercase text-zinc-600 mb-2">Context Tiers</p>
+          <div class="flex gap-2 flex-wrap">
+            <span
+              v-for="tier in detailRun.context_tiers"
+              :key="tier"
+              class="text-[10px] font-mono px-2 py-0.5 rounded-sm"
+              style="background:rgba(255,255,255,0.04);border:1px solid var(--border-subtle);color:#A1A1AA;"
+            >{{ tier === 0 ? 'Base' : formatTier(tier) }}</span>
+          </div>
+        </div>
+
+        <!-- Prompt preview -->
+        <div v-if="detailRun.prompt" class="mb-5">
+          <p class="text-[10px] font-display tracking-wider uppercase text-zinc-600 mb-2">Prompt</p>
+          <div
+            class="text-xs font-mono text-zinc-400 px-3 py-2 rounded-sm"
+            style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);white-space:pre-wrap;max-height:80px;overflow-y:auto;"
+          >{{ detailRun.prompt }}</div>
+        </div>
+
+        <!-- Results table -->
+        <div>
+          <p class="text-[10px] font-display tracking-wider uppercase text-zinc-600 mb-2">Results</p>
+          <div class="overflow-x-auto rounded-sm" style="border:1px solid var(--border-subtle)">
+            <table class="w-full text-xs">
+              <thead>
+                <tr style="border-bottom:1px solid var(--border-subtle)">
+                  <th class="px-3 py-2 text-left section-label">Model</th>
+                  <th v-if="hasMultiCtx(detailRun)" class="px-3 py-2 text-right section-label">Context</th>
+                  <th class="px-3 py-2 text-right section-label">Tok/s</th>
+                  <th class="px-3 py-2 text-right section-label">TTFT</th>
+                  <th class="px-3 py-2 text-right section-label">Duration</th>
+                  <th class="px-3 py-2 text-right section-label">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="(r, ri) in getSortedResults(detailRun)"
+                  :key="ri"
+                  style="border-top:1px solid var(--border-subtle)"
+                >
+                  <td class="px-3 py-2 text-zinc-400 font-body">{{ r.provider }} / {{ r.model }}</td>
+                  <td v-if="hasMultiCtx(detailRun)" class="px-3 py-2 text-right font-mono text-zinc-600">
+                    {{ (r.context_tokens ?? 0) === 0 ? 'Base' : formatCtxShort(r.context_tokens) }}
+                  </td>
+                  <td class="px-3 py-2 text-right font-mono" :style="ri === 0 ? 'color:var(--lime)' : 'color:#71717A'">
+                    {{ r.avg_tokens_per_second }}
+                  </td>
+                  <td class="px-3 py-2 text-right font-mono text-zinc-600">{{ r.avg_ttft_ms }}ms</td>
+                  <td class="px-3 py-2 text-right font-mono text-zinc-600">{{ r.avg_total_time_s }}s</td>
+                  <td class="px-3 py-2 text-right">
+                    <span
+                      v-if="r.success !== false"
+                      class="text-[10px] font-mono px-1.5 py-0.5 rounded-sm"
+                      style="background:rgba(191,255,0,0.08);color:var(--lime);"
+                    >ok</span>
+                    <span
+                      v-else
+                      class="text-[10px] font-mono px-1.5 py-0.5 rounded-sm"
+                      style="background:rgba(239,68,68,0.08);color:#EF4444;"
+                      :title="r.error || ''"
+                    >fail</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { apiFetch } from '../utils/api.js'
+import { useBenchmarkStore } from '../stores/benchmark.js'
 import { useToast } from '../composables/useToast.js'
 import { useModal } from '../composables/useModal.js'
 import { getColor } from '../utils/constants.js'
 
+const router = useRouter()
+const benchmarkStore = useBenchmarkStore()
 const { showToast } = useToast()
 const { confirm } = useModal()
 
@@ -166,6 +325,7 @@ const error = ref('')
 const searchQuery = ref('')
 const selectedRuns = ref(new Set())
 const compareResult = ref(null)
+const detailRun = ref(null)
 
 const filteredHistory = computed(() => {
   if (!searchQuery.value) return history.value
@@ -186,12 +346,16 @@ async function loadHistory() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     history.value = data.runs || []
-  } catch (e) {
+  } catch {
     error.value = 'Failed to load history.'
-    console.error('[loadHistory]', e)
   } finally {
     loading.value = false
   }
+}
+
+async function refreshHistory() {
+  await loadHistory()
+  showToast('History refreshed', 'success')
 }
 
 function getSortedResults(h) {
@@ -243,6 +407,27 @@ function toggleRunSelection(id) {
   selectedRuns.value = s
 }
 
+function openDetail(h) {
+  detailRun.value = h
+}
+
+async function rerunBenchmark(h) {
+  // Load full run details if needed (detail endpoint has config_json)
+  let runData = h
+  if (h.id && !h.config) {
+    try {
+      const res = await apiFetch(`/api/history/${h.id}`)
+      if (res.ok) runData = await res.json()
+    } catch {
+      // use what we have
+    }
+  }
+  benchmarkStore.prefillFromRun(runData)
+  detailRun.value = null
+  showToast('Settings pre-filled from run. Adjust and submit.', 'success')
+  router.push({ name: 'Benchmark' })
+}
+
 async function deleteRun(runId) {
   const ok = await confirm('Delete Run', 'Delete this benchmark run?', { danger: true, confirmLabel: 'Delete' })
   if (!ok) return
@@ -250,9 +435,10 @@ async function deleteRun(runId) {
     const res = await apiFetch(`/api/history/${runId}`, { method: 'DELETE' })
     if (res.ok) {
       showToast('Run deleted', 'success')
-      await loadHistory()
+      history.value = history.value.filter(r => r.id !== runId)
+      if (detailRun.value?.id === runId) detailRun.value = null
     } else {
-      const err = await res.json()
+      const err = await res.json().catch(() => ({}))
       showToast(err.error || 'Failed to delete run', 'error')
     }
   } catch {
@@ -301,7 +487,7 @@ async function compareRuns() {
     })
 
     compareResult.value = { labels, rows }
-  } catch (e) {
+  } catch {
     showToast('Failed to load comparison data', 'error')
   }
 }
