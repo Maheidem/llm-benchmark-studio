@@ -2642,6 +2642,21 @@
     // --- Auth state ---
     let authToken = localStorage.getItem('auth_token') || null;
     let currentUser = null;
+    let _refreshTimer = null;
+    const _TOKEN_LIFETIME_MS = 24 * 60 * 60 * 1000; // matches backend ACCESS_TOKEN_EXPIRE_MINUTES
+    const _REFRESH_AHEAD_MS = 5 * 60 * 1000;        // refresh 5 min before expiry
+
+    function scheduleTokenRefresh() {
+      if (_refreshTimer) clearTimeout(_refreshTimer);
+      _refreshTimer = setTimeout(async () => {
+        console.debug('[Auth] Proactive token refresh');
+        await tryRefreshToken();
+      }, _TOKEN_LIFETIME_MS - _REFRESH_AHEAD_MS);
+    }
+
+    function clearTokenRefresh() {
+      if (_refreshTimer) { clearTimeout(_refreshTimer); _refreshTimer = null; }
+    }
 
     // --- Auth-aware fetch wrapper ---
     async function apiFetch(url, options = {}) {
@@ -2676,6 +2691,7 @@
         currentUser = data.user;
         localStorage.setItem('auth_token', authToken);
         updateAuthUI();
+        scheduleTokenRefresh();
         return true;
       } catch {
         return false;
@@ -14255,6 +14271,7 @@
         currentUser = data.user;
         localStorage.setItem('auth_token', authToken);
         updateAuthUI();
+        scheduleTokenRefresh();
         hideAuthModal();
         hideLandingPage();
         init();
@@ -14267,6 +14284,7 @@
     }
 
     async function handleLogout() {
+      clearTokenRefresh();
       notifDestroy();
       await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
       authToken = null;
@@ -14300,6 +14318,7 @@
             const data = await res.json();
             currentUser = data.user;
             updateAuthUI();
+            scheduleTokenRefresh();
             hideLandingPage();
             init();
             notifInit();

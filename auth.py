@@ -1,7 +1,7 @@
 """Authentication module for LLM Benchmark Studio.
 
 JWT-based auth with:
-- Access token: 15min, returned in JSON response body
+- Access token: 24h, returned in JSON response body
 - Refresh token: 7 days, stored in HttpOnly cookie
 - bcrypt for password hashing
 - python-jose[cryptography] for JWT
@@ -67,7 +67,7 @@ login_limiter = LoginRateLimiter()
 # --- Config ---
 JWT_SECRET = os.environ.get("JWT_SECRET", "CHANGE-ME-IN-PRODUCTION-" + os.urandom(16).hex())
 JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 15
+ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() in ("true", "1", "yes")
 
@@ -87,7 +87,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 # --- Token helpers ---
 
 def create_access_token(user_id: str, role: str) -> str:
-    """Create a short-lived JWT access token (15 min)."""
+    """Create a JWT access token (24h)."""
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {
         "sub": user_id,
