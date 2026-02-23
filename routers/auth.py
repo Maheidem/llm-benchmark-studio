@@ -1,4 +1,4 @@
-"""Auth routes: register, login, refresh, logout, me, cli-token."""
+"""Auth routes: register, login, refresh, logout, me, cli-token, forgot/reset password."""
 
 from fastapi import APIRouter, Depends
 import auth
@@ -11,6 +11,8 @@ router.post("/api/auth/login")(auth.login_handler)
 router.post("/api/auth/refresh")(auth.refresh_handler)
 router.post("/api/auth/logout")(auth.logout_handler)
 router.get("/api/auth/me")(auth.me_handler)
+router.post("/api/auth/forgot-password")(auth.forgot_password_handler)
+router.post("/api/auth/reset-password")(auth.reset_password_handler)
 
 
 @router.post("/api/auth/cli-token")

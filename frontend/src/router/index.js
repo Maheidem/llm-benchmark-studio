@@ -12,6 +12,24 @@ const routes = [
     meta: { public: true },
   },
   {
+    path: '/forgot-password',
+    name: 'ForgotPassword',
+    component: () => import('../views/ForgotPassword.vue'),
+    meta: { public: true },
+  },
+  {
+    path: '/reset-password',
+    name: 'ResetPassword',
+    component: () => import('../views/ResetPassword.vue'),
+    meta: { public: true },
+  },
+  {
+    path: '/oauth-callback',
+    name: 'OAuthCallback',
+    component: () => import('../views/OAuthCallback.vue'),
+    meta: { public: true },
+  },
+  {
     path: '/benchmark',
     name: 'Benchmark',
     component: () => import('../views/BenchmarkPage.vue'),
@@ -89,7 +107,9 @@ router.beforeEach(async (to, from, next) => {
   const token = localStorage.getItem('auth_token')
 
   if (to.meta?.public) {
-    // Public routes: redirect to /benchmark if already logged in
+    // OAuth callback must always be accessible (it sets the token)
+    if (to.name === 'OAuthCallback') return next()
+    // Other public routes: redirect to /benchmark if already logged in
     if (token) return next('/benchmark')
     return next()
   }

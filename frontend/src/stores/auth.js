@@ -79,6 +79,46 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  async function forgotPassword(email) {
+    const res = await fetch('/api/auth/forgot-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    })
+    if (!res.ok) {
+      const data = await res.json()
+      throw new Error(data.error || 'Request failed')
+    }
+  }
+
+  async function resetPassword(token, password) {
+    const res = await fetch('/api/auth/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, password }),
+    })
+    const data = await res.json()
+    if (!res.ok) {
+      throw new Error(data.error || data.detail || 'Reset failed')
+    }
+  }
+
+  async function loginWithGoogle() {
+    const res = await fetch('/api/auth/google/authorize')
+    if (!res.ok) {
+      const data = await res.json()
+      throw new Error(data.error || 'Google OAuth not available')
+    }
+    const data = await res.json()
+    // Redirect browser to Google's authorization URL
+    window.location.href = data.url
+  }
+
+  function setTokensFromOAuth(accessToken) {
+    token.value = accessToken
+    setTokens(accessToken, null)
+  }
+
   async function init() {
     if (!token.value) {
       // Try to restore user from localStorage as fallback
@@ -116,6 +156,10 @@ export const useAuthStore = defineStore('auth', () => {
     logout,
     fetchUser,
     refreshAccessToken,
+    forgotPassword,
+    resetPassword,
+    loginWithGoogle,
+    setTokensFromOAuth,
     init,
   }
 })

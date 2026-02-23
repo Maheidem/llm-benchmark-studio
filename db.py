@@ -571,6 +571,38 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_parent ON judge_reports(parent_report_id)")
         await db.commit()
 
+        # --- Password Reset Tokens ---
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                token_hash TEXT UNIQUE NOT NULL,
+                expires_at TEXT NOT NULL,
+                used INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_pwreset_token ON password_reset_tokens(token_hash)")
+        await db.commit()
+
+        # --- Google OAuth columns on users ---
+        for col_sql in [
+            "ALTER TABLE users ADD COLUMN google_id TEXT",
+            "ALTER TABLE users ADD COLUMN avatar_url TEXT",
+        ]:
+            try:
+                await db.execute(col_sql)
+                await db.commit()
+            except Exception:
+                logger.debug("Column already exists: %s", col_sql)
+
+        try:
+            await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL")
+            await db.commit()
+        except Exception:
+            logger.debug("Index idx_users_google_id already exists")
+
 
 # --- User CRUD ---
 
@@ -602,6 +634,73 @@ async def get_user_by_id(user_id: str) -> dict | None:
 async def set_onboarding_completed(user_id: str):
     """Mark onboarding as completed for a user."""
     await _db.execute("UPDATE users SET onboarding_completed = 1 WHERE id = ?", (user_id,))
+
+
+async def update_user_password(user_id: str, password_hash: str):
+    """Update the password_hash for a user."""
+    await _db.execute(
+        "UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?",
+        (password_hash, user_id),
+    )
+
+
+# --- Google OAuth CRUD ---
+
+async def get_user_by_google_id(google_id: str) -> dict | None:
+    """Look up user by their Google OAuth ID."""
+    return await _db.fetch_one("SELECT * FROM users WHERE google_id = ?", (google_id,))
+
+
+async def link_google_id(user_id: str, google_id: str, avatar_url: str | None):
+    """Link a Google account to an existing user."""
+    await _db.execute(
+        "UPDATE users SET google_id = ?, avatar_url = ?, updated_at = datetime('now') WHERE id = ?",
+        (google_id, avatar_url, user_id),
+    )
+
+
+async def create_google_user(email: str, google_id: str, avatar_url: str | None, role: str = "user") -> dict:
+    """Create a new user authenticated via Google (no password). Returns the user dict."""
+    user_id = uuid.uuid4().hex
+    row = await _db.execute_returning_row(
+        [("INSERT INTO users (id, email, password_hash, role, google_id, avatar_url) VALUES (?, ?, ?, ?, ?, ?)",
+          (user_id, email, "", role, google_id, avatar_url))],
+        "SELECT id, email, role, created_at, google_id, avatar_url FROM users WHERE id = ?",
+        (user_id,),
+    )
+    return row
+
+
+# --- Password Reset CRUD ---
+
+async def store_password_reset_token(user_id: str, token_hash: str, expires_at: str):
+    """Store a hashed password reset token."""
+    await _db.execute(
+        "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
+        (user_id, token_hash, expires_at),
+    )
+
+
+async def get_password_reset_token(token_hash: str) -> dict | None:
+    """Look up a password reset token by its hash. Returns None if not found/expired/used."""
+    return await _db.fetch_one(
+        "SELECT * FROM password_reset_tokens "
+        "WHERE token_hash = ? AND used = 0 AND expires_at > datetime('now')",
+        (token_hash,),
+    )
+
+
+async def consume_password_reset_token(token_hash: str):
+    """Mark a reset token as used (single-use enforcement)."""
+    await _db.execute(
+        "UPDATE password_reset_tokens SET used = 1 WHERE token_hash = ?",
+        (token_hash,),
+    )
+
+
+async def delete_user_reset_tokens(user_id: str):
+    """Delete all reset tokens for a user (cleanup on new request or after successful reset)."""
+    await _db.execute("DELETE FROM password_reset_tokens WHERE user_id = ?", (user_id,))
 
 
 async def count_users() -> int:

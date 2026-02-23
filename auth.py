@@ -10,6 +10,7 @@ JWT-based auth with:
 import logging
 import os
 import hashlib
+import secrets
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,7 @@ from fastapi.responses import JSONResponse
 from jose import jwt, JWTError, ExpiredSignatureError
 
 import db
+import mailer
 
 
 # --- Login Rate Limiter ---
@@ -63,6 +65,7 @@ class LoginRateLimiter:
 
 
 login_limiter = LoginRateLimiter()
+forgot_password_limiter = LoginRateLimiter(max_attempts=5, window_seconds=300, lockout_seconds=900)
 
 # --- Config ---
 JWT_SECRET = os.environ.get("JWT_SECRET", "CHANGE-ME-IN-PRODUCTION-" + os.urandom(16).hex())
@@ -389,3 +392,113 @@ async def me_handler(request: Request) -> JSONResponse:
     return JSONResponse({
         "user": {"id": user["id"], "email": user["email"], "role": user["role"]},
     })
+
+
+async def forgot_password_handler(request: Request) -> JSONResponse:
+    """POST /api/auth/forgot-password - Generate and email a password reset link.
+
+    Always returns 200 to prevent email enumeration.
+    Rate limited by IP (5 requests per 5 minutes).
+    """
+    ip = request.client.host if request.client else "unknown"
+
+    # Rate limit
+    allowed, retry_after = forgot_password_limiter.check(ip)
+    if not allowed:
+        logger.warning("Forgot-password rate limited: ip=%s", ip)
+        return JSONResponse(
+            {"error": f"Too many requests. Try again in {retry_after} seconds."},
+            status_code=429,
+            headers={"Retry-After": str(retry_after)},
+        )
+    forgot_password_limiter.record_attempt(ip)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    email = body.get("email", "").strip().lower()
+    if not email or "@" not in email:
+        return JSONResponse({"error": "Valid email required"}, status_code=400)
+
+    # Always return the same message (no email enumeration)
+    _GENERIC_RESPONSE = {"message": "If that email exists, a reset link has been sent."}
+
+    user = await db.get_user_by_email(email)
+    if not user:
+        logger.debug("Forgot-password: no user found for email=%s", email)
+        return JSONResponse(_GENERIC_RESPONSE)
+
+    # Delete any previous unused tokens for this user (keep DB clean)
+    await db.delete_user_reset_tokens(user["id"])
+
+    # Generate a short-lived reset token
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+
+    await db.store_password_reset_token(user["id"], token_hash, expires_at)
+
+    # Send email (or log in dev mode)
+    mailer.send_password_reset_email(email, raw_token)
+
+    # Audit log
+    await db.log_audit(
+        user_id=user["id"],
+        username=email,
+        action="password_reset_request",
+        resource_type="user",
+        ip_address=ip,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+
+    logger.info("Password reset requested for email=%s", email)
+    return JSONResponse(_GENERIC_RESPONSE)
+
+
+async def reset_password_handler(request: Request) -> JSONResponse:
+    """POST /api/auth/reset-password - Consume reset token and set a new password."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    raw_token = body.get("token", "").strip()
+    new_password = body.get("password", "")
+
+    if not raw_token:
+        return JSONResponse({"error": "Token is required"}, status_code=400)
+    if len(new_password) < 8:
+        return JSONResponse({"error": "Password must be at least 8 characters"}, status_code=400)
+
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    record = await db.get_password_reset_token(token_hash)
+
+    if not record:
+        return JSONResponse({"error": "Invalid or expired reset token"}, status_code=400)
+
+    # Mark token as used (single-use)
+    await db.consume_password_reset_token(token_hash)
+
+    # Update the password
+    new_hash = hash_password(new_password)
+    await db.update_user_password(record["user_id"], new_hash)
+
+    # Delete all remaining reset tokens for this user
+    await db.delete_user_reset_tokens(record["user_id"])
+
+    # Audit log
+    ip = request.client.host if request.client else None
+    user = await db.get_user_by_id(record["user_id"])
+    await db.log_audit(
+        user_id=record["user_id"],
+        username=user.get("email", "") if user else "",
+        action="password_reset_complete",
+        resource_type="user",
+        ip_address=ip,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+
+    logger.info("Password reset completed for user_id=%s", record["user_id"])
+    return JSONResponse({"message": "Password updated successfully."})
