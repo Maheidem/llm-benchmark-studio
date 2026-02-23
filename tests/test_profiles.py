@@ -515,6 +515,7 @@ class TestFromTunerCreation:
 # =========================================================================
 
 
+@pytest.mark.usefixtures("clear_active_jobs")
 class TestProfileFieldInRequests:
     """profiles dict field accepted by ToolEvalRequest and BenchmarkRequest."""
 
