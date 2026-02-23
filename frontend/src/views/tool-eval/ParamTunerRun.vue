@@ -28,7 +28,10 @@
           <div v-if="store.isRunning" class="pulse-dot"></div>
           <span class="text-sm text-zinc-400 font-body">{{ store.progress.detail }}</span>
         </div>
-        <span class="text-xs font-mono text-zinc-600">{{ store.progress.pct }}%</span>
+        <div class="flex items-center gap-3">
+          <span v-if="store.progress.eta" class="text-[10px] font-mono text-zinc-600">{{ store.progress.eta }}</span>
+          <span class="text-xs font-mono text-zinc-600">{{ store.progress.pct }}%</span>
+        </div>
       </div>
       <div class="progress-track rounded-full overflow-hidden">
         <div class="progress-fill" :style="{ width: store.progress.pct + '%' }"></div>

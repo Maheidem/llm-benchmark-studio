@@ -213,14 +213,14 @@ export const usePromptTunerStore = defineStore('promptTuner', () => {
 
       case 'job_progress': {
         completedPrompts.value = Math.round(
-          (msg.progress_pct || 0) / 100 * totalPrompts.value
+          (msg.progress_pct ?? 0) / 100 * totalPrompts.value
         )
         const eta = totalPrompts.value > 0
           ? session.calculateETA(completedPrompts.value, totalPrompts.value)
           : ''
         progress.value = {
           ...progress.value,
-          pct: msg.progress_pct || progress.value.pct,
+          pct: msg.progress_pct ?? progress.value.pct,
           detail: msg.progress_detail || progress.value.detail,
           eta,
         }

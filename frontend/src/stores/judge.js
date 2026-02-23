@@ -194,7 +194,7 @@ export const useJudgeStore = defineStore('judge', () => {
 
       case 'job_progress': {
         progress.value = {
-          pct: msg.progress_pct || progress.value.pct,
+          pct: msg.progress_pct ?? progress.value.pct,
           detail: msg.progress_detail || progress.value.detail,
         }
         break

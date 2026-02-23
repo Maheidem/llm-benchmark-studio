@@ -168,7 +168,7 @@ export const useNotificationsStore = defineStore('notifications', () => {
           id: jobId,
           job_type: msg.job_type || 'benchmark',
           status: msg.status || 'pending',
-          progress_pct: msg.progress_pct || 0,
+          progress_pct: msg.progress_pct ?? 0,
           progress_detail: msg.progress_detail || (JOB_TYPE_LABELS[msg.job_type] || msg.job_type) + ' queued',
           result_ref: null,
           created_at: msg.timestamp || new Date().toISOString(),
@@ -193,7 +193,7 @@ export const useNotificationsStore = defineStore('notifications', () => {
         if (jobs.value[jobId]) {
           jobs.value[jobId] = {
             ...jobs.value[jobId],
-            progress_pct: msg.progress_pct || jobs.value[jobId].progress_pct,
+            progress_pct: msg.progress_pct ?? jobs.value[jobId].progress_pct,
             progress_detail: msg.progress_detail || jobs.value[jobId].progress_detail,
             status: 'running',
           }
