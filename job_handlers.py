@@ -837,41 +837,137 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
         job_id, user_id, len(all_results), eval_id,
     )
 
-    # --- Auto-judge: submit a separate judge job if requested ---
+    # --- Auto-judge: submit a separate judge job if explicitly requested ---
     auto_judge = params.get("auto_judge", False)
+    auto_judge_threshold = float(params.get("auto_judge_threshold", 0.70))
     if auto_judge and eval_id and not judge_report_id:
         # Only auto-judge if no judge was already run inline/post-eval
-        try:
-            # Load user's judge settings for default model
-            d = db.DatabaseManager()
-            user_settings = await d.fetch_one(
-                "SELECT config_yaml FROM user_configs WHERE user_id = ?", (user_id,)
+        # AND avg score is below the threshold (threshold slider has effect)
+        avg_score_for_autojudge = _avg_overall_from_summaries(summaries)
+        if avg_score_for_autojudge > auto_judge_threshold:
+            logger.info(
+                "Auto-judge skipped: avg_score=%.2f > threshold=%.2f eval_id=%s",
+                avg_score_for_autojudge, auto_judge_threshold, eval_id,
             )
-            judge_settings = {}
-            if user_settings:
-                import yaml
-                cfg = yaml.safe_load(user_settings.get("config_yaml", ""))
-                if isinstance(cfg, dict):
-                    judge_settings = cfg.get("judge_settings", {})
+        else:
+            try:
+                # Load user's judge settings for default model
+                d = db.DatabaseManager()
+                user_settings = await d.fetch_one(
+                    "SELECT config_yaml FROM user_configs WHERE user_id = ?", (user_id,)
+                )
+                judge_settings = {}
+                if user_settings:
+                    import yaml
+                    cfg = yaml.safe_load(user_settings.get("config_yaml", ""))
+                    if isinstance(cfg, dict):
+                        judge_settings = cfg.get("judge_settings", {})
 
-            default_judge_model = judge_settings.get("default_judge_model")
-            if default_judge_model:
-                judge_params = {
-                    "user_id": user_id,
-                    "user_email": params.get("user_email", ""),
-                    "eval_run_id": eval_id,
-                    "judge_model": default_judge_model,
-                    "judge_provider_key": judge_settings.get("default_judge_provider_key"),
-                    "custom_instructions": judge_settings.get("custom_instructions_template", ""),
-                    "concurrency": judge_settings.get("concurrency", 4),
-                    "experiment_id": experiment_id,
-                }
-                await job_registry.submit("judge", user_id, judge_params)
-                logger.info("Auto-judge submitted for eval_id=%s judge_model=%s", eval_id, default_judge_model)
-            else:
-                logger.debug("Auto-judge skipped: no default_judge_model configured for user=%s", user_id)
-        except Exception as e:
-            logger.warning("Auto-judge submission failed: %s", e)
+                default_judge_model = judge_settings.get("default_judge_model")
+                if default_judge_model:
+                    judge_params = {
+                        "user_id": user_id,
+                        "user_email": params.get("user_email", ""),
+                        "eval_run_id": eval_id,
+                        "judge_model": default_judge_model,
+                        "judge_provider_key": judge_settings.get("default_judge_provider_key"),
+                        "custom_instructions": judge_settings.get("custom_instructions_template", ""),
+                        "concurrency": judge_settings.get("concurrency", 4),
+                        "experiment_id": experiment_id,
+                    }
+                    await job_registry.submit("judge", user_id, judge_params)
+                    logger.info(
+                        "Auto-judge submitted: eval_id=%s judge_model=%s avg_score=%.2f threshold=%.2f",
+                        eval_id, default_judge_model, avg_score_for_autojudge, auto_judge_threshold,
+                    )
+                else:
+                    logger.debug("Auto-judge skipped: no default_judge_model configured for user=%s", user_id)
+            except Exception as e:
+                logger.warning("Auto-judge submission failed: %s", e)
+
+    # --- Judge Wiring: auto-trigger judge on low accuracy and store explanations ---
+    # Runs when no explicit judge was already used and avg accuracy is below threshold.
+    if eval_id and not judge_report_id and all_results:
+        try:
+            avg_score = _avg_overall_from_summaries(summaries)
+            LOW_ACCURACY_THRESHOLD = 0.70  # 70%
+
+            if avg_score < LOW_ACCURACY_THRESHOLD:
+                # Load judge settings to find a judge model
+                import yaml as _yaml
+                _dm = db.DatabaseManager()
+                _us = await _dm.fetch_one(
+                    "SELECT config_yaml FROM user_configs WHERE user_id = ?", (user_id,)
+                )
+                _judge_settings = {}
+                if _us:
+                    _cfg = _yaml.safe_load(_us.get("config_yaml", "") or "")
+                    if isinstance(_cfg, dict):
+                        _judge_settings = _cfg.get("judge_settings", {})
+
+                _auto_judge_after_eval = _judge_settings.get("auto_judge_after_eval", False)
+                _default_judge_model = _judge_settings.get("default_judge_model")
+
+                if _auto_judge_after_eval and _default_judge_model:
+                    logger.info(
+                        "Low accuracy (%.0f%% < %.0f%%) — auto-triggering judge: eval_id=%s model=%s",
+                        avg_score * 100, LOW_ACCURACY_THRESHOLD * 100, eval_id, _default_judge_model,
+                    )
+                    # Resolve judge target
+                    _jt_list = _find_target(all_targets, _default_judge_model, _judge_settings.get("default_judge_provider_key"))
+                    _jt = _jt_list[0] if _jt_list else None
+                    if _jt:
+                        # Inject API key
+                        if _jt.provider_key:
+                            _enc = await db.get_user_key_for_provider(user_id, _jt.provider_key)
+                            if _enc:
+                                _jt = inject_user_keys([_jt], {_jt.provider_key: _enc})[0]
+
+                        # Run judge on failed cases only (overall_score < 1.0)
+                        _failed = [r for r in all_results if r.get("success") and r.get("overall_score", 1.0) < 1.0]
+                        if not _failed:
+                            _failed = all_results  # judge everything if all passed (edge case)
+
+                        _ci = _judge_settings.get("custom_instructions_template", "")
+                        _td = _build_tool_definitions_text(tools)
+                        _expls = []
+                        _jsem = asyncio.Semaphore(int(_judge_settings.get("concurrency", 4)))
+
+                        async def _expl_one(r):
+                            async with _jsem:
+                                v = await _judge_single_verdict(_jt, _td, {}, r, custom_instructions=_ci)
+                                return {
+                                    "test_case_id": r.get("test_case_id", "?"),
+                                    "model_id": r.get("model_id", "?"),
+                                    "reasoning": v.get("reasoning", ""),
+                                    "summary": v.get("summary", ""),
+                                    "quality_score": v.get("quality_score", 0),
+                                    "verdict": v.get("verdict", ""),
+                                }
+
+                        _expl_tasks = [asyncio.create_task(_expl_one(r)) for r in _failed]
+                        _expl_results = await asyncio.gather(*_expl_tasks, return_exceptions=True)
+                        for er in _expl_results:
+                            if isinstance(er, dict):
+                                _expls.append(er)
+                            else:
+                                logger.debug("Judge explanation task failed: %s", er)
+
+                        if _expls:
+                            await db.update_tool_eval_run(eval_id, judge_explanations_json=json.dumps(_expls))
+                            await _ws_send({
+                                "type": "judge_explanations_ready",
+                                "job_id": job_id,
+                                "eval_id": eval_id,
+                                "explanation_count": len(_expls),
+                                "avg_score": round(avg_score, 4),
+                            })
+                            logger.info(
+                                "Judge explanations stored: eval_id=%s count=%d",
+                                eval_id, len(_expls),
+                            )
+        except Exception:
+            logger.exception("Judge wiring (low-accuracy auto-judge) failed: eval_id=%s", eval_id)
 
     return eval_id
 
@@ -1611,6 +1707,21 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
         "Prompt tune completed: job_id=%s tune_id=%s user_id=%s prompts=%d best_score=%.4f",
         job_id, tune_id, user_id, completed_prompts, best_score,
     )
+
+    # --- Auto-save best prompt to prompt version registry ---
+    if best_prompt:
+        try:
+            label = f"Prompt Tune ({suite['name']}) — score {best_score:.0%}"
+            await db.create_prompt_version(
+                user_id=user_id,
+                prompt_text=best_prompt,
+                label=label,
+                source="prompt_tuner",
+                origin_run_id=tune_id,
+            )
+            logger.info("Auto-saved best prompt as version: tune_id=%s", tune_id)
+        except Exception:
+            logger.exception("Failed to auto-save prompt version: tune_id=%s", tune_id)
 
     # --- Auto-promote best prompt (if in experiment) ---
     if experiment_id and best_prompt:

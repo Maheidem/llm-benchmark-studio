@@ -22,6 +22,7 @@ from routers.schedules import router as schedules_router
 from routers.export_import import router as export_import_router
 from routers.profiles import router as profiles_router
 from routers.oauth import router as oauth_router
+from routers.prompt_versions import router as prompt_versions_router
 
 all_routers = [
     auth_router,
@@ -46,4 +47,5 @@ all_routers = [
     export_import_router,
     profiles_router,
     oauth_router,
+    prompt_versions_router,
 ]

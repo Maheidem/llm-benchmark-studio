@@ -32,6 +32,7 @@ from routers.helpers import (
     score_params,
     compute_overall_score,
     score_multi_turn,
+    score_abstention,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,11 @@ async def run_single_eval(
         except (json.JSONDecodeError, TypeError):
             logger.debug("Failed to parse scoring_config_json for test case %s", test_case.get("id"))
 
+    # Irrelevance detection: should this test case expect a tool call?
+    # DB stores as INTEGER (1/0), coerce to bool
+    raw_sct = test_case.get("should_call_tool", 1)
+    should_call_tool = bool(raw_sct) if raw_sct is not None else True
+
     result = {
         "model_id": target.model_id,
         "test_case_id": test_case["id"],
@@ -96,6 +102,8 @@ async def run_single_eval(
         "latency_ms": 0,
         "raw_request": None,
         "raw_response": None,
+        "should_call_tool": should_call_tool,
+        "irrelevance_score": None,
     }
 
     # Build validated+clamped params via provider_params module
@@ -214,6 +222,9 @@ async def run_single_eval(
     result["param_accuracy"] = score_params(expected_params, result["actual_params"], scoring_config=scoring_config)
     result["overall_score"] = compute_overall_score(result["tool_selection_score"], result["param_accuracy"])
 
+    # Irrelevance score: how well did model handle abstention expectation?
+    result["irrelevance_score"] = score_abstention(should_call_tool, result["actual_tool"])
+
     return result
 
 
@@ -259,6 +270,10 @@ async def run_multi_turn_eval(
         except (json.JSONDecodeError, TypeError):
             logger.debug("Failed to parse scoring_config_json for multi-turn test case %s", test_case.get("id"))
 
+    # Irrelevance detection: should this test case expect a tool call?
+    raw_sct = test_case.get("should_call_tool", 1)
+    should_call_tool = bool(raw_sct) if raw_sct is not None else True
+
     result = {
         "model_id": target.model_id,
         "test_case_id": test_case["id"],
@@ -284,6 +299,8 @@ async def run_multi_turn_eval(
         "redundancy_penalty": 0.0,
         "detour_penalty": 0.0,
         "raw_exchanges": [],
+        "should_call_tool": should_call_tool,
+        "irrelevance_score": None,
     }
 
     # Build messages: per-model system_prompt (from config) + explicit system_prompt (from prompt tuner)
@@ -444,6 +461,9 @@ async def run_multi_turn_eval(
         result["tool_selection_score"] = score_tool_selection(expected_tool, result["actual_tool"])
         result["param_accuracy"] = score_params(expected_params, result["actual_params"], scoring_config=scoring_config)
 
+        # Irrelevance score: how well did model handle abstention expectation?
+        result["irrelevance_score"] = score_abstention(should_call_tool, result["actual_tool"])
+
     except Exception as e:
         result["success"] = False
         result["error"] = sanitize_error(str(e)[:200], target.api_key)
@@ -532,7 +552,8 @@ async def import_tool_suite(request: Request, user: dict = Depends(auth.get_curr
                 mt_obj["multi_turn"] = True
             mt_config = json.dumps(mt_obj)
         sc_json = json.dumps(item["scoring_config"]) if item.get("scoring_config") else None
-        await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json)
+        should_call_tool = bool(item.get("should_call_tool", True))
+        await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json, should_call_tool=should_call_tool)
         created += 1
     return {"status": "ok", "suite_id": suite_id, "test_cases_created": created}
 
@@ -809,7 +830,8 @@ async def create_test_cases(suite_id: str, request: Request, user: dict = Depend
             param_scoring = item.get("param_scoring", "exact")
             mt_config = _extract_mt_config(item)
             sc_json = json.dumps(item["scoring_config"]) if item.get("scoring_config") else None
-            await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json)
+            should_call_tool = bool(item.get("should_call_tool", True))
+            await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json, should_call_tool=should_call_tool)
             created += 1
         return {"status": "ok", "created": created}
 
@@ -834,7 +856,8 @@ async def create_test_cases(suite_id: str, request: Request, user: dict = Depend
     param_scoring = validated_case.param_scoring
     mt_config = _extract_mt_config(body)
     sc_json = json.dumps(body["scoring_config"]) if body.get("scoring_config") else None
-    case_id = await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json)
+    should_call_tool = bool(body.get("should_call_tool", True))
+    case_id = await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json, should_call_tool=should_call_tool)
     return {"status": "ok", "case_id": case_id}
 
 
@@ -875,7 +898,12 @@ async def update_test_case(suite_id: str, case_id: str, request: Request, user: 
     if "scoring_config" in body:
         sc_json = json.dumps(body["scoring_config"]) if body["scoring_config"] else ""  # empty string to clear
 
-    updated = await db.update_test_case(case_id, suite_id, prompt=prompt, expected_tool=expected_tool, expected_params=expected_params, param_scoring=param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json)
+    # Irrelevance detection field
+    sct = None
+    if "should_call_tool" in body:
+        sct = bool(body["should_call_tool"])
+
+    updated = await db.update_test_case(case_id, suite_id, prompt=prompt, expected_tool=expected_tool, expected_params=expected_params, param_scoring=param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json, should_call_tool=sct)
     if not updated:
         return JSONResponse({"error": "Test case not found"}, status_code=404)
     return {"status": "ok"}
@@ -938,6 +966,16 @@ async def get_tool_eval_run(eval_id: str, user: dict = Depends(auth.get_current_
         except (json.JSONDecodeError, TypeError):
             run["config"] = None
         del run["config_json"]
+    # Parse judge_explanations_json (Task 4 judge wiring)
+    if isinstance(run.get("judge_explanations_json"), str):
+        try:
+            run["judge_explanations"] = json.loads(run["judge_explanations_json"])
+        except (json.JSONDecodeError, TypeError):
+            run["judge_explanations"] = None
+        del run["judge_explanations_json"]
+    else:
+        run["judge_explanations"] = None
+        run.pop("judge_explanations_json", None)
     return run
 
 
@@ -964,6 +1002,8 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
             temperature=body.get("temperature", 0.0),
             system_prompt=body.get("system_prompt"),
             experiment_id=body.get("experiment_id"),
+            auto_judge=body.get("auto_judge", False),
+            auto_judge_threshold=body.get("auto_judge_threshold"),
         )
     except (ValidationError, Exception) as e:
         raise HTTPException(422, detail=str(e))
@@ -1022,6 +1062,7 @@ async def run_tool_eval(request: Request, user: dict = Depends(auth.get_current_
         "experiment_id": experiment_id,
         "profiles": profiles,
         "auto_judge": validated.auto_judge,
+        "auto_judge_threshold": validated.auto_judge_threshold,
     }
 
     job_id = await job_registry.submit(

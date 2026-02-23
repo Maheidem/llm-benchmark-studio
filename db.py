@@ -603,6 +603,40 @@ async def init_db():
         except Exception:
             logger.debug("Index idx_users_google_id already exists")
 
+        # --- Prompt Version Registry ---
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS prompt_versions (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                prompt_text TEXT NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'manual'
+                    CHECK(source IN ('manual', 'prompt_tuner')),
+                parent_version_id TEXT REFERENCES prompt_versions(id) ON DELETE SET NULL,
+                origin_run_id TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_prompt_versions_user ON prompt_versions(user_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_prompt_versions_ts ON prompt_versions(user_id, created_at DESC)")
+        await db.commit()
+
+        # --- Irrelevance detection: should_call_tool on tool_test_cases ---
+        try:
+            await db.execute("ALTER TABLE tool_test_cases ADD COLUMN should_call_tool INTEGER NOT NULL DEFAULT 1")
+            await db.commit()
+        except Exception:
+            logger.debug("Column tool_test_cases.should_call_tool already exists")
+
+        # --- Judge wiring: judge_explanation on tool_eval_runs ---
+        # Stored as JSON mapping test_case_id -> explanation text
+        try:
+            await db.execute("ALTER TABLE tool_eval_runs ADD COLUMN judge_explanations_json TEXT")
+            await db.commit()
+        except Exception:
+            logger.debug("Column tool_eval_runs.judge_explanations_json already exists")
+
 
 # --- User CRUD ---
 
@@ -979,24 +1013,28 @@ async def delete_tool_suite(suite_id: str, user_id: str) -> bool:
 
 async def get_test_cases(suite_id: str) -> list[dict]:
     """List all test cases for a suite."""
-    return await _db.fetch_all(
+    rows = await _db.fetch_all(
         "SELECT * FROM tool_test_cases WHERE suite_id = ? ORDER BY created_at",
         (suite_id,),
     )
+    # Convert SQLite integer (0/1) to boolean for JSON serialization
+    for r in rows:
+        r["should_call_tool"] = bool(r.get("should_call_tool", 1))
+    return rows
 
 
-async def create_test_case(suite_id: str, prompt: str, expected_tool: str | None, expected_params: str | None, param_scoring: str = "exact", multi_turn_config: str | None = None, scoring_config_json: str | None = None) -> str:
+async def create_test_case(suite_id: str, prompt: str, expected_tool: str | None, expected_params: str | None, param_scoring: str = "exact", multi_turn_config: str | None = None, scoring_config_json: str | None = None, should_call_tool: bool = True) -> str:
     """Create a single test case. Returns case_id."""
     case_id = uuid.uuid4().hex
     await _db.execute(
-        "INSERT INTO tool_test_cases (id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config, scoring_config_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (case_id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config, scoring_config_json),
+        "INSERT INTO tool_test_cases (id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config, scoring_config_json, should_call_tool) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (case_id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config, scoring_config_json, 1 if should_call_tool else 0),
     )
     return case_id
 
 
-async def update_test_case(case_id: str, suite_id: str, prompt: str = None, expected_tool: str = None, expected_params: str = None, param_scoring: str = None, multi_turn_config: str | None = None, scoring_config_json: str | None = None) -> bool:
+async def update_test_case(case_id: str, suite_id: str, prompt: str = None, expected_tool: str = None, expected_params: str = None, param_scoring: str = None, multi_turn_config: str | None = None, scoring_config_json: str | None = None, should_call_tool: bool | None = None) -> bool:
     """Update a test case. Returns True if found."""
     fields = []
     params = []
@@ -1018,6 +1056,9 @@ async def update_test_case(case_id: str, suite_id: str, prompt: str = None, expe
     if scoring_config_json is not None:
         fields.append("scoring_config_json = ?")
         params.append(scoring_config_json)
+    if should_call_tool is not None:
+        fields.append("should_call_tool = ?")
+        params.append(1 if should_call_tool else 0)
     if not fields:
         return False
     params.extend([case_id, suite_id])
@@ -1077,6 +1118,23 @@ async def get_tool_eval_run(run_id: str, user_id: str) -> dict | None:
         "SELECT * FROM tool_eval_runs WHERE id = ? AND user_id = ?",
         (run_id, user_id),
     )
+
+
+async def update_tool_eval_run(run_id: str, *, judge_explanations_json: str | None = None) -> bool:
+    """Update fields on an existing tool_eval_run. Returns True if found."""
+    fields = []
+    params = []
+    if judge_explanations_json is not None:
+        fields.append("judge_explanations_json = ?")
+        params.append(judge_explanations_json)
+    if not fields:
+        return False
+    params.append(run_id)
+    count = await _db.execute_returning_rowcount(
+        f"UPDATE tool_eval_runs SET {', '.join(fields)} WHERE id = ?",
+        params,
+    )
+    return count > 0
 
 
 async def delete_tool_eval_run(run_id: str, user_id: str) -> bool:
@@ -1316,6 +1374,16 @@ async def get_judge_report(report_id: str, user_id: str) -> dict | None:
     return await _db.fetch_one(
         "SELECT * FROM judge_reports WHERE id = ? AND user_id = ?",
         (report_id, user_id),
+    )
+
+
+async def get_judge_report_for_eval(eval_run_id: str, user_id: str) -> dict | None:
+    """Get the most recent completed judge report for a tool eval run."""
+    return await _db.fetch_one(
+        "SELECT * FROM judge_reports "
+        "WHERE eval_run_id = ? AND user_id = ? AND status = 'completed' "
+        "ORDER BY timestamp DESC LIMIT 1",
+        (eval_run_id, user_id),
     )
 
 
@@ -2049,6 +2117,61 @@ async def delete_profile(profile_id: str, user_id: str) -> bool:
     count = await _db.execute_returning_rowcount(
         "DELETE FROM model_profiles WHERE id = ? AND user_id = ?",
         (profile_id, user_id),
+    )
+    return count > 0
+
+
+
+# --- Prompt Version Registry CRUD ---
+
+async def create_prompt_version(
+    user_id: str,
+    prompt_text: str,
+    label: str = "",
+    source: str = "manual",
+    parent_version_id: str | None = None,
+    origin_run_id: str | None = None,
+) -> str:
+    """Create a new prompt version. Returns version_id."""
+    version_id = uuid.uuid4().hex
+    await _db.execute(
+        "INSERT INTO prompt_versions (id, user_id, prompt_text, label, source, parent_version_id, origin_run_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (version_id, user_id, prompt_text, label, source, parent_version_id, origin_run_id),
+    )
+    return version_id
+
+
+async def get_prompt_versions(user_id: str, limit: int = 100) -> list[dict]:
+    """List user's prompt versions, newest first."""
+    return await _db.fetch_all(
+        "SELECT * FROM prompt_versions WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+        (user_id, limit),
+    )
+
+
+async def get_prompt_version(version_id: str, user_id: str) -> dict | None:
+    """Get a single prompt version (scoped to user)."""
+    return await _db.fetch_one(
+        "SELECT * FROM prompt_versions WHERE id = ? AND user_id = ?",
+        (version_id, user_id),
+    )
+
+
+async def update_prompt_version_label(version_id: str, user_id: str, label: str) -> bool:
+    """Update the label of a prompt version. Returns True if found."""
+    count = await _db.execute_returning_rowcount(
+        "UPDATE prompt_versions SET label = ? WHERE id = ? AND user_id = ?",
+        (label, version_id, user_id),
+    )
+    return count > 0
+
+
+async def delete_prompt_version(version_id: str, user_id: str) -> bool:
+    """Delete a prompt version. Returns True if deleted."""
+    count = await _db.execute_returning_rowcount(
+        "DELETE FROM prompt_versions WHERE id = ? AND user_id = ?",
+        (version_id, user_id),
     )
     return count > 0
 

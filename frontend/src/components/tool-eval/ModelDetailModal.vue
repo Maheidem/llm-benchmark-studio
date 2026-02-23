@@ -2,7 +2,10 @@
   <div v-if="visible" class="modal-overlay" @click.self="$emit('close')">
     <div class="modal-box" style="max-width:720px;max-height:80vh;overflow-y:auto;">
       <div class="flex items-center justify-between mb-4">
-        <div class="modal-title">{{ modelName }}</div>
+        <div>
+          <div class="modal-title">{{ modelName }}</div>
+          <div v-if="judgeLoading" class="text-[10px] text-amber-400 font-body mt-0.5">Loading judge analysis...</div>
+        </div>
         <button @click="$emit('close')" class="text-zinc-600 hover:text-zinc-400 text-lg">&times;</button>
       </div>
 
@@ -21,14 +24,34 @@
             <span class="text-xs font-mono font-bold" :style="{ color: scoreColor(r.overall_score * 100) }">
               {{ (r.overall_score * 100).toFixed(0) }}%
             </span>
+            <!-- Irrelevance badge in header -->
+            <span v-if="r.should_call_tool === false"
+              class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm"
+              style="background:rgba(56,189,248,0.08);color:#38BDF8;border:1px solid rgba(56,189,248,0.2);"
+            >Irrelevance</span>
             <span v-if="r.latency_ms" class="text-[10px] text-zinc-700 font-mono ml-auto">{{ r.latency_ms }}ms</span>
           </div>
 
           <!-- Prompt -->
           <div class="text-sm text-zinc-300 font-body mb-1">"{{ r.prompt || '' }}"</div>
 
-          <!-- Expected vs Actual -->
-          <div class="grid grid-cols-2 gap-4 text-xs font-mono">
+          <!-- Irrelevance test: simplified view -->
+          <div v-if="r.should_call_tool === false">
+            <div class="text-[10px] font-mono mt-1">
+              <span class="text-zinc-600">Expected: </span>
+              <span style="color:#38BDF8;">abstain (no tool call)</span>
+              <span class="ml-4 text-zinc-600">Actual: </span>
+              <span :style="{ color: r.tool_selection_score === 1.0 ? 'var(--lime)' : 'var(--coral)' }">
+                {{ r.actual_tool ? r.actual_tool : 'no tool call' }}
+              </span>
+            </div>
+            <div class="text-[10px] font-mono mt-1"
+              :style="{ color: r.tool_selection_score === 1.0 ? 'var(--lime)' : 'var(--coral)' }"
+            >{{ r.tool_selection_score === 1.0 ? 'Correctly abstained' : 'Should not have called a tool' }}</div>
+          </div>
+
+          <!-- Normal case: expected vs actual -->
+          <div v-else class="grid grid-cols-2 gap-4 text-xs font-mono">
             <div>
               <div class="text-[10px] font-display tracking-wider text-zinc-500 uppercase mb-0.5">Expected</div>
               <div class="text-zinc-400">{{ formatTool(r.expected_tool) }}</div>
@@ -64,6 +87,13 @@
             </div>
           </div>
 
+          <!-- Judge explanation (from inline result or fetched report) -->
+          <div v-if="judgeExplanation(r)" class="mt-2 rounded-sm px-3 py-2"
+            style="background:rgba(251,191,36,0.04);border:1px solid rgba(251,191,36,0.15);">
+            <div class="text-[10px] font-display tracking-wider uppercase text-yellow-500 mb-1">Judge Analysis</div>
+            <div class="text-[10px] font-body text-zinc-400 leading-relaxed">{{ judgeExplanation(r) }}</div>
+          </div>
+
           <!-- Error -->
           <div v-if="r.error" class="mt-2 text-xs" style="color:var(--coral);">{{ r.error }}</div>
 
@@ -96,17 +126,23 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { apiFetch } from '../../utils/api.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
   modelId: { type: String, default: '' },
   allResults: { type: Array, default: () => [] },
+  // Optional: pass eval ID to fetch judge report for failed cases
+  evalId: { type: String, default: null },
 })
 
 defineEmits(['close'])
 
 const rawVisible = ref({})
+// Map of test_case_id -> judge explanation fetched from report
+const judgeReportMap = ref({})
+const judgeLoading = ref(false)
 
 const caseResults = computed(() => {
   return props.allResults.filter(r => r.model_id === props.modelId)
@@ -116,6 +152,44 @@ const modelName = computed(() => {
   const first = caseResults.value[0]
   return first?.model_name || first?.model_id || props.modelId
 })
+
+// Fetch judge report when modal opens and evalId is available
+watch(() => props.visible, async (isVisible) => {
+  if (!isVisible) {
+    judgeReportMap.value = {}
+    return
+  }
+  if (!props.evalId) return
+
+  judgeLoading.value = true
+  try {
+    const res = await apiFetch(`/api/tool-eval/${props.evalId}/judge-report`)
+    if (!res.ok) return
+    const data = await res.json()
+    // Build a map: test_case_id -> explanation for this model
+    const map = {}
+    const cases = data.cases || data.case_results || []
+    for (const c of cases) {
+      if (c.model_id === props.modelId && c.explanation) {
+        map[c.test_case_id] = c.explanation
+      }
+    }
+    judgeReportMap.value = map
+  } catch {
+    // Non-fatal: judge report may not exist yet
+  } finally {
+    judgeLoading.value = false
+  }
+}, { immediate: false })
+
+// Get judge explanation: prefer inline field, fall back to fetched report
+function judgeExplanation(r) {
+  if (r.judge_explanation) return r.judge_explanation
+  if (r.test_case_id && judgeReportMap.value[r.test_case_id]) {
+    return judgeReportMap.value[r.test_case_id]
+  }
+  return null
+}
 
 function scoreColor(pct) {
   if (pct >= 80) return 'var(--lime)'

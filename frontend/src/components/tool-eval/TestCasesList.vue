@@ -31,6 +31,12 @@
                 style="color:var(--lime);background:rgba(191,255,0,0.08);border:1px solid rgba(191,255,0,0.15)"
               >MULTI-TURN</span>
               <span
+                v-if="c.should_call_tool === false"
+                class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm ml-2"
+                style="color:#38BDF8;background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.15)"
+                title="Model should NOT call any tool (irrelevance test)"
+              >IRRELEVANCE</span>
+              <span
                 v-if="c.scoring_config?.mode && c.scoring_config.mode !== 'exact'"
                 class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm ml-2"
                 style="color:#60A5FA;background:rgba(96,165,250,0.08);border:1px solid rgba(96,165,250,0.15)"

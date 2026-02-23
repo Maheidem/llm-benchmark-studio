@@ -124,6 +124,18 @@
           <input type="checkbox" v-model="autoJudge" class="accent-amber-400">
           <span class="text-xs font-body text-zinc-400">Auto-run Judge</span>
         </label>
+        <div v-if="autoJudge" class="flex items-center gap-2" title="Trigger judge when a model's overall score falls below this threshold">
+          <span class="text-[10px] text-zinc-600 font-body">on score &lt;</span>
+          <input
+            v-model.number="autoJudgeThreshold"
+            type="range"
+            min="0"
+            max="100"
+            step="5"
+            class="w-20 accent-amber-400"
+          >
+          <span class="text-[10px] font-mono text-amber-400 w-8">{{ autoJudgeThreshold }}%</span>
+        </div>
         <div class="ml-auto flex gap-2">
           <button
             v-if="store.isEvaluating"
@@ -141,6 +153,28 @@
             {{ store.isEvaluating ? 'Running...' : 'Start Eval' }}
           </button>
         </div>
+      </div>
+    </div>
+
+    <!-- Irrelevance + tool_choice=required warning -->
+    <div
+      v-if="showIrrelevanceWarning"
+      class="mb-6 px-4 py-3 rounded-sm flex items-start gap-3"
+      style="background:rgba(251,191,36,0.06);border:1px solid rgba(251,191,36,0.25);"
+    >
+      <svg class="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" stroke="#FBBF24" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+      </svg>
+      <div>
+        <span class="text-xs font-display tracking-wider uppercase text-amber-400">Warning</span>
+        <p class="text-xs text-zinc-400 font-body mt-0.5">
+          This suite contains irrelevance test cases but <strong class="text-zinc-200">Tool Choice is set to "Required"</strong>.
+          The model will be forced to call a tool, making all irrelevance cases fail artificially.
+          Switch Tool Choice to <button
+            @click="toolChoice = 'auto'"
+            class="text-amber-400 underline hover:text-amber-300 font-mono"
+          >"auto"</button> to test abstention correctly.
+        </p>
       </div>
     </div>
 
@@ -191,9 +225,18 @@
           <tbody>
             <tr v-for="(r, i) in store.evalResults" :key="i">
               <td class="px-5 py-2 text-xs font-mono text-zinc-300">{{ r.model_name || r.model_id || '' }}</td>
-              <td class="px-5 py-2 text-xs font-body text-zinc-400">{{ truncate(r.prompt || r.test_case_id || '', 40) }}</td>
-              <td class="px-5 py-2 text-xs font-mono text-zinc-500">{{ formatTool(r.expected_tool) }}</td>
-              <td class="px-5 py-2 text-xs font-mono" :style="{ color: r.tool_selection_score > 0 ? 'var(--lime)' : 'var(--coral)' }">
+              <td class="px-5 py-2 text-xs font-body text-zinc-400">
+                {{ truncate(r.prompt || r.test_case_id || '', 40) }}
+                <span
+                  v-if="r.should_call_tool === false"
+                  class="text-[9px] font-display tracking-wider uppercase px-1 py-0.5 rounded-sm ml-1 align-middle"
+                  style="color:#38BDF8;background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.15)"
+                >IRREL</span>
+              </td>
+              <td class="px-5 py-2 text-xs font-mono text-zinc-500">
+                {{ r.should_call_tool === false ? '(abstain)' : formatTool(r.expected_tool) }}
+              </td>
+              <td class="px-5 py-2 text-xs font-mono" :style="{ color: liveActualColor(r) }">
                 {{ r.actual_tool || '(none)' }}
               </td>
               <td class="px-5 py-2 text-right text-xs font-mono text-zinc-500" :title="r.tool_chain ? r.tool_chain.map(c => c.tool_name).join(' \u2192 ') : ''">
@@ -215,11 +258,31 @@
       @show-detail="showDetail"
     />
 
+    <!-- Auto-judge completion banner -->
+    <div
+      v-if="judgeReportReady"
+      class="mt-4 px-4 py-3 rounded-sm flex items-center justify-between"
+      style="background:rgba(251,191,36,0.06);border:1px solid rgba(251,191,36,0.25);"
+    >
+      <div class="flex items-center gap-2">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="#FBBF24" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <span class="text-xs text-zinc-400 font-body">Judge analysis complete</span>
+      </div>
+      <router-link
+        :to="{ name: 'JudgeHistory' }"
+        class="text-[10px] font-display tracking-wider uppercase px-3 py-1 rounded-sm"
+        style="color:#FBBF24;background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.2);"
+      >View Report →</router-link>
+    </div>
+
     <!-- Model Detail Modal -->
     <ModelDetailModal
       :visible="detailModalVisible"
       :model-id="detailModelId"
       :all-results="store.evalResults"
+      :eval-id="store.lastEvalId"
       @close="detailModalVisible = false"
     />
   </div>
@@ -249,6 +312,7 @@ const selectedModels = ref(new Set())
 const temperature = ref(0.0)
 const toolChoice = ref('required')
 const autoJudge = ref(false)
+const autoJudgeThreshold = ref(80)
 const systemPrompts = ref({})
 const loadingConfig = ref(true)
 const providerGroups = ref([])
@@ -259,6 +323,7 @@ const errorBanner = ref('')
 
 const detailModalVisible = ref(false)
 const detailModelId = ref('')
+const judgeReportReady = ref(false)
 
 // Profile picker: map of model_id -> selected profile id ('' = no profile)
 const selectedProfiles = ref({})
@@ -381,12 +446,22 @@ function toggleProvider(group) {
 
 // --- Suite change ---
 
-function onSuiteChange() {
+async function onSuiteChange() {
   const suite = store.suites.find(s => s.id === selectedSuiteId.value)
   if (suite) {
     setSuite(suite.id, suite.name)
+    // Load full suite data (including test_cases) for irrelevance warning
+    try { await store.loadSuite(selectedSuiteId.value) } catch { /* non-fatal */ }
   }
 }
+
+// Warn when tool_choice=required AND suite has irrelevance test cases
+const showIrrelevanceWarning = computed(() => {
+  if (toolChoice.value !== 'required') return false
+  const testCases = store.currentSuite?.test_cases
+  if (!testCases) return false
+  return testCases.some(c => c.should_call_tool === false)
+})
 
 // --- WebSocket ---
 
@@ -404,6 +479,13 @@ function connectWebSocket() {
 }
 
 function handleWsMessage(msg) {
+  // Handle judge_complete regardless of job_id (auto-judge runs as separate job)
+  if (msg.type === 'judge_complete') {
+    judgeReportReady.value = true
+    showToast('Judge report ready — view in Judge History', 'success')
+    return
+  }
+
   if (!store.activeJobId) return
   if (msg.job_id !== store.activeJobId) return
 
@@ -476,6 +558,7 @@ async function startEval() {
   progressPct.value = 0
   progressCount.value = '0/0'
   errorBanner.value = ''
+  judgeReportReady.value = false
 
   // Build request body
   const targets = Array.from(selectedModels.value).map(k => {
@@ -489,6 +572,7 @@ async function startEval() {
     temperature: temperature.value,
     tool_choice: toolChoice.value,
     auto_judge: autoJudge.value,
+    auto_judge_threshold: autoJudge.value ? autoJudgeThreshold.value / 100 : null,
   }
 
   // System prompts
@@ -558,6 +642,15 @@ function scoreColor(pct) {
   if (pct >= 80) return 'var(--lime)'
   if (pct >= 50) return '#FBBF24'
   return 'var(--coral)'
+}
+
+// For irrelevance cases: (none) actual tool = PASS (lime), any tool called = FAIL (coral)
+// For normal cases: use tool_selection_score as before
+function liveActualColor(r) {
+  if (r.should_call_tool === false) {
+    return r.actual_tool ? 'var(--coral)' : 'var(--lime)'
+  }
+  return r.tool_selection_score > 0 ? 'var(--lime)' : 'var(--coral)'
 }
 
 function showDetail(modelId) {

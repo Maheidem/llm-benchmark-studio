@@ -630,3 +630,47 @@ async def get_judge_report_versions(report_id: str, user: dict = Depends(auth.ge
     if not versions:
         return JSONResponse({"error": "Report not found"}, status_code=404)
     return {"versions": versions}
+
+
+@router.get("/api/tool-eval/{eval_id}/judge-report")
+async def get_judge_report_for_eval(eval_id: str, user: dict = Depends(auth.get_current_user)):
+    """Get the most recent judge report for a tool eval run.
+
+    Returns case_results array with per-case explanations for use in the
+    drill-down modal. Includes both full judge report data and a flattened
+    case_results list with {model_id, test_case_id, explanation} fields.
+    """
+    # Find the most recent completed judge report for this eval run
+    report = await db.get_judge_report_for_eval(eval_id, user["id"])
+    if not report:
+        return JSONResponse({"error": "No judge report found for this eval run"}, status_code=404)
+
+    # Parse verdicts_json into per-case explanation entries
+    case_results = []
+    verdicts_raw = report.get("verdicts_json")
+    if verdicts_raw:
+        try:
+            verdicts = json.loads(verdicts_raw) if isinstance(verdicts_raw, str) else verdicts_raw
+            for v in verdicts:
+                case_results.append({
+                    "model_id": v.get("model_id", ""),
+                    "test_case_id": v.get("test_case_id", ""),
+                    "explanation": v.get("reasoning") or v.get("summary") or "",
+                    "quality_score": v.get("quality_score"),
+                    "verdict": v.get("verdict", ""),
+                    "tool_selection_assessment": v.get("tool_selection_assessment", ""),
+                    "param_assessment": v.get("param_assessment", ""),
+                })
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Failed to parse verdicts_json for eval_id=%s", eval_id)
+
+    return {
+        "report_id": report["id"],
+        "eval_run_id": eval_id,
+        "judge_model": report.get("judge_model"),
+        "overall_grade": report.get("overall_grade"),
+        "overall_score": report.get("overall_score"),
+        "status": report.get("status"),
+        "timestamp": report.get("timestamp"),
+        "case_results": case_results,
+    }

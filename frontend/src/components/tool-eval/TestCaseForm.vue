@@ -20,8 +20,19 @@
       ></textarea>
     </div>
 
-    <!-- Expected Tool -->
+    <!-- Irrelevance Toggle — placed first so it controls what fields are shown below -->
     <div class="mb-4">
+      <label class="flex items-center gap-2 cursor-pointer">
+        <input type="checkbox" v-model="form.shouldCallTool" class="accent-lime-400">
+        <span class="text-xs font-display tracking-wider uppercase text-zinc-500">Model should call a tool</span>
+      </label>
+      <p v-if="!form.shouldCallTool" class="text-[10px] text-zinc-600 font-body mt-0.5 ml-5">
+        Irrelevance test — correct answer is to NOT call any tool (abstain).
+      </p>
+    </div>
+
+    <!-- Expected Tool (hidden for irrelevance cases) -->
+    <div v-if="form.shouldCallTool" class="mb-4">
       <div class="flex items-center gap-3 mb-1">
         <label class="text-xs font-display tracking-wider uppercase text-zinc-500">Expected Tool</label>
         <label class="flex items-center gap-1.5 text-xs text-zinc-500 cursor-pointer">
@@ -38,8 +49,8 @@
       >
     </div>
 
-    <!-- Expected Params -->
-    <div class="mb-4">
+    <!-- Expected Params (hidden for irrelevance cases) -->
+    <div v-if="form.shouldCallTool" class="mb-4">
       <label class="text-xs font-display tracking-wider uppercase text-zinc-500 mb-1 block">Expected Parameters (JSON)</label>
       <textarea
         v-model="form.expectedParams"
@@ -50,8 +61,8 @@
       ></textarea>
     </div>
 
-    <!-- Scoring Mode -->
-    <div class="mb-4">
+    <!-- Scoring Mode (hidden for irrelevance cases) -->
+    <div v-if="form.shouldCallTool" class="mb-4">
       <label class="text-xs font-display tracking-wider uppercase text-zinc-500 mb-1 block">Scoring Mode</label>
       <div class="flex items-center gap-3">
         <select
@@ -164,6 +175,7 @@ const form = reactive({
   prompt: '',
   expectedTool: '',
   noTool: false,
+  shouldCallTool: true,
   expectedParams: '',
   scoringMode: 'exact',
   epsilon: 0.01,
@@ -180,6 +192,8 @@ const error = ref('')
 watch(() => props.testCase, (tc) => {
   if (!tc) return
   form.prompt = tc.prompt || ''
+  // should_call_tool defaults to true unless explicitly false
+  form.shouldCallTool = tc.should_call_tool !== false
   const isNoTool = tc.expected_tool === null || tc.expected_tool === undefined
   form.noTool = isNoTool
   if (isNoTool) {
@@ -210,10 +224,11 @@ function save() {
   }
 
   let expected_tool = null
-  if (!form.noTool) {
+  // Only validate expected tool when model should call a tool
+  if (form.shouldCallTool && !form.noTool) {
     const toolVal = form.expectedTool.trim()
     if (!toolVal) {
-      error.value = 'Expected tool is required (or check "No tool expected")'
+      error.value = 'Expected tool is required (or uncheck "Model should call a tool")'
       return
     }
     if (toolVal.includes(',')) {
@@ -228,24 +243,26 @@ function save() {
   }
 
   let expected_params = null
-  const paramsStr = form.expectedParams.trim()
-  if (paramsStr) {
-    try {
-      expected_params = JSON.parse(paramsStr)
-      if (typeof expected_params !== 'object' || Array.isArray(expected_params)) {
-        error.value = 'Expected params must be a JSON object'
+  if (form.shouldCallTool) {
+    const paramsStr = form.expectedParams.trim()
+    if (paramsStr) {
+      try {
+        expected_params = JSON.parse(paramsStr)
+        if (typeof expected_params !== 'object' || Array.isArray(expected_params)) {
+          error.value = 'Expected params must be a JSON object'
+          return
+        }
+      } catch (e) {
+        error.value = 'Invalid JSON in expected params: ' + e.message
         return
       }
-    } catch (e) {
-      error.value = 'Invalid JSON in expected params: ' + e.message
-      return
     }
   }
 
-  const data = { prompt, expected_tool, expected_params }
+  const data = { prompt, expected_tool, expected_params, should_call_tool: form.shouldCallTool }
 
-  // Scoring config
-  if (form.scoringMode && form.scoringMode !== 'exact') {
+  // Scoring config (only relevant when tool is expected)
+  if (form.shouldCallTool && form.scoringMode && form.scoringMode !== 'exact') {
     const sc = { mode: form.scoringMode }
     if (form.scoringMode === 'numeric_tolerance') {
       sc.epsilon = form.epsilon || 0.01

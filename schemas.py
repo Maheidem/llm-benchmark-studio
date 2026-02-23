@@ -81,6 +81,7 @@ class ToolEvalRequest(BaseModel):
     experiment_id: Optional[str] = None
     profiles: Optional[dict] = None  # {"model_id": "profile_id"}
     auto_judge: bool = False
+    auto_judge_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def check_models_or_targets(self):
@@ -276,3 +277,28 @@ class ProfileFromTuner(BaseModel):
     params_json: Optional[dict] = None
     system_prompt: Optional[str] = Field(None, max_length=50_000)
     set_as_default: bool = False
+
+
+# ──────────────────── Prompt Version Registry ─────────────────────
+
+class PromptVersionCreate(BaseModel):
+    prompt_text: str = Field(..., min_length=1, max_length=500_000)
+    label: str = Field(default="", max_length=256)
+    parent_version_id: Optional[str] = None
+
+
+class PromptVersionUpdate(BaseModel):
+    label: str = Field(..., max_length=256)
+
+
+# ──────────────────── Tool Eval Irrelevance ─────────────────────
+
+class TestCaseCreateV2(BaseModel):
+    """Extended test case creation with irrelevance detection support."""
+    prompt: str = Field(..., min_length=1, max_length=50_000)
+    expected_tool: Optional[str] = Field(None, max_length=256)
+    expected_params: Optional[dict] = None
+    param_scoring: str = Field(default="exact", pattern=r"^(exact|fuzzy|contains|semantic)$")
+    multi_turn_config: Optional[dict] = None
+    scoring_config_json: Optional[dict] = None
+    should_call_tool: bool = True

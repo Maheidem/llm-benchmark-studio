@@ -291,6 +291,22 @@ def score_tool_selection(expected_tool, actual_tool: str | None) -> float:
     return 1.0 if actual_tool.lower() == expected_tool.lower() else 0.0
 
 
+def score_abstention(should_call_tool: bool, actual_tool: str | None) -> float:
+    """Score irrelevance detection: did the model correctly abstain (or call) a tool?
+
+    Returns 1.0 when the model's behavior matches should_call_tool:
+    - should_call_tool=True + tool called -> 1.0 (correct: model used a tool)
+    - should_call_tool=False + no tool called -> 1.0 (correct: model abstained)
+    - should_call_tool=True + no tool called -> 0.0
+    - should_call_tool=False + tool called -> 0.0
+    """
+    model_called = actual_tool is not None
+    if should_call_tool:
+        return 1.0 if model_called else 0.0
+    else:
+        return 1.0 if not model_called else 0.0
+
+
 def _match_value(expected_val, actual_val, mode: str = "exact", epsilon: float = 0.01) -> bool:
     """Compare a single expected vs actual value using the given scoring mode."""
     if mode == "case_insensitive":
@@ -530,6 +546,11 @@ def _compute_eval_summaries(results: list[dict], targets: list[Target]) -> list[
         overall = (sum(overall_scores) / len(overall_scores) * 100) if overall_scores else 0.0
         cases_passed = sum(1 for r in model_results if r["success"] and r["overall_score"] == 1.0)
 
+        # Irrelevance score: only from cases where should_call_tool=False
+        irrelevance_cases = [r for r in model_results if r["success"] and not r.get("should_call_tool", True)]
+        irrelevance_scores = [r.get("irrelevance_score", 0.0) for r in irrelevance_cases]
+        irrelevance_acc = (sum(irrelevance_scores) / len(irrelevance_scores) * 100) if irrelevance_scores else None
+
         summaries.append({
             "model_id": model_id,
             "model_name": model_name,
@@ -539,6 +560,8 @@ def _compute_eval_summaries(results: list[dict], targets: list[Target]) -> list[
             "overall_pct": round(overall, 1),
             "cases_run": len(model_results),
             "cases_passed": cases_passed,
+            "irrelevance_pct": round(irrelevance_acc, 1) if irrelevance_acc is not None else None,
+            "irrelevance_cases": len(irrelevance_cases),
         })
 
     return summaries

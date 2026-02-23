@@ -58,6 +58,18 @@
           class="text-[10px] font-display tracking-wider uppercase px-3 py-1 rounded-sm"
           style="background:rgba(191,255,0,0.08);border:1px solid rgba(191,255,0,0.2);color:var(--lime);"
         >Apply to Context</button>
+        <router-link
+          v-if="librarySaved"
+          :to="{ name: 'PromptLibrary' }"
+          class="text-[10px] font-display tracking-wider uppercase px-3 py-1 rounded-sm"
+          style="background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.2);color:#38BDF8;"
+        >View in Library →</router-link>
+        <button
+          v-else
+          @click="saveToLibrary"
+          class="text-[10px] font-display tracking-wider uppercase px-3 py-1 rounded-sm"
+          style="background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.2);color:#38BDF8;"
+        >Save to Library</button>
         <button
           @click="copyBestPrompt"
           class="text-[10px] font-display tracking-wider uppercase px-3 py-1 rounded-sm"
@@ -87,17 +99,20 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { usePromptTunerStore } from '../../stores/promptTuner.js'
+import { usePromptLibraryStore } from '../../stores/promptLibrary.js'
 import { useNotificationsStore } from '../../stores/notifications.js'
 import { useSharedContext } from '../../composables/useSharedContext.js'
 import { useToast } from '../../composables/useToast.js'
 import PromptTimeline from '../../components/tool-eval/PromptTimeline.vue'
 
 const store = usePromptTunerStore()
+const libraryStore = usePromptLibraryStore()
 const notifStore = useNotificationsStore()
 const { setConfig, setSystemPrompt } = useSharedContext()
 const { showToast } = useToast()
 
 const bestExpanded = ref(false)
+const librarySaved = ref(false)
 let unsubscribe = null
 
 onMounted(() => {
@@ -117,6 +132,7 @@ onMounted(() => {
 
       if (msg.type === 'tune_complete') {
         showToast('Prompt tuning complete!', 'success')
+        autoSaveBestPrompt()
       }
       if (msg.type === 'job_failed') {
         showToast(msg.error || 'Tuning failed', 'error')
@@ -156,5 +172,27 @@ function copyBestPrompt() {
     () => showToast('Copied to clipboard', 'success'),
     () => showToast('Failed to copy', 'error')
   )
+}
+
+async function autoSaveBestPrompt() {
+  if (!store.bestPrompt) return
+  try {
+    await libraryStore.saveVersion(store.bestPrompt, null, 'tuner')
+    librarySaved.value = true
+    showToast('Best prompt auto-saved to Prompt Library', 'success')
+  } catch {
+    // non-fatal — manual save still available via button
+  }
+}
+
+async function saveToLibrary() {
+  if (!store.bestPrompt) return
+  try {
+    await libraryStore.saveVersion(store.bestPrompt, null, 'tuner')
+    librarySaved.value = true
+    showToast('Saved to Prompt Library', 'success')
+  } catch {
+    showToast('Failed to save to library', 'error')
+  }
 }
 </script>

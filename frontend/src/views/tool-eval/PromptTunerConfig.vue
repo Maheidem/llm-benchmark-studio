@@ -107,7 +107,63 @@
 
     <!-- Base System Prompt -->
     <div class="card rounded-md p-5 mb-6">
-      <span class="section-label mb-2 block">Base System Prompt</span>
+      <div class="flex items-center justify-between mb-2">
+        <span class="section-label">Base System Prompt</span>
+        <div class="flex items-center gap-2">
+          <button
+            @click="saveCurrentToLibrary"
+            :disabled="!basePrompt.trim()"
+            class="text-[10px] font-display tracking-wider uppercase px-2 py-1 rounded-sm transition-opacity"
+            :class="!basePrompt.trim() ? 'opacity-40 cursor-not-allowed' : ''"
+            style="background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.2);color:#38BDF8;"
+            title="Save current prompt to library"
+          >Save to Library</button>
+          <button
+            @click="openLibraryPicker"
+            class="text-[10px] font-display tracking-wider uppercase px-2 py-1 rounded-sm"
+            style="background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.2);color:#A855F7;"
+            title="Load a prompt from the library"
+          >Load from Library</button>
+        </div>
+      </div>
+
+      <!-- Library picker dropdown -->
+      <div v-if="showLibraryPicker" class="mb-3 rounded-sm overflow-hidden" style="border:1px solid rgba(168,85,247,0.2);">
+        <div class="px-3 py-2" style="background:rgba(168,85,247,0.05);border-bottom:1px solid rgba(168,85,247,0.15);">
+          <span class="text-[10px] font-display tracking-wider uppercase text-purple-400">Select from Library</span>
+        </div>
+        <div v-if="libraryStore.loading" class="px-3 py-2 text-[10px] text-zinc-600">Loading...</div>
+        <div v-else-if="libraryStore.versions.length === 0" class="px-3 py-2 text-[10px] text-zinc-600">
+          No saved prompts yet.
+          <router-link :to="{ name: 'PromptLibrary' }" class="text-purple-400 hover:text-purple-300 ml-1">Open Library</router-link>
+        </div>
+        <div v-else style="max-height:200px;overflow-y:auto;">
+          <div
+            v-for="v in libraryStore.versions"
+            :key="v.id"
+            class="px-3 py-2 cursor-pointer hover:bg-white/[0.03] transition-colors"
+            style="border-top:1px solid var(--border-subtle);"
+            @click="loadFromLibrary(v)"
+          >
+            <div class="flex items-center gap-2 mb-0.5">
+              <span class="text-[10px] font-mono text-zinc-400">{{ v.label || `#${v.version_number || v.id?.slice(0,6)}` }}</span>
+              <span class="text-[9px] px-1 rounded-sm"
+                :style="v.source === 'tuner' || v.source === 'prompt_tuner'
+                  ? 'background:rgba(168,85,247,0.1);color:#A855F7;'
+                  : 'background:rgba(255,255,255,0.04);color:#71717A;'"
+              >{{ v.source || 'manual' }}</span>
+            </div>
+            <div class="text-[10px] text-zinc-600 truncate">{{ v.prompt_text?.substring(0, 80) }}</div>
+          </div>
+        </div>
+        <div class="px-3 py-2" style="border-top:1px solid var(--border-subtle);">
+          <button
+            @click="showLibraryPicker = false"
+            class="text-[10px] text-zinc-600 hover:text-zinc-400 font-display tracking-wider uppercase"
+          >Cancel</button>
+        </div>
+      </div>
+
       <textarea
         v-model="basePrompt"
         rows="4"
@@ -177,6 +233,7 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToolEvalStore } from '../../stores/toolEval.js'
 import { usePromptTunerStore } from '../../stores/promptTuner.js'
+import { usePromptLibraryStore } from '../../stores/promptLibrary.js'
 import { useConfigStore } from '../../stores/config.js'
 import { useToast } from '../../composables/useToast.js'
 import { useSharedContext } from '../../composables/useSharedContext.js'
@@ -185,9 +242,13 @@ import { getColor } from '../../utils/constants.js'
 const router = useRouter()
 const teStore = useToolEvalStore()
 const prtStore = usePromptTunerStore()
+const libraryStore = usePromptLibraryStore()
 const configStore = useConfigStore()
 const { showToast } = useToast()
 const { context, setSuite } = useSharedContext()
+
+// Library picker state
+const showLibraryPicker = ref(false)
 
 // --- State ---
 const selectedSuiteId = ref('')
@@ -286,6 +347,31 @@ function formatDuration(s) {
   if (!s) return '?'
   if (s < 60) return `${Math.round(s)}s`
   return `${Math.ceil(s / 60)}m`
+}
+
+// --- Prompt Library ---
+
+async function openLibraryPicker() {
+  showLibraryPicker.value = !showLibraryPicker.value
+  if (showLibraryPicker.value && libraryStore.versions.length === 0) {
+    try { await libraryStore.loadVersions() } catch { /* non-fatal */ }
+  }
+}
+
+function loadFromLibrary(v) {
+  basePrompt.value = v.prompt_text
+  showLibraryPicker.value = false
+  showToast(`Loaded: ${v.label || 'prompt version'}`, 'success')
+}
+
+async function saveCurrentToLibrary() {
+  if (!basePrompt.value.trim()) return
+  try {
+    await libraryStore.saveVersion(basePrompt.value.trim(), null, 'manual')
+    showToast('Prompt saved to library', 'success')
+  } catch {
+    showToast('Failed to save to library', 'error')
+  }
 }
 
 // --- Start ---
