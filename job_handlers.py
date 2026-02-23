@@ -839,7 +839,7 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
 
     # --- Auto-judge: submit a separate judge job if explicitly requested ---
     auto_judge = params.get("auto_judge", False)
-    auto_judge_threshold = float(params.get("auto_judge_threshold", 0.70))
+    auto_judge_threshold = float(params.get("auto_judge_threshold") or 0.70)
     if auto_judge and eval_id and not judge_report_id:
         # Only auto-judge if no judge was already run inline/post-eval
         # AND avg score is below the threshold (threshold slider has effect)
