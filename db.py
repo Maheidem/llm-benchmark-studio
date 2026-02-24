@@ -47,6 +47,7 @@ class DatabaseManager:
         """Execute a write query (INSERT/UPDATE/DELETE) with auto-commit."""
         async with aiosqlite.connect(self._path()) as conn:
             conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA busy_timeout=5000")
             await conn.execute("PRAGMA foreign_keys=ON")
             await conn.execute(query, params)
             await conn.commit()
@@ -55,6 +56,7 @@ class DatabaseManager:
         """Execute INSERT, then fetch a generated ID with a follow-up SELECT."""
         async with aiosqlite.connect(self._path()) as conn:
             conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA busy_timeout=5000")
             await conn.execute("PRAGMA foreign_keys=ON")
             cursor = await conn.execute(query, params)
             await conn.commit()
@@ -65,6 +67,7 @@ class DatabaseManager:
         """Execute write queries then fetch a row in the same connection."""
         async with aiosqlite.connect(self._path()) as conn:
             conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA busy_timeout=5000")
             await conn.execute("PRAGMA foreign_keys=ON")
             for query, params in queries:
                 await conn.execute(query, params)
@@ -77,6 +80,7 @@ class DatabaseManager:
         """Execute a write query and return cursor.rowcount."""
         async with aiosqlite.connect(self._path()) as conn:
             conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA busy_timeout=5000")
             await conn.execute("PRAGMA foreign_keys=ON")
             cursor = await conn.execute(query, params)
             await conn.commit()
@@ -110,6 +114,7 @@ async def init_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA busy_timeout=5000")
         await db.execute("PRAGMA foreign_keys=ON")
 
         await db.execute("""

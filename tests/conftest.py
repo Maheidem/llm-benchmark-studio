@@ -126,21 +126,19 @@ async def _set_test_rate_limits(test_user, _patch_db_path):
     Default hourly limit is 20, which is exceeded in a full suite run.
     This fixture raises the limits once at session start.
     """
-    import aiosqlite
+    import db as db_module
 
     user, _ = test_user
-    async with aiosqlite.connect(str(_patch_db_path), timeout=10) as conn:
-        await conn.execute(
-            """
-            INSERT INTO rate_limits (user_id, benchmarks_per_hour, max_concurrent)
-            VALUES (?, 10000, 10)
-            ON CONFLICT(user_id) DO UPDATE SET
-                benchmarks_per_hour = 10000,
-                max_concurrent = 10
-            """,
-            (user["id"],),
-        )
-        await conn.commit()
+    await db_module._db.execute(
+        """
+        INSERT INTO rate_limits (user_id, benchmarks_per_hour, max_concurrent)
+        VALUES (?, 10000, 10)
+        ON CONFLICT(user_id) DO UPDATE SET
+            benchmarks_per_hour = 10000,
+            max_concurrent = 10
+        """,
+        (user["id"],),
+    )
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -183,15 +181,13 @@ async def admin_headers(test_user, _patch_db_path):
     Promotes the test user to admin directly in the DB, since other tests
     may register users before this fixture's dependency chain resolves.
     """
-    import aiosqlite
+    import db as db_module
 
     user, token = test_user
     if user["role"] != "admin":
-        async with aiosqlite.connect(str(_patch_db_path)) as conn:
-            await conn.execute(
-                "UPDATE users SET role='admin' WHERE id=?", (user["id"],)
-            )
-            await conn.commit()
+        await db_module._db.execute(
+            "UPDATE users SET role='admin' WHERE id=?", (user["id"],)
+        )
         user["role"] = "admin"
     return {"Authorization": f"Bearer {token}"}
 
@@ -207,22 +203,25 @@ async def clear_active_jobs(test_user, _patch_db_path):
     This prevents rate-limit 429 errors when multiple tests create jobs
     sequentially within the same session-scoped user.
 
+    Uses DatabaseManager.execute() so that the monkeypatched DB_PATH is
+    respected and connections are managed consistently with the app — avoiding
+    the sqlite3.OperationalError: database is locked that occurred when raw
+    aiosqlite.connect() competed with the app's DatabaseManager connections.
+
     Retries up to 15 times with 0.5s sleep between attempts to wait out
     any background job that holds a write lock on the SQLite database.
     """
-    import aiosqlite
+    import db as db_module
 
     user, _ = test_user
     last_exc = None
     for attempt in range(15):
         try:
-            async with aiosqlite.connect(str(_patch_db_path), timeout=5) as conn:
-                await conn.execute(
-                    "UPDATE jobs SET status = 'done', completed_at = datetime('now') "
-                    "WHERE user_id = ? AND status IN ('pending', 'queued', 'running')",
-                    (user["id"],),
-                )
-                await conn.commit()
+            await db_module._db.execute(
+                "UPDATE jobs SET status = 'done', completed_at = datetime('now') "
+                "WHERE user_id = ? AND status IN ('pending', 'queued', 'running')",
+                (user["id"],),
+            )
             return  # success
         except Exception as exc:
             last_exc = exc

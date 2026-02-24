@@ -13,7 +13,7 @@ import auth
 import db
 from keyvault import vault
 from schemas import ModelConfigUpdate, ProviderCreate
-from routers.helpers import _get_user_config, _save_user_config, _save_config, CONFIG_PATH
+from routers.helpers import _get_user_config, _save_user_config
 
 logger = logging.getLogger(__name__)
 

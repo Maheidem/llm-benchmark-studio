@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import os
 import time
 
 from fastapi import APIRouter, Request, Depends
@@ -43,7 +42,7 @@ async def discover_models(provider_key: str, user: dict = Depends(auth.get_curre
     if not prov_cfg:
         return JSONResponse({"error": f"Provider '{provider_key}' not found"}, status_code=404)
 
-    # Resolve API key: user key > global env
+    # Resolve API key: user encrypted key > inline config key (e.g. "not-needed")
     api_key = None
     encrypted = await db.get_user_key_for_provider(user["id"], provider_key)
     if encrypted:
@@ -52,11 +51,9 @@ async def discover_models(provider_key: str, user: dict = Depends(auth.get_curre
         except Exception:
             logger.warning("Failed to decrypt API key for provider=%s user_id=%s", provider_key, user["id"])
     if not api_key:
-        key_env = prov_cfg.get("api_key_env", "")
-        if key_env:
-            api_key = os.getenv(key_env)
+        api_key = prov_cfg.get("api_key")  # inline literal (e.g. local providers)
     if not api_key:
-        api_key = prov_cfg.get("api_key")
+        return JSONResponse({"error": "No API key configured. Add your key in Settings > API Keys."}, status_code=400)
 
     api_base = prov_cfg.get("api_base", "")
     prefix = prov_cfg.get("model_id_prefix", "")
@@ -153,7 +150,7 @@ async def detect_lm_studio_backend(provider_key: str, user: dict = Depends(auth.
         return {"available": False, "models": [], "backend_type": "unknown",
                 "error": "No api_base configured for this provider"}
 
-    # Resolve API key
+    # Resolve API key: user encrypted key > inline config key
     api_key = None
     encrypted = await db.get_user_key_for_provider(user["id"], provider_key)
     if encrypted:
@@ -162,9 +159,7 @@ async def detect_lm_studio_backend(provider_key: str, user: dict = Depends(auth.
         except Exception:
             pass
     if not api_key:
-        env_var = prov_cfg.get("api_key_env", "")
-        if env_var:
-            api_key = os.environ.get(env_var, "")
+        api_key = prov_cfg.get("api_key", "")  # inline literal (e.g. "not-needed")
 
     url = f"{api_base.rstrip('/')}/models"
     headers = {}
@@ -289,13 +284,28 @@ async def validate_provider_params(request: Request, user: dict = Depends(auth.g
 
 @router.post("/api/param-support/seed")
 async def seed_param_support(user: dict = Depends(auth.get_current_user)):
-    """Generate default param_support config from PROVIDER_REGISTRY."""
+    """Generate default param_support config from the user's own providers.
+
+    Maps each configured provider to its best-matching PROVIDER_REGISTRY
+    entry for sensible defaults.  Unknown/OSS providers get OpenAI-compatible
+    fallback defaults so users can customize from there.
+    """
+    config = await _get_user_config(user["id"])
+    configured_providers = config.get("providers", {})
+
     provider_defaults = {}
     model_overrides = {}
 
-    for prov_key, prov in PROVIDER_REGISTRY.items():
-        if prov_key == "_unknown":
-            continue
+    for cfg_key, cfg_prov in configured_providers.items():
+        # Find best-matching registry entry via first model ID
+        first_model_id = ""
+        models = cfg_prov.get("models", [])
+        if models:
+            first_model_id = models[0].get("id", "")
+        registry_key = identify_provider(first_model_id, cfg_key)
+        prov = PROVIDER_REGISTRY.get(registry_key, PROVIDER_REGISTRY["_unknown"])
+
+        # Build params from registry tier1 + tier2
         params = {}
         for tier_key in ("tier1", "tier2"):
             tier = prov.get(tier_key, {})
@@ -314,13 +324,15 @@ async def seed_param_support(user: dict = Depends(auth.get_current_user)):
                     params[param_name]["values"] = spec["values"]
                 if "note" in spec:
                     params[param_name]["note"] = spec["note"]
-        provider_defaults[prov_key] = {
-            "display_name": prov.get("display_name", prov_key),
+
+        display_name = cfg_prov.get("display_name") or prov.get("display_name", cfg_key)
+        provider_defaults[cfg_key] = {
+            "display_name": display_name,
             "params": params,
         }
 
         if "model_overrides" in prov:
-            model_overrides[prov_key] = prov["model_overrides"]
+            model_overrides[cfg_key] = prov["model_overrides"]
 
     result = {
         "provider_defaults": provider_defaults,
