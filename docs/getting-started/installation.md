@@ -6,6 +6,7 @@ LLM Benchmark Studio can be run locally for development or deployed with Docker 
 
 - Python 3.10 or higher (3.13 recommended)
 - [uv](https://docs.astral.sh/uv/) package manager (recommended) or pip
+- Node.js 18+ and npm (for building the frontend)
 - At least one LLM provider API key (OpenAI, Anthropic, Google Gemini, etc.)
 
 ## Local Installation
@@ -44,7 +45,20 @@ pip install -r requirements.txt
     - `httpx` -- HTTP client
     - `mcp` -- Model Context Protocol client
 
-### 3. Configure Environment
+### 3. Build the Frontend
+
+The web dashboard is a Vue 3 SPA that must be compiled before running the server:
+
+```bash
+cd frontend && npm ci && npm run build
+```
+
+This compiles the frontend into the `static/` directory, which FastAPI serves in production.
+
+!!! note "Docker handles this automatically"
+    If you use Docker Compose, the multi-stage Dockerfile builds the frontend automatically. You only need this step for local development without Docker.
+
+### 4. Configure Environment
 
 ```bash
 cp .env.example .env
@@ -62,26 +76,44 @@ GEMINI_API_KEY=AIza...
 JWT_SECRET=change-this-to-a-random-string
 
 # Optional: Auto-create admin account on first startup
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=your-secure-password
+# ADMIN_EMAIL=admin@example.com
+# ADMIN_PASSWORD=changeme123
 
 # Optional: Encryption key (auto-generated if not set)
 # FERNET_KEY=your-base64-fernet-key-here
+
+# Deployment
+COOKIE_SECURE=false
+LOG_LEVEL=warning
 ```
 
-### 4. Start the Application
+### 5. Start the Application
 
 ```bash
 python app.py
 ```
 
-The dashboard is available at `http://localhost:8501`.
+The web dashboard is available at `http://localhost:8501`.
 
 Custom host and port:
 
 ```bash
 python app.py --host 0.0.0.0 --port 3333
 ```
+
+### Frontend Development Mode
+
+For frontend development with hot-reload, run the Vite dev server alongside the backend:
+
+```bash
+# Terminal 1: Backend
+python app.py
+
+# Terminal 2: Frontend dev server
+cd frontend && npm install && npm run dev
+```
+
+The Vite dev server proxies API requests to the backend.
 
 ## Docker Installation
 
@@ -97,6 +129,8 @@ cp .env.example .env
 # Start the application
 docker compose up -d
 ```
+
+Docker handles the frontend build automatically via a multi-stage Dockerfile (Node.js builds the Vue 3 SPA, then Python serves it).
 
 The application will be available at `http://localhost:8501`.
 

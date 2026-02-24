@@ -11,11 +11,14 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
   const activeRunId = ref(null)
   const activeJobId = ref(null)
   const isRunning = ref(false)
-  const progress = ref({ pct: 0, detail: '', eta: '' })
+  const progress = ref({ pct: 0, detail: '', eta: '', iteration: null, totalIterations: null })
   const compatMatrix = ref(null)
   const totalCombos = ref(0)
   const sortKey = ref('overall_score')
   const sortAsc = ref(false)
+  // 2A: strategy tracking
+  const optimizationMode = ref('grid')
+  const earlyStopped = ref(false)
 
   const session = useActiveSession()
 
@@ -158,11 +161,16 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
         activeRunId.value = msg.tune_id || null
         totalCombos.value = msg.total_combos || 0
         results.value = []
+        // 2A: track optimization mode
+        optimizationMode.value = msg.optimization_mode || 'grid'
+        earlyStopped.value = false
         session.startTracking()
         progress.value = {
           pct: 0,
           detail: `Tuning ${msg.suite_name || ''}...`,
           eta: '',
+          iteration: null,
+          totalIterations: msg.n_trials || msg.total_combos || null,
         }
         persistJob()
         break
@@ -175,10 +183,17 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
         const completed = results.value.length
         const total = totalCombos.value || completed
         const pct = total > 0 ? Math.round((completed / total) * 100) : 0
+        // 2A: for bayesian/random show trial iteration
+        const iteration = msg.trial_number || msg.iteration || completed
+        const totalIter = progress.value.totalIterations || total
         progress.value = {
           pct,
-          detail: `${data.model_name || ''}, combo ${completed}/${total}`,
+          detail: optimizationMode.value === 'grid'
+            ? `${data.model_name || ''}, combo ${completed}/${total}`
+            : `${data.model_name || ''}, trial ${iteration}/${totalIter}`,
           eta: session.calculateETA(completed, total),
+          iteration,
+          totalIterations: totalIter,
         }
         break
       }
@@ -188,13 +203,20 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
           pct: msg.progress_pct ?? progress.value.pct,
           detail: msg.progress_detail || progress.value.detail,
           eta: progress.value.eta,
+          iteration: msg.iteration || progress.value.iteration,
+          totalIterations: msg.total_iterations || progress.value.totalIterations,
+        }
+        // 2A: check for early stopping / convergence signal
+        if (msg.converged || msg.early_stopped) {
+          earlyStopped.value = true
         }
         break
       }
 
       case 'tune_complete': {
         isRunning.value = false
-        progress.value = { pct: 100, detail: 'Complete!', eta: '' }
+        if (msg.converged || msg.early_stopped) earlyStopped.value = true
+        progress.value = { pct: 100, detail: 'Complete!', eta: '', iteration: progress.value.iteration, totalIterations: progress.value.totalIterations }
         activeJobId.value = null
         session.resetTracking()
         clearSession()
@@ -203,7 +225,7 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
 
       case 'job_completed': {
         isRunning.value = false
-        progress.value = { pct: 100, detail: 'Complete!', eta: '' }
+        progress.value = { pct: 100, detail: 'Complete!', eta: '', iteration: progress.value.iteration, totalIterations: progress.value.totalIterations }
         activeJobId.value = null
         session.resetTracking()
         clearSession()
@@ -216,6 +238,8 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
           pct: progress.value.pct,
           detail: msg.error || msg.error_msg || 'Failed',
           eta: '',
+          iteration: progress.value.iteration,
+          totalIterations: progress.value.totalIterations,
         }
         activeJobId.value = null
         session.resetTracking()
@@ -225,7 +249,7 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
 
       case 'job_cancelled': {
         isRunning.value = false
-        progress.value = { pct: progress.value.pct, detail: 'Cancelled', eta: '' }
+        progress.value = { pct: progress.value.pct, detail: 'Cancelled', eta: '', iteration: progress.value.iteration, totalIterations: progress.value.totalIterations }
         activeJobId.value = null
         session.resetTracking()
         clearSession()
@@ -239,8 +263,10 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
     isRunning.value = false
     activeJobId.value = null
     activeRunId.value = null
-    progress.value = { pct: 0, detail: '', eta: '' }
+    progress.value = { pct: 0, detail: '', eta: '', iteration: null, totalIterations: null }
     totalCombos.value = 0
+    optimizationMode.value = 'grid'
+    earlyStopped.value = false
     session.resetTracking()
     clearSession()
   }
@@ -267,6 +293,8 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
     totalCombos,
     sortKey,
     sortAsc,
+    optimizationMode,
+    earlyStopped,
 
     // Getters
     bestConfig,

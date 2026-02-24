@@ -98,6 +98,9 @@ class ParamTuneRequest(BaseModel):
     targets: Optional[List[dict]] = Field(default=None)
     search_space: dict
     experiment_id: Optional[str] = None
+    # 2A: Bayesian / Random search support
+    optimization_mode: Literal["grid", "random", "bayesian"] = "grid"
+    n_trials: int = Field(default=50, ge=5, le=500)
 
     @model_validator(mode="after")
     def check_models_or_targets(self):

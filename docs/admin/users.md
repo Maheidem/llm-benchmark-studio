@@ -122,6 +122,30 @@ Returns:
 }
 ```
 
+## Jobs Management
+
+The Admin Dashboard includes a Jobs tab showing all active and queued jobs across all users. Admins can view and cancel any running job.
+
+### List Active Jobs
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8501/api/admin/jobs
+```
+
+### Cancel a Job
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8501/api/admin/jobs/{job_id}/cancel
+```
+
+The admin page auto-refreshes the jobs list every 15 seconds and shows:
+
+- Active Jobs tab with running and queued jobs
+- Users tab with user management
+- Audit Log tab with filterable event history
+
 ## System Health
 
 ```bash
@@ -137,9 +161,36 @@ Returns:
   "results_size_mb": 3.2,
   "results_count": 89,
   "benchmark_active": false,
+  "active_jobs": [],
+  "total_active": 0,
+  "total_queued": 0,
+  "connected_ws_clients": 2,
   "process_uptime_s": 86400
 }
 ```
+
+The system health panel in the Admin Dashboard displays DB size, results file count, uptime, active/queued job counts, and connected WebSocket clients.
+
+## Application Logs
+
+Admins can access application logs via the API. Authentication uses either an admin JWT or a static `LOG_ACCESS_TOKEN` query parameter.
+
+```bash
+# Using admin JWT
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8501/api/admin/logs?lines=50"
+
+# Using static token
+curl "http://localhost:8501/api/admin/logs?token=YOUR_LOG_TOKEN&lines=50"
+
+# Filter by level
+curl "http://localhost:8501/api/admin/logs?token=YOUR_LOG_TOKEN&level=ERROR&lines=20"
+
+# Search by keyword
+curl "http://localhost:8501/api/admin/logs?token=YOUR_LOG_TOKEN&search=benchmark&lines=50"
+```
+
+Logs are stored in an in-memory ring buffer (2000 entries max) and reset on container restart.
 
 ## Audit Log
 

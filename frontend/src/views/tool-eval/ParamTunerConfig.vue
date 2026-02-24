@@ -101,10 +101,81 @@
       :registry="paramsRegistry"
     />
 
+    <!-- 2A: Search Strategy Selector -->
+    <div v-if="selectedModels.size > 0" class="card rounded-md p-5 mb-6">
+      <div class="flex items-center justify-between mb-3">
+        <span class="section-label">Search Strategy</span>
+        <span class="text-[10px] text-zinc-600 font-body">
+          <span v-if="searchStrategy === 'grid'">Exhaustive grid over all combinations</span>
+          <span v-else-if="searchStrategy === 'random'">Random sampling — faster for large spaces</span>
+          <span v-else>Bayesian optimization — learns from each trial</span>
+        </span>
+      </div>
+      <div class="flex gap-2 mb-3">
+        <button
+          v-for="s in strategyOptions"
+          :key="s.value"
+          :class="[
+            'flex-1 rounded-sm px-3 py-2 text-xs font-display tracking-wider uppercase transition-colors',
+            searchStrategy === s.value
+              ? 'text-lime-400 bg-lime-400/[0.06] border border-lime-400/30'
+              : 'text-zinc-500 border border-zinc-800 hover:text-zinc-300 hover:border-zinc-600'
+          ]"
+          @click="searchStrategy = s.value"
+        >{{ s.label }}</button>
+      </div>
+
+      <!-- Bayesian-specific settings -->
+      <div v-if="searchStrategy === 'bayesian'" class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1 block">
+            Trials
+            <span class="ml-1 text-zinc-700 cursor-help" title="Number of optimization trials (iterations). More trials = better results, slower runtime.">?</span>
+          </label>
+          <input
+            v-model.number="nTrials"
+            type="number" min="5" max="200" step="5"
+            class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200"
+            style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;"
+          >
+        </div>
+        <div>
+          <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1 block">
+            Timeout (s)
+            <span class="ml-1 text-zinc-700 cursor-help" title="Stop early if optimization takes longer than this (0 = no timeout).">?</span>
+          </label>
+          <input
+            v-model.number="bayesianTimeout"
+            type="number" min="0" max="3600" step="30"
+            class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200"
+            style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;"
+          >
+        </div>
+      </div>
+
+      <!-- Random-specific settings -->
+      <div v-if="searchStrategy === 'random'" class="grid grid-cols-1 gap-4">
+        <div>
+          <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1 block">
+            Samples
+            <span class="ml-1 text-zinc-700 cursor-help" title="Number of random parameter combinations to sample.">?</span>
+          </label>
+          <input
+            v-model.number="randomSamples"
+            type="number" min="5" max="500" step="5"
+            class="w-full px-2 py-1.5 rounded-sm text-xs font-mono text-zinc-200"
+            style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;"
+          >
+        </div>
+      </div>
+    </div>
+
     <!-- Start Button -->
     <div class="flex items-center justify-between mt-6">
       <div class="text-xs text-zinc-600 font-body">
-        <span v-if="totalCombos > 0">{{ totalCombos }} combos x {{ selectedModels.size }} model{{ selectedModels.size !== 1 ? 's' : '' }} = {{ totalCombos * selectedModels.size }} total evaluations</span>
+        <span v-if="searchStrategy === 'grid' && totalCombos > 0">{{ totalCombos }} combos x {{ selectedModels.size }} model{{ selectedModels.size !== 1 ? 's' : '' }} = {{ totalCombos * selectedModels.size }} total evaluations</span>
+        <span v-else-if="searchStrategy === 'random'">{{ randomSamples }} random samples x {{ selectedModels.size }} model{{ selectedModels.size !== 1 ? 's' : '' }}</span>
+        <span v-else-if="searchStrategy === 'bayesian'">{{ nTrials }} Bayesian trials x {{ selectedModels.size }} model{{ selectedModels.size !== 1 ? 's' : '' }}</span>
       </div>
       <button
         @click="startTuning"
@@ -152,8 +223,22 @@ const paramDefs = ref([])
 const paramSupport = ref(null)
 const paramsRegistry = ref(null)
 
+// 2A: Search strategy
+const searchStrategy = ref('grid')
+const nTrials = ref(30)
+const randomSamples = ref(50)
+const bayesianTimeout = ref(0)
+
+const strategyOptions = [
+  { value: 'grid', label: 'Grid' },
+  { value: 'random', label: 'Random' },
+  { value: 'bayesian', label: 'Bayesian' },
+]
+
 const canStart = computed(() => {
-  return selectedSuiteId.value && selectedModels.size > 0 && totalCombos.value > 0 && !ptStore.isRunning
+  if (!selectedSuiteId.value || selectedModels.size === 0 || ptStore.isRunning) return false
+  if (searchStrategy.value === 'grid') return totalCombos.value > 0
+  return true  // random + bayesian don't need combos
 })
 
 const matrixModels = computed(() => {
@@ -314,6 +399,15 @@ async function startTuning() {
     models: Array.from(selectedModels).map(k => k.substring(k.indexOf('::') + 2)),
     targets,
     search_space: currentSearchSpace.value,
+    optimization_mode: searchStrategy.value,
+  }
+
+  // 2A: Add mode-specific params
+  if (searchStrategy.value === 'bayesian') {
+    body.n_trials = nTrials.value || 30
+    if (bayesianTimeout.value > 0) body.timeout = bayesianTimeout.value
+  } else if (searchStrategy.value === 'random') {
+    body.n_trials = randomSamples.value || 50
   }
 
   if (context.experimentId) {

@@ -837,6 +837,31 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
         job_id, user_id, len(all_results), eval_id,
     )
 
+    # --- 2D: Public Leaderboard contribution (if user opted in) ---
+    if eval_id and summaries:
+        try:
+            opted_in = await db.get_user_leaderboard_opt_in(user_id)
+            if opted_in:
+                for summary in summaries:
+                    model_name = summary.get("model_name", summary.get("model_id", ""))
+                    provider = summary.get("provider", "")
+                    if not model_name:
+                        continue
+                    await db.upsert_leaderboard_entry(
+                        model_name=model_name,
+                        provider=provider,
+                        tool_accuracy_pct=summary.get("tool_accuracy_pct", 0.0),
+                        param_accuracy_pct=summary.get("param_accuracy_pct", 0.0),
+                        irrel_accuracy_pct=summary.get("irrelevance_pct"),
+                        sample_count=summary.get("cases_run", 0),
+                    )
+                logger.info(
+                    "Leaderboard updated: user_id=%s models=%d eval_id=%s",
+                    user_id, len(summaries), eval_id,
+                )
+        except Exception:
+            logger.exception("Leaderboard contribution failed: eval_id=%s", eval_id)
+
     # --- Auto-judge: submit a separate judge job if explicitly requested ---
     auto_judge = params.get("auto_judge", False)
     auto_judge_threshold = float(params.get("auto_judge_threshold") or 0.70)
@@ -976,8 +1001,57 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
 # Param Tune Handler
 # ---------------------------------------------------------------------------
 
+def _build_optuna_combos(search_space: dict, n_trials: int, mode: str) -> list[dict]:
+    """2A: Build parameter combinations using Optuna (random or Bayesian/TPE).
+
+    Returns a list of combo dicts similar to _expand_search_space output,
+    but sampled via Optuna rather than exhaustive enumeration.
+    """
+    import optuna
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    if mode == "bayesian":
+        sampler = optuna.samplers.TPESampler(seed=42)
+    else:
+        # "random" mode
+        sampler = optuna.samplers.RandomSampler(seed=42)
+
+    study = optuna.create_study(direction="maximize", sampler=sampler)
+
+    # Build param space definition from search_space
+    # search_space format: {"temperature": [0.0, 0.5, 1.0], "top_p": [0.9, 0.95]}
+    combos = []
+
+    def objective(trial):
+        combo = {}
+        for param_name, values in search_space.items():
+            if not isinstance(values, list) or not values:
+                continue
+            # For numeric params with >2 distinct values, use float range
+            if len(values) >= 2 and all(isinstance(v, (int, float)) for v in values):
+                min_v = min(values)
+                max_v = max(values)
+                if min_v == max_v:
+                    combo[param_name] = min_v
+                elif param_name in ("temperature", "top_p", "min_p", "repetition_penalty", "frequency_penalty", "presence_penalty"):
+                    combo[param_name] = trial.suggest_float(param_name, min_v, max_v)
+                else:
+                    # Integer param (e.g. top_k, max_tokens)
+                    combo[param_name] = trial.suggest_int(param_name, int(min_v), int(max_v))
+            else:
+                # Categorical param
+                combo[param_name] = trial.suggest_categorical(param_name, values)
+        combos.append(dict(combo))
+        return 0.0  # Objective will be updated externally
+
+    # Generate n_trials combinations by running the study
+    study.optimize(objective, n_trials=n_trials)
+
+    return combos
+
+
 async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_cb) -> str | None:
-    """Job registry handler for parameter tuning grid search.
+    """Job registry handler for parameter tuning (grid/random/Bayesian).
 
     Returns the tune_id on success, or None.
     """
@@ -989,6 +1063,9 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
     search_space = params.get("search_space", {})
     per_model_search_spaces = params.get("per_model_search_spaces", {})
     experiment_id = params.get("experiment_id")
+    # 2A: optimization mode
+    optimization_mode = params.get("optimization_mode", "grid")
+    n_trials = int(params.get("n_trials", 50))
 
     logger.info(
         "Param tune started: job_id=%s user_id=%s models=%d",
@@ -1006,14 +1083,24 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
     targets = _filter_targets(all_targets, model_ids, target_set)
 
     # Expand search spaces -- use len(targets) not len(model_ids) for accurate count
+    # 2A: Use Optuna for random/bayesian modes; grid is exhaustive enumeration
     per_model_combos: dict[str, list[dict]] = {}
     if per_model_search_spaces and isinstance(per_model_search_spaces, dict):
         for mid, ss in per_model_search_spaces.items():
             if isinstance(ss, dict) and ss:
-                per_model_combos[mid] = _expand_search_space(ss)
-        combos = _expand_search_space(search_space) if search_space else [{}]
+                if optimization_mode in ("random", "bayesian"):
+                    per_model_combos[mid] = _build_optuna_combos(ss, n_trials, optimization_mode)
+                else:
+                    per_model_combos[mid] = _expand_search_space(ss)
+        if optimization_mode in ("random", "bayesian") and search_space:
+            combos = _build_optuna_combos(search_space, n_trials, optimization_mode)
+        else:
+            combos = _expand_search_space(search_space) if search_space else [{}]
     else:
-        combos = _expand_search_space(search_space)
+        if optimization_mode in ("random", "bayesian"):
+            combos = _build_optuna_combos(search_space, n_trials, optimization_mode)
+        else:
+            combos = _expand_search_space(search_space)
 
     # Pre-validate and deduplicate combos per target.
     validated_target_combos: dict[str, list[tuple[dict, dict, list[dict]]]] = {}
@@ -1050,14 +1137,15 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
                 user_keys_cache[t.provider_key] = encrypted
     targets = inject_user_keys(targets, user_keys_cache)
 
-    # Pre-create the tune run in DB
-    tune_id = await db.save_param_tune_run(
+    # Pre-create the tune run in DB (use new function that stores optimization_mode)
+    tune_id = await db.save_param_tune_run_with_mode(
         user_id=user_id,
         suite_id=suite["id"],
         suite_name=suite["name"],
         models_json=json.dumps(model_ids),
         search_space_json=json.dumps(per_model_search_spaces if per_model_combos else search_space),
         total_combos=total_combos,
+        optimization_mode=optimization_mode,
         experiment_id=experiment_id,
     )
 
@@ -2176,6 +2264,371 @@ async def judge_compare_handler(job_id: str, params: dict, cancel_event, progres
 
 
 # ---------------------------------------------------------------------------
+# I2: Prompt Auto-Optimize Handler (OPRO/APE)
+# ---------------------------------------------------------------------------
+
+async def prompt_auto_optimize_handler(job_id: str, params: dict, cancel_event, progress_cb) -> str | None:
+    """I2: OPRO/APE-style prompt auto-optimizer.
+
+    Iteratively generates prompt variants using a meta-model, evaluates them
+    against a test suite, and feeds top performers back for the next round.
+
+    Returns the best prompt version_id on success, or None on cancel.
+    """
+    from routers.prompt_tune import (
+        _generate_prompts_meta,
+        _QUICK_META_PROMPT,
+        _EVO_META_PROMPT,
+        _DEFAULT_BASE_PROMPT,
+    )
+
+    user_id = params["user_id"]
+    suite_id = params["suite_id"]
+    target_model_ids = params["target_models"]
+    _raw_ts = params.get("target_set")
+    target_set_eval = {tuple(t) for t in _raw_ts} if _raw_ts else None
+    meta_model_id = params["meta_model"]
+    meta_provider_key = params.get("meta_provider_key")
+    base_prompt = params.get("base_prompt") or _DEFAULT_BASE_PROMPT
+    experiment_id = params.get("experiment_id")
+
+    # Auto-optimize config
+    max_iterations = int(params.get("max_iterations", 3))
+    population_size = int(params.get("population_size", 5))
+    selection_ratio = float(params.get("selection_ratio", 0.4))
+    eval_temperature = float(params.get("eval_temperature", 0.0))
+    eval_tool_choice = params.get("eval_tool_choice", "required")
+
+    # Clamp to safe ranges
+    max_iterations = max(1, min(max_iterations, 10))
+    population_size = max(3, min(population_size, 20))
+    selection_ratio = max(0.2, min(selection_ratio, 0.8))
+
+    logger.info(
+        "Prompt auto-optimize started: job_id=%s user_id=%s suite=%s iterations=%d pop=%d",
+        job_id, user_id, suite_id, max_iterations, population_size,
+    )
+
+    # Load suite + test cases
+    suite = await db.get_tool_suite(suite_id, user_id)
+    if not suite:
+        logger.error("Auto-optimize: suite not found suite_id=%s", suite_id)
+        return None
+    cases = await db.get_test_cases(suite_id)
+    if not cases:
+        logger.error("Auto-optimize: no test cases in suite suite_id=%s", suite_id)
+        return None
+    tools = json.loads(suite["tools_json"])
+
+    # Build targets
+    config = await _get_user_config(user_id)
+    all_targets = build_targets(config)
+
+    meta_targets = _find_target(all_targets, meta_model_id, meta_provider_key)
+    eval_targets = _filter_targets(all_targets, target_model_ids, target_set_eval)
+
+    if not meta_targets:
+        logger.error("Auto-optimize: meta model not found meta_model_id=%s", meta_model_id)
+        return None
+    if not eval_targets:
+        logger.error("Auto-optimize: no eval targets found")
+        return None
+
+    # Inject user API keys
+    user_keys_cache = {}
+    for t in meta_targets + eval_targets:
+        if t.provider_key and t.provider_key not in user_keys_cache:
+            encrypted = await db.get_user_key_for_provider(user_id, t.provider_key)
+            if encrypted:
+                user_keys_cache[t.provider_key] = encrypted
+    meta_targets = inject_user_keys(meta_targets, user_keys_cache)
+    eval_targets = inject_user_keys(eval_targets, user_keys_cache)
+    meta_target = meta_targets[0]
+
+    tools_summary = _build_tools_summary(tools)
+    test_cases_summary = _build_test_cases_summary(cases)
+
+    # Helper to send WebSocket messages
+    async def _ws_send(payload: dict):
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, payload)
+
+    total_prompts_to_eval = population_size * max_iterations
+
+    await _ws_send({
+        "type": "auto_optimize_start",
+        "job_id": job_id,
+        "suite_name": suite["name"],
+        "max_iterations": max_iterations,
+        "population_size": population_size,
+        "total_prompts": total_prompts_to_eval,
+        "eval_models": [t.display_name for t in eval_targets],
+    })
+
+    start_time = time.perf_counter()
+    all_iterations = []
+    best_prompt = base_prompt
+    best_score = 0.0
+    best_version_id = None
+    survivors = []
+    completed_prompts = 0
+
+    async def _eval_prompt_on_suite(prompt_text: str) -> float:
+        """Evaluate a single prompt against all test cases and eval targets.
+
+        Returns average overall score across all models and cases.
+        """
+        all_scores = []
+        for target in eval_targets:
+            if cancel_event.is_set():
+                return 0.0
+            case_scores = []
+            for case in cases:
+                if cancel_event.is_set():
+                    return 0.0
+                mt_config = None
+                if case.get("multi_turn_config"):
+                    try:
+                        mt_config = (
+                            json.loads(case["multi_turn_config"])
+                            if isinstance(case["multi_turn_config"], str)
+                            else case["multi_turn_config"]
+                        )
+                    except (json.JSONDecodeError, TypeError):
+                        mt_config = None
+
+                if mt_config and mt_config.get("multi_turn"):
+                    case_with_mt = {**case, "_mt_config": mt_config}
+                    r = await run_multi_turn_eval(
+                        target, tools, case_with_mt, eval_temperature,
+                        eval_tool_choice, system_prompt=prompt_text,
+                    )
+                else:
+                    r = await run_single_eval(
+                        target, tools, case, eval_temperature,
+                        eval_tool_choice, system_prompt=prompt_text,
+                    )
+                case_scores.append(r.get("overall_score", 0.0))
+            if case_scores:
+                all_scores.append(sum(case_scores) / len(case_scores))
+        return round(sum(all_scores) / len(all_scores), 4) if all_scores else 0.0
+
+    for iteration in range(1, max_iterations + 1):
+        if cancel_event.is_set():
+            break
+
+        await _ws_send({
+            "type": "auto_optimize_iteration_start",
+            "job_id": job_id,
+            "iteration": iteration,
+            "of": max_iterations,
+            "current_best_score": best_score,
+            "current_best_prompt": best_prompt[:300],
+        })
+
+        # Generate prompt variants
+        if iteration == 1 or not survivors:
+            raw_prompts = await _generate_prompts_meta(
+                meta_target, _QUICK_META_PROMPT,
+                n=population_size,
+                tools_summary=tools_summary,
+                test_cases_summary=test_cases_summary,
+                base_prompt=base_prompt,
+            )
+        else:
+            parent_text = "\n".join(
+                f"#{i+1} (score={s['avg_score']:.2f}): \"{s['text'][:200]}...\""
+                for i, s in enumerate(survivors)
+            )
+            raw_prompts = await _generate_prompts_meta(
+                meta_target, _EVO_META_PROMPT,
+                n=population_size,
+                tools_summary=tools_summary,
+                test_cases_summary=test_cases_summary,
+                parent_prompts=parent_text,
+            )
+
+        if not raw_prompts:
+            logger.warning("Auto-optimize: meta returned 0 prompts for iteration %d", iteration)
+            await _ws_send({
+                "type": "auto_optimize_error",
+                "job_id": job_id,
+                "iteration": iteration,
+                "message": "Meta model returned no prompts. Skipping iteration.",
+            })
+            continue
+
+        # Evaluate each variant
+        iter_prompts = []
+        for idx, rp in enumerate(raw_prompts[:population_size]):
+            if cancel_event.is_set():
+                break
+            text = rp.get("prompt", "") if isinstance(rp, dict) else str(rp)
+            style = rp.get("style", rp.get("mutation_type", "variation")) if isinstance(rp, dict) else "variation"
+
+            await _ws_send({
+                "type": "auto_optimize_eval_start",
+                "job_id": job_id,
+                "iteration": iteration,
+                "prompt_index": idx,
+                "style": style,
+                "prompt_preview": text[:200],
+            })
+
+            score = await _eval_prompt_on_suite(text)
+            completed_prompts += 1
+
+            iter_prompts.append({
+                "index": idx,
+                "text": text,
+                "style": style,
+                "avg_score": score,
+                "iteration": iteration,
+            })
+
+            # Track global best
+            if score > best_score:
+                best_score = score
+                best_prompt = text
+
+            pct = int((completed_prompts / total_prompts_to_eval) * 100) if total_prompts_to_eval > 0 else 0
+            await progress_cb(pct, f"Iteration {iteration}/{max_iterations}, prompt {completed_prompts}/{total_prompts_to_eval}")
+
+            await _ws_send({
+                "type": "auto_optimize_progress",
+                "job_id": job_id,
+                "iteration": iteration,
+                "of": max_iterations,
+                "prompt_index": idx,
+                "style": style,
+                "score": score,
+                "current_best_score": best_score,
+                "completed_prompts": completed_prompts,
+                "total_prompts": total_prompts_to_eval,
+            })
+
+        if cancel_event.is_set():
+            break
+
+        # Select survivors for next iteration
+        iter_prompts.sort(key=lambda p: p["avg_score"], reverse=True)
+        n_survivors = max(1, int(len(iter_prompts) * selection_ratio))
+        survivors = iter_prompts[:n_survivors]
+
+        iter_best = iter_prompts[0] if iter_prompts else None
+        all_iterations.append({
+            "iteration": iteration,
+            "timestamp": time.time(),
+            "prompts": iter_prompts,
+            "best_score": iter_best["avg_score"] if iter_best else 0.0,
+            "best_index": iter_best["index"] if iter_best else None,
+            "survivors": [p["index"] for p in survivors],
+        })
+
+        await _ws_send({
+            "type": "auto_optimize_iteration_complete",
+            "job_id": job_id,
+            "iteration": iteration,
+            "of": max_iterations,
+            "best_score": iter_best["avg_score"] if iter_best else 0.0,
+            "global_best_score": best_score,
+            "survivors": [p["index"] for p in survivors],
+        })
+
+    # --- Auto-optimize complete ---
+    duration = time.perf_counter() - start_time
+
+    # Save best prompt to prompt_versions table
+    if best_prompt and best_prompt != base_prompt:
+        try:
+            label = f"Auto-Optimize ({suite['name']}) — score {best_score:.0%}"
+            best_version_id = await db.create_prompt_version(
+                user_id=user_id,
+                prompt_text=best_prompt,
+                label=label,
+                source="auto_optimize",
+                origin_run_id=job_id,
+            )
+            logger.info(
+                "Auto-optimize saved best prompt: job_id=%s version_id=%s score=%.4f",
+                job_id, best_version_id, best_score,
+            )
+        except Exception:
+            logger.exception("Failed to save auto-optimize prompt version: job_id=%s", job_id)
+
+    # Save all generated prompts as versions (top N by score)
+    saved_versions = []
+    if all_iterations:
+        all_candidate_prompts = []
+        for iter_data in all_iterations:
+            all_candidate_prompts.extend(iter_data.get("prompts", []))
+        all_candidate_prompts.sort(key=lambda p: p["avg_score"], reverse=True)
+
+        # Save top 5 unique prompts (excluding already-saved best)
+        seen_texts = {best_prompt} if best_prompt else set()
+        for candidate in all_candidate_prompts[:10]:
+            if len(saved_versions) >= 5:
+                break
+            text = candidate.get("text", "")
+            if text and text not in seen_texts:
+                seen_texts.add(text)
+                try:
+                    vid = await db.create_prompt_version(
+                        user_id=user_id,
+                        prompt_text=text,
+                        label=f"Auto-Optimize #{candidate['iteration']}.{candidate['index']} ({suite['name']}) — score {candidate['avg_score']:.0%}",
+                        source="auto_optimize",
+                        origin_run_id=job_id,
+                        parent_version_id=best_version_id,
+                    )
+                    saved_versions.append({"version_id": vid, "score": candidate["avg_score"], "text_preview": text[:200]})
+                except Exception:
+                    logger.exception("Failed to save candidate prompt version: job_id=%s", job_id)
+
+    # Auto-promote to experiment if provided
+    if experiment_id and best_prompt and best_prompt != base_prompt:
+        try:
+            config_for_promote = {
+                "system_prompt": best_prompt,
+                "promoted_from": f"auto_optimize:{job_id}",
+            }
+            await _maybe_update_experiment_best(
+                experiment_id, user_id,
+                score=best_score,
+                config_json=json.dumps(config_for_promote),
+                source="auto_optimize",
+                source_id=job_id,
+            )
+            logger.info(
+                "Auto-optimize auto-promoted experiment best: job_id=%s experiment_id=%s",
+                job_id, experiment_id,
+            )
+        except Exception:
+            logger.exception("Auto-promote failed for auto-optimize: job_id=%s", job_id)
+
+    await _ws_send({
+        "type": "auto_optimize_complete",
+        "job_id": job_id,
+        "best_prompt": best_prompt,
+        "best_score": best_score,
+        "best_version_id": best_version_id,
+        "total_iterations": len(all_iterations),
+        "total_prompts_evaluated": completed_prompts,
+        "duration_s": round(duration, 2),
+        "ranked_versions": [
+            {"version_id": best_version_id, "score": best_score, "text_preview": best_prompt[:200]}
+        ] + saved_versions if best_version_id else saved_versions,
+    })
+
+    logger.info(
+        "Prompt auto-optimize completed: job_id=%s user_id=%s best_score=%.4f duration=%.1fs",
+        job_id, user_id, best_score, duration,
+    )
+
+    return best_version_id or job_id
+
+
+# ---------------------------------------------------------------------------
 # Register all handlers with the job registry
 # ---------------------------------------------------------------------------
 
@@ -2188,5 +2641,6 @@ def register_all_handlers():
     job_registry.register_handler("tool_eval", tool_eval_handler)
     job_registry.register_handler("param_tune", param_tune_handler)
     job_registry.register_handler("prompt_tune", prompt_tune_handler)
+    job_registry.register_handler("prompt_auto_optimize", prompt_auto_optimize_handler)
     job_registry.register_handler("judge", judge_handler)
     job_registry.register_handler("judge_compare", judge_compare_handler)

@@ -1,13 +1,26 @@
 <template>
   <div>
-    <!-- Back Link -->
-    <button
-      @click="$router.push({ name: 'ToolEvalSuites' })"
-      class="text-xs font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 mb-4 inline-flex items-center gap-1"
-    >
-      <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
-      Back to Suites
-    </button>
+    <!-- Back Link + T4: BFCL Export -->
+    <div class="flex items-center justify-between mb-4">
+      <button
+        @click="$router.push({ name: 'ToolEvalSuites' })"
+        class="text-xs font-display tracking-wider uppercase text-zinc-500 hover:text-zinc-300 inline-flex items-center gap-1"
+      >
+        <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+        Back to Suites
+      </button>
+      <!-- T4: Export as BFCL Format -->
+      <button
+        v-if="suite"
+        @click="exportBfcl"
+        class="text-[10px] font-display tracking-wider uppercase px-3 py-1.5 rounded-sm inline-flex items-center gap-1.5"
+        style="background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.2);color:#38BDF8;"
+        title="Export test cases in BFCL-compatible JSON format"
+      >
+        <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+        Export BFCL
+      </button>
+    </div>
 
     <!-- Loading -->
     <div v-if="loading" class="text-center text-zinc-600 text-sm font-body py-8">Loading suite...</div>
@@ -328,6 +341,53 @@ function exportTools() {
   a.download = `${(suite.value.name || 'tools').replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_tools.json`
   a.click()
   URL.revokeObjectURL(a.href)
+}
+
+// T4: Export suite in BFCL-compatible format
+function exportBfcl() {
+  if (!suite.value) return
+  const tools = suite.value.tools || []
+  const cases = suite.value.test_cases || []
+
+  if (!cases.length) {
+    showToast('No test cases to export', 'error')
+    return
+  }
+
+  // Build BFCL-style JSON structure
+  const bfclData = cases.map((tc, idx) => {
+    const entry = {
+      id: tc.id || `case_${idx + 1}`,
+      question: [[{ role: 'user', content: tc.prompt || '' }]],
+      function: tools.map(t => ({
+        name: t.function?.name || '',
+        description: t.function?.description || '',
+        parameters: t.function?.parameters || {},
+      })),
+    }
+
+    // Include expected answer
+    if (tc.should_call_tool !== false && tc.expected_tool) {
+      entry.ground_truth = [{
+        name: Array.isArray(tc.expected_tool) ? tc.expected_tool[0] : tc.expected_tool,
+        arguments: tc.expected_params || {},
+      }]
+    } else if (tc.should_call_tool === false) {
+      entry.ground_truth = []  // irrelevance case: no tool call expected
+    }
+
+    if (tc.category) entry.category = tc.category
+
+    return entry
+  })
+
+  const blob = new Blob([JSON.stringify(bfclData, null, 2)], { type: 'application/json' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `${(suite.value.name || 'suite').replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_bfcl.json`
+  a.click()
+  URL.revokeObjectURL(a.href)
+  showToast(`Exported ${cases.length} test case${cases.length > 1 ? 's' : ''} in BFCL format`, 'success')
 }
 
 function importToolsJson() {

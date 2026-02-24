@@ -6,8 +6,9 @@ LLM Benchmark Studio supports automated, recurring benchmark runs. Schedules are
 
 1. Create a schedule with a name, models, prompt, and interval
 2. The background scheduler checks for due schedules every 60 seconds
-3. When a schedule is due, it runs the specified benchmarks
+3. When a schedule is due, it runs the specified benchmarks via the JobRegistry
 4. Results are saved to benchmark history with metadata indicating the source
+5. Real-time status updates for triggered schedules are broadcast via WebSocket
 
 ## Creating a Schedule
 
@@ -74,6 +75,8 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
   http://localhost:8501/api/schedules/{schedule_id}/trigger
 ```
 
+The trigger endpoint runs the benchmark as a background asyncio task and returns immediately. After execution, the schedule's `last_run` and `next_run` timestamps are updated.
+
 ## Schedule Fields
 
 | Field | Type | Description |
@@ -101,6 +104,15 @@ Scheduled benchmark results are saved to the same `benchmark_runs` table as manu
 ```
 
 Results appear in the History screen alongside manual runs.
+
+## Integration with Job Tracking
+
+Scheduled benchmarks are tracked by the JobRegistry like any other job type (`scheduled_benchmark`). This means:
+
+- Scheduled runs appear in the notification widget when active
+- Progress is visible via WebSocket events
+- Active scheduled runs count toward the user's concurrency limit
+- If the server restarts during a scheduled run, the job is marked as `interrupted`
 
 ## Notes
 

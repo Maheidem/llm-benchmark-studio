@@ -33,6 +33,8 @@ from routers.helpers import (
     compute_overall_score,
     score_multi_turn,
     score_abstention,
+    classify_format_compliance,
+    classify_error_type,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,6 +88,9 @@ async def run_single_eval(
     raw_sct = test_case.get("should_call_tool", 1)
     should_call_tool = bool(raw_sct) if raw_sct is not None else True
 
+    # T3: category from test case
+    case_category = test_case.get("category")
+
     result = {
         "model_id": target.model_id,
         "test_case_id": test_case["id"],
@@ -104,6 +109,12 @@ async def run_single_eval(
         "raw_response": None,
         "should_call_tool": should_call_tool,
         "irrelevance_score": None,
+        # T1: format compliance
+        "format_compliance": "PASS",
+        # T2: error type classification
+        "error_type": None,
+        # T3: category tag
+        "category": case_category,
     }
 
     # Build validated+clamped params via provider_params module
@@ -157,6 +168,11 @@ async def run_single_eval(
         raw_req["tools"] = raw_req["tools"]  # Keep full tools for inspection
     result["raw_request"] = raw_req
 
+    # T1/T2: Track whether native tool_calls were used or normalization occurred
+    _had_native_tool_calls = False
+    _tool_name_was_json_blob = False
+    _params_parse_failed = False
+
     try:
         start = time.perf_counter()
         try:
@@ -173,12 +189,14 @@ async def run_single_eval(
 
         message = response.choices[0].message
         if message.tool_calls and len(message.tool_calls) > 0:
+            _had_native_tool_calls = True
             result["actual_tool"] = message.tool_calls[0].function.name
             try:
                 result["actual_params"] = json.loads(message.tool_calls[0].function.arguments)
             except (json.JSONDecodeError, TypeError):
                 logger.debug("Failed to parse tool call arguments")
                 result["actual_params"] = None
+                _params_parse_failed = True
         else:
             result["actual_tool"] = None
             result["actual_params"] = None
@@ -186,6 +204,7 @@ async def run_single_eval(
         # Normalize: some local LLMs stuff a full JSON object into function.name
         _raw_tool = result.get("actual_tool")
         if _raw_tool and _raw_tool.strip().startswith("{"):
+            _tool_name_was_json_blob = True
             try:
                 parsed = json.loads(_raw_tool)
                 if "name" in parsed:
@@ -215,6 +234,9 @@ async def run_single_eval(
         result["success"] = False
         result["error"] = sanitize_error(str(e)[:200], target.api_key)
         result["raw_request"] = raw_req
+        # T1: failed API call = FAIL
+        result["format_compliance"] = "FAIL"
+        result["error_type"] = "invalid_invocation"
         return result
 
     # Score
@@ -224,6 +246,28 @@ async def run_single_eval(
 
     # Irrelevance score: how well did model handle abstention expectation?
     result["irrelevance_score"] = score_abstention(should_call_tool, result["actual_tool"])
+
+    # T1: Format compliance classification
+    result["format_compliance"] = classify_format_compliance(
+        raw_response_had_tool_calls=_had_native_tool_calls,
+        tool_name_was_json_blob=_tool_name_was_json_blob,
+        params_parse_failed=_params_parse_failed,
+        actual_tool=result["actual_tool"],
+        expected_tool=expected_tool,
+    )
+
+    # T2: Error type classification
+    tool_names_in_suite = {t["function"]["name"].lower() for t in tools if isinstance(t, dict) and "function" in t}
+    result["error_type"] = classify_error_type(
+        success=result["success"],
+        actual_tool=result["actual_tool"],
+        actual_params=result["actual_params"],
+        expected_tool=expected_tool,
+        expected_params=expected_params,
+        tool_names_in_suite=tool_names_in_suite,
+        overall_score=result["overall_score"],
+        params_parse_failed=_params_parse_failed,
+    )
 
     return result
 
@@ -274,6 +318,9 @@ async def run_multi_turn_eval(
     raw_sct = test_case.get("should_call_tool", 1)
     should_call_tool = bool(raw_sct) if raw_sct is not None else True
 
+    # T3: category from test case
+    case_category = test_case.get("category")
+
     result = {
         "model_id": target.model_id,
         "test_case_id": test_case["id"],
@@ -301,6 +348,12 @@ async def run_multi_turn_eval(
         "raw_exchanges": [],
         "should_call_tool": should_call_tool,
         "irrelevance_score": None,
+        # T1: format compliance
+        "format_compliance": "PASS",
+        # T2: error type
+        "error_type": None,
+        # T3: category
+        "category": case_category,
     }
 
     # Build messages: per-model system_prompt (from config) + explicit system_prompt (from prompt tuner)
@@ -442,6 +495,33 @@ async def run_multi_turn_eval(
             result["actual_tool"] = result["tool_chain"][-1]["tool_name"]
             result["actual_params"] = result["tool_chain"][-1]["params"]
 
+        # T5: argument_source resolution -- check if any arg should come from previous tool output
+        argument_source = mt_config.get("argument_source")  # dict: {arg_name: "tool_name.field"}
+        if argument_source and isinstance(argument_source, dict) and result["tool_chain"]:
+            # Build map of tool outputs from mock_responses
+            tool_outputs: dict[str, dict] = {}
+            for chain_step in result["tool_chain"][:-1]:
+                tool_nm = chain_step.get("tool_name", "")
+                mock = mock_responses.get(tool_nm, {})
+                if isinstance(mock, dict):
+                    tool_outputs[tool_nm] = mock
+
+            # Verify argument values match expected sources
+            actual_params = result.get("actual_params") or {}
+            nested_score = 1.0
+            for arg_name, source_ref in argument_source.items():
+                # source_ref format: "tool_name.field"
+                if "." in source_ref:
+                    src_tool, src_field = source_ref.split(".", 1)
+                    expected_val = tool_outputs.get(src_tool, {}).get(src_field)
+                    actual_val = actual_params.get(arg_name)
+                    if expected_val is not None and actual_val != expected_val:
+                        nested_score = 0.0
+                        break
+            result["nested_arg_score"] = nested_score
+        else:
+            result["nested_arg_score"] = None
+
         # Score using multi-turn scoring
         scores = score_multi_turn(
             tool_chain=result["tool_chain"],
@@ -464,9 +544,28 @@ async def run_multi_turn_eval(
         # Irrelevance score: how well did model handle abstention expectation?
         result["irrelevance_score"] = score_abstention(should_call_tool, result["actual_tool"])
 
+        # T1: multi-turn always uses native tool_calls (no normalization path)
+        result["format_compliance"] = "PASS" if result["success"] else "FAIL"
+
+        # T2: error type for multi-turn
+        result["error_type"] = classify_error_type(
+            success=result["success"],
+            actual_tool=result["actual_tool"],
+            actual_params=result["actual_params"],
+            expected_tool=expected_tool,
+            expected_params=expected_params,
+            tool_names_in_suite=set(),
+            overall_score=result["overall_score"],
+            is_multi_turn=True,
+            rounds_used=result.get("rounds_used", 0),
+            optimal_hops=optimal_hops,
+        )
+
     except Exception as e:
         result["success"] = False
         result["error"] = sanitize_error(str(e)[:200], target.api_key)
+        result["format_compliance"] = "FAIL"
+        result["error_type"] = "invalid_invocation"
         return result
 
     return result
@@ -548,12 +647,17 @@ async def import_tool_suite(request: Request, user: dict = Depends(auth.get_curr
                 mt_obj["valid_prerequisites"] = item["valid_prerequisites"]
             if item.get("optimal_hops"):
                 mt_obj["optimal_hops"] = item["optimal_hops"]
+            # T5: argument_source for nested tool call support
+            if item.get("argument_source"):
+                mt_obj["argument_source"] = item["argument_source"]
             if not mt_obj.get("multi_turn"):
                 mt_obj["multi_turn"] = True
             mt_config = json.dumps(mt_obj)
         sc_json = json.dumps(item["scoring_config"]) if item.get("scoring_config") else None
         should_call_tool = bool(item.get("should_call_tool", True))
-        await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json, should_call_tool=should_call_tool)
+        # T3: category tag
+        category = item.get("category")
+        await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json, should_call_tool=should_call_tool, category=category)
         created += 1
     return {"status": "ok", "suite_id": suite_id, "test_cases_created": created}
 
@@ -686,6 +790,9 @@ async def export_tool_suite(suite_id: str, user: dict = Depends(auth.get_current
                     for k in ("max_rounds", "mock_responses", "valid_prerequisites", "optimal_hops"):
                         if k in mt:
                             tc[k] = mt[k]
+                    # T5: argument_source
+                    if mt.get("argument_source"):
+                        tc["argument_source"] = mt["argument_source"]
             except (json.JSONDecodeError, TypeError):
                 logger.debug("Failed to parse multi_turn_config during export")
         # Include scoring_config if set (S3)
@@ -696,6 +803,9 @@ async def export_tool_suite(suite_id: str, user: dict = Depends(auth.get_current
                     tc["scoring_config"] = sc
             except (json.JSONDecodeError, TypeError):
                 pass
+        # T3: category tag
+        if c.get("category"):
+            tc["category"] = c["category"]
         test_cases.append(tc)
     export_data = {
         "name": suite.get("name", "Untitled"),
@@ -706,6 +816,149 @@ async def export_tool_suite(suite_id: str, user: dict = Depends(auth.get_current
     slug = re.sub(r'[^a-z0-9]+', '-', (suite.get("name") or "suite").lower()).strip('-')[:40]
     headers = {"Content-Disposition": f'attachment; filename=suite-{slug}.json'}
     return JSONResponse(content=export_data, headers=headers)
+
+
+@router.get("/api/tool-suites/{suite_id}/export/bfcl")
+async def export_tool_suite_bfcl(suite_id: str, user: dict = Depends(auth.get_current_user)):
+    """T4: Export suite in BFCL V3-compatible JSON format.
+
+    BFCL dataset structure: each entry has an 'id', 'question', 'function', and 'answer'.
+    """
+    suite = await db.get_tool_suite(suite_id, user["id"])
+    if not suite:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+
+    tools = json.loads(suite["tools_json"]) if suite.get("tools_json") else []
+    cases = await db.get_test_cases(suite_id)
+
+    # Build BFCL function definitions from our tools format
+    bfcl_functions = []
+    for tool in tools:
+        if isinstance(tool, dict) and "function" in tool:
+            fn = tool["function"]
+            bfcl_functions.append({
+                "name": fn.get("name", ""),
+                "description": fn.get("description", ""),
+                "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+            })
+
+    bfcl_entries = []
+    for idx, c in enumerate(cases):
+        et = _parse_expected_tool(c.get("expected_tool"))
+        expected_params = None
+        if c.get("expected_params"):
+            try:
+                expected_params = json.loads(c["expected_params"]) if isinstance(c["expected_params"], str) else c["expected_params"]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Build BFCL answer format: list of tool call dicts
+        answer = []
+        if et:
+            tool_name = et[0] if isinstance(et, list) else et
+            answer.append({tool_name: expected_params or {}})
+
+        entry = {
+            "id": f"{suite.get('name', 'suite')}_{idx}",
+            "question": [[{"role": "user", "content": c["prompt"]}]],
+            "function": bfcl_functions,
+            "answer": answer,
+        }
+        # T3: include category as BFCL test_category if set
+        if c.get("category"):
+            entry["test_category"] = c["category"]
+
+        bfcl_entries.append(entry)
+
+    slug = re.sub(r'[^a-z0-9]+', '-', (suite.get("name") or "suite").lower()).strip('-')[:40]
+    headers = {"Content-Disposition": f'attachment; filename=suite-{slug}-bfcl.json'}
+    return JSONResponse(content=bfcl_entries, headers=headers)
+
+
+@router.post("/api/tool-eval/import/bfcl")
+async def import_bfcl_suite(request: Request, user: dict = Depends(auth.get_current_user)):
+    """T4: Import a BFCL V3-compatible JSON file as a tool suite."""
+    body = await request.json()
+
+    # Support both single entry and array
+    if isinstance(body, dict):
+        entries = [body]
+    elif isinstance(body, list):
+        entries = body
+    else:
+        return JSONResponse({"error": "Expected JSON array or object"}, status_code=400)
+
+    if not entries:
+        return JSONResponse({"error": "No entries found"}, status_code=400)
+
+    # Extract suite name from request or generate from first entry
+    suite_name = request.headers.get("X-Suite-Name") or f"BFCL Import {len(entries)} cases"
+    suite_name = suite_name.strip()[:256]
+
+    # Collect unique function definitions from all entries
+    seen_funcs: dict[str, dict] = {}
+    for entry in entries:
+        for fn in entry.get("function", []):
+            name = fn.get("name", "")
+            if name and name not in seen_funcs:
+                seen_funcs[name] = fn
+
+    # Convert BFCL function format to our tools format
+    tools = []
+    for fn in seen_funcs.values():
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": fn.get("name", ""),
+                "description": fn.get("description", ""),
+                "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+            }
+        })
+
+    if tools:
+        err = _validate_tools(tools)
+        if err:
+            return JSONResponse({"error": f"Invalid tools: {err}"}, status_code=400)
+
+    suite_id = await db.create_tool_suite(user["id"], suite_name, "", json.dumps(tools))
+    created = 0
+
+    for entry in entries:
+        # BFCL question format: [[{role, content}, ...], ...]
+        question = entry.get("question", [])
+        prompt = ""
+        if question and isinstance(question, list):
+            for turn in question:
+                if isinstance(turn, list):
+                    for msg in turn:
+                        if isinstance(msg, dict) and msg.get("role") == "user":
+                            prompt = msg.get("content", "")
+                            break
+                if prompt:
+                    break
+        if not prompt:
+            continue
+
+        # Parse answer to extract expected tool + params
+        answer = entry.get("answer", [])
+        expected_tool_val = None
+        expected_params_val = None
+        if answer and isinstance(answer, list) and isinstance(answer[0], dict):
+            for tool_call in answer:
+                for tool_name, params in tool_call.items():
+                    expected_tool_val = _serialize_expected_tool(tool_name)
+                    expected_params_val = json.dumps(params) if params else None
+                    break
+                break
+
+        category = entry.get("test_category")
+        await db.create_test_case(
+            suite_id, prompt, expected_tool_val, expected_params_val,
+            "exact", category=category,
+        )
+        created += 1
+
+    return {"status": "ok", "suite_id": suite_id, "test_cases_created": created}
 
 
 @router.get("/api/tool-eval/import/example")
@@ -777,6 +1030,9 @@ async def list_test_cases(suite_id: str, user: dict = Depends(auth.get_current_u
                 c["mock_responses"] = mt.get("mock_responses", {})
                 c["valid_prerequisites"] = mt.get("valid_prerequisites", [])
                 c["optimal_hops"] = mt.get("optimal_hops", 2)
+                # T5: argument_source
+                if mt.get("argument_source"):
+                    c["argument_source"] = mt["argument_source"]
             except (json.JSONDecodeError, TypeError):
                 logger.debug("Failed to parse multi_turn_config for case in suite %s", suite_id)
         # Parse scoring_config_json for frontend (S3)
@@ -814,6 +1070,9 @@ async def create_test_cases(suite_id: str, request: Request, user: dict = Depend
             mt_obj["valid_prerequisites"] = item["valid_prerequisites"]
         if item.get("optimal_hops"):
             mt_obj["optimal_hops"] = item["optimal_hops"]
+        # T5: argument_source for nested tool call support
+        if item.get("argument_source"):
+            mt_obj["argument_source"] = item["argument_source"]
         if not mt_obj.get("multi_turn"):
             mt_obj["multi_turn"] = True
         return json.dumps(mt_obj)
@@ -831,7 +1090,9 @@ async def create_test_cases(suite_id: str, request: Request, user: dict = Depend
             mt_config = _extract_mt_config(item)
             sc_json = json.dumps(item["scoring_config"]) if item.get("scoring_config") else None
             should_call_tool = bool(item.get("should_call_tool", True))
-            await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json, should_call_tool=should_call_tool)
+            # T3: category tag
+            category = item.get("category")
+            await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json, should_call_tool=should_call_tool, category=category)
             created += 1
         return {"status": "ok", "created": created}
 
@@ -857,7 +1118,9 @@ async def create_test_cases(suite_id: str, request: Request, user: dict = Depend
     mt_config = _extract_mt_config(body)
     sc_json = json.dumps(body["scoring_config"]) if body.get("scoring_config") else None
     should_call_tool = bool(body.get("should_call_tool", True))
-    case_id = await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json, should_call_tool=should_call_tool)
+    # T3: category tag
+    category = body.get("category")
+    case_id = await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json, should_call_tool=should_call_tool, category=category)
     return {"status": "ok", "case_id": case_id}
 
 
@@ -887,6 +1150,9 @@ async def update_test_case(suite_id: str, case_id: str, request: Request, user: 
                 mt_obj["valid_prerequisites"] = body["valid_prerequisites"]
             if body.get("optimal_hops"):
                 mt_obj["optimal_hops"] = body["optimal_hops"]
+            # T5: argument_source for nested tool call support
+            if body.get("argument_source"):
+                mt_obj["argument_source"] = body["argument_source"]
             if not mt_obj.get("multi_turn"):
                 mt_obj["multi_turn"] = True
             mt_config = json.dumps(mt_obj)
@@ -903,7 +1169,10 @@ async def update_test_case(suite_id: str, case_id: str, request: Request, user: 
     if "should_call_tool" in body:
         sct = bool(body["should_call_tool"])
 
-    updated = await db.update_test_case(case_id, suite_id, prompt=prompt, expected_tool=expected_tool, expected_params=expected_params, param_scoring=param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json, should_call_tool=sct)
+    # T3: category tag
+    category = body.get("category") if "category" in body else None
+
+    updated = await db.update_test_case(case_id, suite_id, prompt=prompt, expected_tool=expected_tool, expected_params=expected_params, param_scoring=param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json, should_call_tool=sct, category=category)
     if not updated:
         return JSONResponse({"error": "Test case not found"}, status_code=404)
     return {"status": "ok"}

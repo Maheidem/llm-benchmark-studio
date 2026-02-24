@@ -27,14 +27,57 @@
         <div class="flex items-center gap-3">
           <div v-if="store.isRunning" class="pulse-dot"></div>
           <span class="text-sm text-zinc-400 font-body">{{ store.progress.detail }}</span>
+          <!-- 2A: Strategy badge -->
+          <span v-if="store.optimizationMode && store.optimizationMode !== 'grid'"
+            class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm"
+            :style="strategyBadgeStyle(store.optimizationMode)"
+          >{{ store.optimizationMode }}</span>
         </div>
         <div class="flex items-center gap-3">
+          <!-- 2A: Early stopping indicator for Bayesian -->
+          <span v-if="store.earlyStopped"
+            class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm"
+            style="background:rgba(251,191,36,0.08);color:#FBBF24;border:1px solid rgba(251,191,36,0.2);"
+            title="Bayesian search converged early"
+          >Converged</span>
           <span v-if="store.progress.eta" class="text-[10px] font-mono text-zinc-600">{{ store.progress.eta }}</span>
           <span class="text-xs font-mono text-zinc-600">{{ store.progress.pct }}%</span>
         </div>
       </div>
       <div class="progress-track rounded-full overflow-hidden">
         <div class="progress-fill" :style="{ width: store.progress.pct + '%' }"></div>
+      </div>
+      <!-- 2A: Iteration label for Bayesian/Random -->
+      <div v-if="store.optimizationMode && store.optimizationMode !== 'grid' && store.progress.iteration"
+        class="text-[10px] text-zinc-600 font-mono mt-1"
+      >Trial {{ store.progress.iteration }}/{{ store.progress.totalIterations || '?' }}</div>
+    </div>
+
+    <!-- 2A: Convergence chart for Bayesian runs -->
+    <div v-if="store.optimizationMode === 'bayesian' && convergenceData.length > 1" class="card rounded-md p-5 mb-6">
+      <div class="flex items-center justify-between mb-3">
+        <span class="section-label">Convergence</span>
+        <span class="text-[10px] text-zinc-600 font-body">Score vs iteration</span>
+      </div>
+      <div class="relative" style="height:80px;">
+        <svg class="w-full h-full" :viewBox="`0 0 ${convergenceData.length * 8} 100`" preserveAspectRatio="none">
+          <!-- Best score line -->
+          <polyline
+            :points="bestScoreLine"
+            fill="none"
+            stroke="var(--lime)"
+            stroke-width="1.5"
+          />
+          <!-- Individual trial dots -->
+          <circle
+            v-for="(d, i) in convergenceData"
+            :key="i"
+            :cx="i * 8 + 4"
+            :cy="100 - d.score * 100"
+            r="1.5"
+            :fill="d.isBest ? 'var(--lime)' : 'rgba(191,255,0,0.3)'"
+          />
+        </svg>
       </div>
     </div>
 
@@ -141,7 +184,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useParamTunerStore } from '../../stores/paramTuner.js'
 import { useNotificationsStore } from '../../stores/notifications.js'
 import { useToast } from '../../composables/useToast.js'
@@ -152,6 +195,31 @@ const notifStore = useNotificationsStore()
 const { showToast } = useToast()
 
 const selectedResult = ref(null)
+
+// 2A: Convergence data for Bayesian chart
+const convergenceData = computed(() => {
+  if (!store.results.length) return []
+  let best = 0
+  return store.results.map((r, i) => {
+    const score = r.overall_score || 0
+    const isBest = score > best
+    if (isBest) best = score
+    return { index: i, score, bestSoFar: best, isBest }
+  })
+})
+
+const bestScoreLine = computed(() => {
+  if (!convergenceData.value.length) return ''
+  return convergenceData.value
+    .map((d, i) => `${i * 8 + 4},${100 - d.bestSoFar * 100}`)
+    .join(' ')
+})
+
+function strategyBadgeStyle(mode) {
+  if (mode === 'bayesian') return { background: 'rgba(168,85,247,0.08)', color: '#A855F7', border: '1px solid rgba(168,85,247,0.2)' }
+  if (mode === 'random') return { background: 'rgba(56,189,248,0.08)', color: '#38BDF8', border: '1px solid rgba(56,189,248,0.2)' }
+  return {}
+}
 
 let unsubscribe = null
 

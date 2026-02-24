@@ -61,6 +61,27 @@
       ></textarea>
     </div>
 
+    <!-- T3: Category tag -->
+    <div class="mb-4">
+      <label class="text-xs font-display tracking-wider uppercase text-zinc-500 mb-1 block">Category (optional)</label>
+      <input
+        v-model="form.category"
+        class="w-full px-3 py-1.5 rounded-sm text-sm font-mono text-zinc-200"
+        style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);outline:none;"
+        placeholder="e.g. retrieval, math, calendar, nested"
+        list="category-suggestions"
+      >
+      <datalist id="category-suggestions">
+        <option value="retrieval" />
+        <option value="math" />
+        <option value="calendar" />
+        <option value="nested" />
+        <option value="multi-step" />
+        <option value="filtering" />
+        <option value="creation" />
+      </datalist>
+    </div>
+
     <!-- Scoring Mode (hidden for irrelevance cases) -->
     <div v-if="form.shouldCallTool" class="mb-4">
       <label class="text-xs font-display tracking-wider uppercase text-zinc-500 mb-1 block">Scoring Mode</label>
@@ -142,6 +163,23 @@
           placeholder='{"tool_a": {"status": "ok", "data": []}}'
         ></textarea>
       </div>
+
+      <!-- T5: argument_source field -->
+      <div class="mt-3">
+        <label class="text-[10px] text-zinc-600 font-display tracking-wider uppercase mb-1 block">Argument Source</label>
+        <select
+          v-model="form.argumentSource"
+          class="text-xs font-mono px-3 py-1.5 rounded-sm"
+          style="background:var(--surface);border:1px solid var(--border-subtle);color:#A1A1AA;outline:none;width:220px;"
+        >
+          <option value="user">user (default — args from user message)</option>
+          <option value="previous_tool">previous_tool (args from prior tool output)</option>
+          <option value="inferred">inferred (args from conversation context)</option>
+        </select>
+        <p class="text-[10px] text-zinc-600 font-body mt-0.5">
+          Describes how arguments for the next tool call should be sourced.
+        </p>
+      </div>
     </div>
 
     <!-- Error -->
@@ -179,11 +217,13 @@ const form = reactive({
   expectedParams: '',
   scoringMode: 'exact',
   epsilon: 0.01,
+  category: '',
   multiTurn: false,
   maxRounds: 5,
   optimalHops: 2,
   prerequisites: '',
   mockResponses: '',
+  argumentSource: 'user',
 })
 
 const error = ref('')
@@ -207,11 +247,13 @@ watch(() => props.testCase, (tc) => {
   const sc = tc.scoring_config || {}
   form.scoringMode = sc.mode || 'exact'
   form.epsilon = sc.epsilon ?? 0.01
+  form.category = tc.category || ''
   form.multiTurn = !!tc.multi_turn
   form.maxRounds = tc.max_rounds || 5
   form.optimalHops = tc.optimal_hops || 2
   form.prerequisites = (tc.valid_prerequisites || []).join(', ')
   form.mockResponses = tc.mock_responses ? JSON.stringify(tc.mock_responses, null, 2) : ''
+  form.argumentSource = tc.argument_source || 'user'
 }, { immediate: true })
 
 function save() {
@@ -261,6 +303,11 @@ function save() {
 
   const data = { prompt, expected_tool, expected_params, should_call_tool: form.shouldCallTool }
 
+  // T3: Category
+  if (form.category.trim()) {
+    data.category = form.category.trim()
+  }
+
   // Scoring config (only relevant when tool is expected)
   if (form.shouldCallTool && form.scoringMode && form.scoringMode !== 'exact') {
     const sc = { mode: form.scoringMode }
@@ -288,6 +335,8 @@ function save() {
         return
       }
     }
+    // T5: argument source
+    data.argument_source = form.argumentSource || 'user'
   } else {
     data.multi_turn = false
   }

@@ -280,6 +280,112 @@ def inject_user_keys(targets: list[Target], user_keys_cache: dict[str, str]) -> 
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# T1: Format compliance classification
+# ---------------------------------------------------------------------------
+
+# Valid BFCL error types for T2 (locked taxonomy, priority order)
+_ERROR_TYPES = [
+    "tool_hallucination",       # called a tool that doesn't exist in the tool set
+    "argument_hallucination",   # passed arguments with made-up values
+    "invalid_invocation",       # invalid JSON, missing required fields, malformed structure
+    "partial_execution",        # only partially completed the expected tool chain
+    "output_hallucination",     # invented output values that weren't in context
+    "invalid_reasoning",        # intermediate reasoning step was logically invalid
+    "reentrant_failure",        # re-entered a failed tool call without handling error
+    "unclassified",             # catch-all when no specific type matches
+]
+
+
+def classify_format_compliance(
+    raw_response_had_tool_calls: bool,
+    tool_name_was_json_blob: bool,
+    params_parse_failed: bool,
+    actual_tool: str | None,
+    expected_tool,
+) -> str:
+    """T1: Classify JSON normalization compliance.
+
+    Returns "PASS", "NORMALIZED", or "FAIL":
+    - PASS: model returned well-formed tool calls natively
+    - NORMALIZED: tool call extracted via fallback JSON parsing
+    - FAIL: no usable tool call produced (error case or missing)
+    """
+    if actual_tool is None:
+        # If no expected tool, PASS (correct abstention)
+        if expected_tool is None:
+            return "PASS"
+        return "FAIL"
+
+    if not raw_response_had_tool_calls and actual_tool:
+        # Tool found via JSON normalization path (content parsing)
+        return "NORMALIZED"
+
+    if tool_name_was_json_blob or params_parse_failed:
+        # Needed to extract from JSON blob in tool name
+        return "NORMALIZED"
+
+    return "PASS"
+
+
+def classify_error_type(
+    success: bool,
+    actual_tool: str | None,
+    actual_params: dict | None,
+    expected_tool,
+    expected_params: dict | None,
+    tool_names_in_suite: set[str],
+    overall_score: float,
+    params_parse_failed: bool = False,
+    is_multi_turn: bool = False,
+    rounds_used: int = 0,
+    optimal_hops: int = 1,
+) -> str | None:
+    """T2: Classify failure into one of 8 error types (locked taxonomy).
+
+    Returns error type string or None if no error (passing case).
+    Priority order: tool_hallucination → argument_hallucination → invalid_invocation
+      → partial_execution → output_hallucination → invalid_reasoning
+      → reentrant_failure → unclassified
+    """
+    if overall_score == 1.0 and success:
+        return None  # Passing case, no error
+
+    # invalid_invocation: API-level failure or params could not be parsed at all
+    # (invalid JSON, missing required fields, malformed structure)
+    if not success or params_parse_failed:
+        return "invalid_invocation"
+
+    # tool_hallucination: model called a tool not in the suite
+    if actual_tool and tool_names_in_suite and actual_tool.lower() not in tool_names_in_suite:
+        return "tool_hallucination"
+
+    # argument_hallucination: correct tool but wrong/missing argument values
+    if actual_tool and expected_tool:
+        tool_match = (
+            actual_tool.lower() in [e.lower() for e in expected_tool]
+            if isinstance(expected_tool, list)
+            else actual_tool.lower() == expected_tool.lower()
+        )
+        if tool_match and expected_params:
+            return "argument_hallucination"
+
+    # reentrant_failure: multi-turn case that exceeded rounds
+    if is_multi_turn and rounds_used >= optimal_hops * 2:
+        return "reentrant_failure"
+
+    # partial_execution: multi-turn case that didn't complete all hops
+    if is_multi_turn and rounds_used > 0:
+        return "partial_execution"
+
+    # invalid_reasoning: wrong tool selected (not a hallucination, just wrong choice)
+    if actual_tool and expected_tool:
+        return "invalid_reasoning"
+
+    # unclassified: catch-all when no specific type matches
+    return "unclassified"
+
+
 def score_tool_selection(expected_tool, actual_tool: str | None) -> float:
     """Score tool selection accuracy for one test case."""
     if expected_tool is None:
@@ -524,7 +630,10 @@ def _capture_raw_response(response) -> dict:
 
 
 def _compute_eval_summaries(results: list[dict], targets: list[Target]) -> list[dict]:
-    """Compute per-model aggregate scores from individual results."""
+    """Compute per-model aggregate scores from individual results.
+
+    Includes T2 error type counts and T3 per-category breakdown.
+    """
     target_map = {t.model_id: t for t in targets}
 
     by_model: dict[str, list[dict]] = {}
@@ -551,6 +660,48 @@ def _compute_eval_summaries(results: list[dict], targets: list[Target]) -> list[
         irrelevance_scores = [r.get("irrelevance_score", 0.0) for r in irrelevance_cases]
         irrelevance_acc = (sum(irrelevance_scores) / len(irrelevance_scores) * 100) if irrelevance_scores else None
 
+        # T2: Aggregate error type counts
+        error_type_counts: dict[str, int] = {}
+        for r in model_results:
+            et = r.get("error_type")
+            if et:
+                error_type_counts[et] = error_type_counts.get(et, 0) + 1
+
+        # T3: Per-category breakdown (BFCL-style)
+        category_breakdown: dict[str, dict] = {}
+        for r in model_results:
+            cat = r.get("category") or "uncategorized"
+            if cat not in category_breakdown:
+                category_breakdown[cat] = {
+                    "cases": 0, "passed": 0,
+                    "tool_scores": [], "overall_scores": [],
+                }
+            category_breakdown[cat]["cases"] += 1
+            if r["success"] and r.get("overall_score", 0) == 1.0:
+                category_breakdown[cat]["passed"] += 1
+            if r.get("success"):
+                category_breakdown[cat]["tool_scores"].append(r.get("tool_selection_score", 0.0))
+                category_breakdown[cat]["overall_scores"].append(r.get("overall_score", 0.0))
+
+        # Compute per-category accuracy
+        cat_summary = {}
+        for cat, data in category_breakdown.items():
+            ts = data["tool_scores"]
+            os_ = data["overall_scores"]
+            cat_summary[cat] = {
+                "cases": data["cases"],
+                "passed": data["passed"],
+                "accuracy_pct": round(data["passed"] / data["cases"] * 100, 1) if data["cases"] else 0.0,
+                "tool_accuracy_pct": round(sum(ts) / len(ts) * 100, 1) if ts else 0.0,
+                "overall_pct": round(sum(os_) / len(os_) * 100, 1) if os_ else 0.0,
+            }
+
+        # T1: Format compliance breakdown
+        format_compliance_counts: dict[str, int] = {}
+        for r in model_results:
+            fc = r.get("format_compliance", "PASS")
+            format_compliance_counts[fc] = format_compliance_counts.get(fc, 0) + 1
+
         summaries.append({
             "model_id": model_id,
             "model_name": model_name,
@@ -562,6 +713,12 @@ def _compute_eval_summaries(results: list[dict], targets: list[Target]) -> list[
             "cases_passed": cases_passed,
             "irrelevance_pct": round(irrelevance_acc, 1) if irrelevance_acc is not None else None,
             "irrelevance_cases": len(irrelevance_cases),
+            # T1: format compliance
+            "format_compliance_counts": format_compliance_counts,
+            # T2: error taxonomy
+            "error_type_counts": error_type_counts,
+            # T3: category breakdown
+            "category_breakdown": cat_summary,
         })
 
     return summaries

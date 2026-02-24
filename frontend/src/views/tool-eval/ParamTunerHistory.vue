@@ -29,6 +29,13 @@
             <span class="text-[10px] font-mono px-1.5 py-0.5 rounded-sm"
               :style="statusStyle(run.status)"
             >{{ run.status || 'unknown' }}</span>
+            <!-- 2A: Strategy badge -->
+            <span v-if="run.optimization_mode && run.optimization_mode !== 'grid'"
+              class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm"
+              :style="run.optimization_mode === 'bayesian'
+                ? { background: 'rgba(168,85,247,0.08)', color: '#A855F7', border: '1px solid rgba(168,85,247,0.2)' }
+                : { background: 'rgba(56,189,248,0.08)', color: '#38BDF8', border: '1px solid rgba(56,189,248,0.2)' }"
+            >{{ run.optimization_mode }}</span>
           </div>
           <div class="text-[10px] text-zinc-600 font-body">
             {{ formatDate(run.timestamp) }}
@@ -100,13 +107,60 @@
           :best-overall-score="store.bestScore"
           @sort="store.setSort($event)"
         />
+
+        <!-- 2B: Score with Judge button & correlation view -->
+        <div v-if="store.results.length > 0" class="mt-4">
+          <div class="flex items-center gap-2 mb-3">
+            <button
+              v-if="selectedRun?.eval_run_id && !correlationData.length"
+              @click="scoreWithJudge"
+              :disabled="judgeScoringLoading"
+              class="text-[10px] font-display tracking-wider uppercase px-3 py-1.5 rounded-sm inline-flex items-center gap-1.5"
+              style="background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.2);color:#FBBF24;"
+            >
+              <span v-if="judgeScoringLoading" class="inline-block w-2.5 h-2.5 border border-yellow-400/50 border-t-yellow-400 rounded-full animate-spin"></span>
+              {{ judgeScoringLoading ? 'Scoring...' : 'Score with Judge' }}
+            </button>
+            <span v-if="correlationData.length" class="text-[10px] text-zinc-600 font-body">
+              Judge scores loaded — showing 3-axis correlation
+            </span>
+          </div>
+
+          <CorrelationView
+            v-if="correlationData.length"
+            :data="correlationData"
+            @select="selectedResult = $event"
+          />
+        </div>
+      </div>
+    </div>
+
+    <!-- Combo detail mini-modal from correlation click -->
+    <div v-if="selectedResult" class="fixed inset-0 z-[60] flex items-center justify-center" style="background:rgba(0,0,0,0.7);" @click.self="selectedResult = null">
+      <div class="card rounded-md p-6 max-w-2xl w-full mx-4" style="max-height:80vh;overflow-y:auto;">
+        <div class="flex items-center justify-between mb-4">
+          <span class="section-label">Combo Detail</span>
+          <button @click="selectedResult = null" class="text-zinc-500 hover:text-zinc-300" style="background:none;border:none;cursor:pointer;">Close</button>
+        </div>
+        <div class="mb-3">
+          <span class="text-xs font-mono text-zinc-300">{{ selectedResult.model_name }}</span>
+          <span class="text-xs font-mono ml-2" :style="{ color: scoreColor(selectedResult.overall_score * 100) }">
+            {{ (selectedResult.overall_score * 100).toFixed(1) }}%
+          </span>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <span v-for="(val, key) in selectedResult.config" :key="key"
+            class="text-[10px] font-mono px-2 py-1 rounded-sm"
+            style="background:rgba(255,255,255,0.04);border:1px solid var(--border-subtle);"
+          >{{ key }}: {{ formatValue(val) }}</span>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useParamTunerStore } from '../../stores/paramTuner.js'
 import { useProfilesStore } from '../../stores/profiles.js'
 import { useJudgeStore } from '../../stores/judge.js'
@@ -115,6 +169,7 @@ import { useToast } from '../../composables/useToast.js'
 import { useModal } from '../../composables/useModal.js'
 import { apiFetch } from '../../utils/api.js'
 import ParamTunerResults from '../../components/tool-eval/ParamTunerResults.vue'
+import CorrelationView from '../../components/tool-eval/CorrelationView.vue'
 
 const store = useParamTunerStore()
 const profilesStore = useProfilesStore()
@@ -125,6 +180,61 @@ const { inputModal } = useModal()
 
 const loading = ref(true)
 const selectedRun = ref(null)
+const selectedResult = ref(null)
+
+// 2B: correlation state
+const correlationData = ref([])
+const judgeScoringLoading = ref(false)
+
+async function scoreWithJudge() {
+  if (!selectedRun.value?.eval_run_id || judgeScoringLoading.value) return
+  judgeScoringLoading.value = true
+  try {
+    const res = await apiFetch(`/api/param-tune/correlation/${selectedRun.value.id}/score`, { method: 'POST' })
+    if (!res.ok) throw new Error('Failed to score')
+    const data = await res.json()
+    buildCorrelationData(data)
+    showToast('Judge scores loaded', 'success')
+  } catch (e) {
+    showToast(e.message || 'Failed to score with judge', 'error')
+  } finally {
+    judgeScoringLoading.value = false
+  }
+}
+
+function buildCorrelationData(scoreData) {
+  // scoreData: { results: [{ combo_id, model_id, judge_score, throughput, cost, ... }] }
+  const scored = scoreData.results || scoreData || []
+  const map = {}
+  for (const s of scored) {
+    map[s.combo_id || s.model_id] = s
+  }
+
+  correlationData.value = store.results.map(r => {
+    const key = r.combo_id || r.model_id
+    const s = map[key] || {}
+    return {
+      result: r,
+      model_name: r.model_name || r.model_id || '',
+      config_label: Object.entries(r.config || {}).map(([k, v]) => `${k}=${v}`).join(' '),
+      throughput: r.throughput_tps || s.throughput || null,
+      quality: s.judge_score != null ? s.judge_score : (r.overall_score || 0),
+      cost: r.cost_usd || s.cost || null,
+    }
+  })
+}
+
+function scoreColor(pct) {
+  if (pct >= 80) return 'var(--lime)'
+  if (pct >= 50) return '#FBBF24'
+  return 'var(--coral)'
+}
+
+function formatValue(val) {
+  if (val === undefined || val === null) return '-'
+  if (typeof val === 'number') return Number.isInteger(val) ? val.toString() : val.toFixed(3)
+  return String(val)
+}
 
 onMounted(async () => {
   try {
@@ -140,6 +250,7 @@ async function viewRun(run) {
   try {
     await store.loadRun(run.id)
     selectedRun.value = run
+    correlationData.value = []  // reset on new run view
   } catch {
     showToast('Failed to load run details', 'error')
   }
@@ -273,11 +384,5 @@ function statusStyle(status) {
   if (status === 'cancelled') return { background: 'rgba(255,255,255,0.04)', color: '#71717A' }
   if (status === 'interrupted') return { background: 'rgba(249,115,22,0.1)', color: '#F97316' }
   return { background: 'rgba(255,59,92,0.1)', color: 'var(--coral)' }
-}
-
-function scoreColor(pct) {
-  if (pct >= 80) return 'var(--lime)'
-  if (pct >= 50) return '#FBBF24'
-  return 'var(--coral)'
 }
 </script>

@@ -637,6 +637,53 @@ async def init_db():
         except Exception:
             logger.debug("Column tool_eval_runs.judge_explanations_json already exists")
 
+        # T3: category tag on tool_test_cases (simple/parallel/multi-turn/irrelevance)
+        try:
+            await db.execute("ALTER TABLE tool_test_cases ADD COLUMN category TEXT")
+            await db.commit()
+        except Exception:
+            logger.debug("Column tool_test_cases.category already exists")
+
+        # 2B: judge_scores_json on param_tune_runs (for param+quality correlation)
+        try:
+            await db.execute("ALTER TABLE param_tune_runs ADD COLUMN judge_scores_json TEXT")
+            await db.commit()
+        except Exception:
+            logger.debug("Column param_tune_runs.judge_scores_json already exists")
+
+        # 2A: optimization_mode on param_tune_runs (grid/random/bayesian)
+        try:
+            await db.execute("ALTER TABLE param_tune_runs ADD COLUMN optimization_mode TEXT NOT NULL DEFAULT 'grid'")
+            await db.commit()
+        except Exception:
+            logger.debug("Column param_tune_runs.optimization_mode already exists")
+
+        # 2D: Public leaderboard table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS public_leaderboard (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                model_name TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                tool_accuracy_pct REAL DEFAULT 0.0,
+                param_accuracy_pct REAL DEFAULT 0.0,
+                irrel_accuracy_pct REAL,
+                throughput_tps REAL,
+                ttft_ms REAL,
+                sample_count INTEGER NOT NULL DEFAULT 0,
+                last_updated TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(model_name, provider)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_leaderboard_model ON public_leaderboard(model_name, provider)")
+        await db.commit()
+
+        # 2D: leaderboard_opt_in on users
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN leaderboard_opt_in INTEGER NOT NULL DEFAULT 0")
+            await db.commit()
+        except Exception:
+            logger.debug("Column users.leaderboard_opt_in already exists")
+
 
 # --- User CRUD ---
 
@@ -1023,18 +1070,18 @@ async def get_test_cases(suite_id: str) -> list[dict]:
     return rows
 
 
-async def create_test_case(suite_id: str, prompt: str, expected_tool: str | None, expected_params: str | None, param_scoring: str = "exact", multi_turn_config: str | None = None, scoring_config_json: str | None = None, should_call_tool: bool = True) -> str:
+async def create_test_case(suite_id: str, prompt: str, expected_tool: str | None, expected_params: str | None, param_scoring: str = "exact", multi_turn_config: str | None = None, scoring_config_json: str | None = None, should_call_tool: bool = True, category: str | None = None) -> str:
     """Create a single test case. Returns case_id."""
     case_id = uuid.uuid4().hex
     await _db.execute(
-        "INSERT INTO tool_test_cases (id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config, scoring_config_json, should_call_tool) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (case_id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config, scoring_config_json, 1 if should_call_tool else 0),
+        "INSERT INTO tool_test_cases (id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config, scoring_config_json, should_call_tool, category) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (case_id, suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config, scoring_config_json, 1 if should_call_tool else 0, category),
     )
     return case_id
 
 
-async def update_test_case(case_id: str, suite_id: str, prompt: str = None, expected_tool: str = None, expected_params: str = None, param_scoring: str = None, multi_turn_config: str | None = None, scoring_config_json: str | None = None, should_call_tool: bool | None = None) -> bool:
+async def update_test_case(case_id: str, suite_id: str, prompt: str = None, expected_tool: str = None, expected_params: str = None, param_scoring: str = None, multi_turn_config: str | None = None, scoring_config_json: str | None = None, should_call_tool: bool | None = None, category: str | None = None) -> bool:
     """Update a test case. Returns True if found."""
     fields = []
     params = []
@@ -1059,6 +1106,9 @@ async def update_test_case(case_id: str, suite_id: str, prompt: str = None, expe
     if should_call_tool is not None:
         fields.append("should_call_tool = ?")
         params.append(1 if should_call_tool else 0)
+    if category is not None:
+        fields.append("category = ?")
+        params.append(category)
     if not fields:
         return False
     params.extend([case_id, suite_id])
@@ -1171,6 +1221,7 @@ async def update_param_tune_run(
     completed_combos: int | None = None,
     status: str | None = None,
     duration_s: float | None = None,
+    judge_scores_json: str | None = None,
 ) -> bool:
     """Update a param tune run. Only non-None fields are updated."""
     updates = []
@@ -1193,6 +1244,9 @@ async def update_param_tune_run(
     if duration_s is not None:
         updates.append("duration_s = ?")
         values.append(duration_s)
+    if judge_scores_json is not None:
+        updates.append("judge_scores_json = ?")
+        values.append(judge_scores_json)
     if not updates:
         return False
     values.extend([run_id, user_id])
@@ -1915,6 +1969,95 @@ async def get_all_active_jobs() -> list[dict]:
         "WHERE j.status IN ('pending', 'queued', 'running') "
         "ORDER BY j.created_at ASC"
     )
+
+
+# --- Public Leaderboard CRUD (2D) ---
+
+async def upsert_leaderboard_entry(
+    model_name: str, provider: str,
+    tool_accuracy_pct: float,
+    param_accuracy_pct: float,
+    irrel_accuracy_pct: float | None,
+    sample_count: int,
+    throughput_tps: float | None = None,
+    ttft_ms: float | None = None,
+) -> None:
+    """Insert or update a leaderboard entry, aggregating with existing data."""
+    existing = await _db.fetch_one(
+        "SELECT * FROM public_leaderboard WHERE model_name = ? AND provider = ?",
+        (model_name, provider),
+    )
+    if existing:
+        # Weighted average with existing data
+        old_n = existing["sample_count"] or 1
+        new_n = sample_count
+        total_n = old_n + new_n
+        new_tool = (existing["tool_accuracy_pct"] * old_n + tool_accuracy_pct * new_n) / total_n
+        new_param = (existing["param_accuracy_pct"] * old_n + param_accuracy_pct * new_n) / total_n
+        new_irrel = None
+        if irrel_accuracy_pct is not None and existing.get("irrel_accuracy_pct") is not None:
+            new_irrel = (existing["irrel_accuracy_pct"] * old_n + irrel_accuracy_pct * new_n) / total_n
+        elif irrel_accuracy_pct is not None:
+            new_irrel = irrel_accuracy_pct
+        else:
+            new_irrel = existing.get("irrel_accuracy_pct")
+        await _db.execute(
+            "UPDATE public_leaderboard SET tool_accuracy_pct=?, param_accuracy_pct=?, "
+            "irrel_accuracy_pct=?, sample_count=?, last_updated=datetime('now') "
+            "WHERE model_name=? AND provider=?",
+            (round(new_tool, 2), round(new_param, 2), new_irrel, total_n, model_name, provider),
+        )
+    else:
+        await _db.execute(
+            "INSERT INTO public_leaderboard (model_name, provider, tool_accuracy_pct, "
+            "param_accuracy_pct, irrel_accuracy_pct, throughput_tps, ttft_ms, sample_count) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (model_name, provider, round(tool_accuracy_pct, 2), round(param_accuracy_pct, 2),
+             irrel_accuracy_pct, throughput_tps, ttft_ms, sample_count),
+        )
+
+
+async def get_leaderboard() -> list[dict]:
+    """Return public leaderboard entries sorted by tool accuracy descending."""
+    return await _db.fetch_all(
+        "SELECT model_name, provider, tool_accuracy_pct, param_accuracy_pct, "
+        "irrel_accuracy_pct, throughput_tps, ttft_ms, sample_count, last_updated "
+        "FROM public_leaderboard ORDER BY tool_accuracy_pct DESC, param_accuracy_pct DESC"
+    )
+
+
+async def get_user_leaderboard_opt_in(user_id: str) -> bool:
+    """Return True if user has opted in to leaderboard contributions."""
+    row = await _db.fetch_one(
+        "SELECT leaderboard_opt_in FROM users WHERE id = ?", (user_id,)
+    )
+    return bool(row["leaderboard_opt_in"]) if row else False
+
+
+async def set_user_leaderboard_opt_in(user_id: str, opt_in: bool) -> None:
+    """Set user's leaderboard opt-in preference."""
+    await _db.execute(
+        "UPDATE users SET leaderboard_opt_in = ? WHERE id = ?",
+        (1 if opt_in else 0, user_id),
+    )
+
+
+async def save_param_tune_run_with_mode(
+    user_id: str, suite_id: str, suite_name: str, models_json: str,
+    search_space_json: str, total_combos: int,
+    optimization_mode: str = "grid",
+    experiment_id: str | None = None,
+) -> str:
+    """Create a new param tune run with optimization mode. Returns run_id."""
+    run_id = uuid.uuid4().hex
+    await _db.execute(
+        "INSERT INTO param_tune_runs (id, user_id, suite_id, suite_name, models_json, "
+        "search_space_json, total_combos, optimization_mode, experiment_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, user_id, suite_id, suite_name, models_json, search_space_json,
+         total_combos, optimization_mode, experiment_id),
+    )
+    return run_id
 
 
 async def get_user_rate_limit(user_id: str) -> dict | None:

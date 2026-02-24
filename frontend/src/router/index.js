@@ -12,6 +12,12 @@ const routes = [
     meta: { public: true },
   },
   {
+    path: '/leaderboard',
+    name: 'PublicLeaderboard',
+    component: () => import('../views/PublicLeaderboardPage.vue'),
+    meta: { public: true },
+  },
+  {
     path: '/forgot-password',
     name: 'ForgotPassword',
     component: () => import('../views/ForgotPassword.vue'),
@@ -54,6 +60,7 @@ const routes = [
       { path: 'timeline', name: 'Timeline', component: () => import('../views/tool-eval/TimelineView.vue') },
       { path: 'history', name: 'ToolEvalHistory', component: () => import('../views/tool-eval/HistoryView.vue') },
       { path: 'prompt-library', name: 'PromptLibrary', component: () => import('../views/tool-eval/PromptLibrary.vue') },
+      { path: 'auto-optimize', name: 'AutoOptimize', component: () => import('../views/tool-eval/AutoOptimizeView.vue') },
     ],
   },
   {
@@ -88,6 +95,7 @@ const routes = [
       { path: 'judge', name: 'JudgeSettings', component: () => import('../views/settings/JudgePanel.vue') },
       { path: 'tuning', name: 'TuningSettings', component: () => import('../views/settings/TuningPanel.vue') },
       { path: 'profiles', name: 'ProfilesSettings', component: () => import('../views/settings/ProfilesPanel.vue') },
+      { path: 'leaderboard', name: 'LeaderboardSettings', component: () => import('../views/settings/LeaderboardPanel.vue') },
     ],
   },
   {
@@ -110,6 +118,8 @@ router.beforeEach(async (to, from, next) => {
   if (to.meta?.public) {
     // OAuth callback must always be accessible (it sets the token)
     if (to.name === 'OAuthCallback') return next()
+    // Public leaderboard: accessible regardless of auth status
+    if (to.name === 'PublicLeaderboard') return next()
     // Other public routes: redirect to /benchmark if already logged in
     if (token) return next('/benchmark')
     return next()

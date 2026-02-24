@@ -17,7 +17,7 @@
           style="background:rgba(255,255,255,0.02);border:1px solid var(--border-subtle);"
         >
           <!-- Header -->
-          <div class="flex items-center gap-2 mb-1">
+          <div class="flex items-center gap-2 mb-1 flex-wrap">
             <span :style="{ color: r.tool_selection_score === 1.0 ? 'var(--lime)' : 'var(--coral)' }" class="text-xs font-mono font-bold">
               {{ r.tool_selection_score === 1.0 ? 'OK' : 'X' }}
             </span>
@@ -29,6 +29,23 @@
               class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm"
               style="background:rgba(56,189,248,0.08);color:#38BDF8;border:1px solid rgba(56,189,248,0.2);"
             >Irrelevance</span>
+            <!-- T3: Category badge -->
+            <span v-if="r.category"
+              class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm"
+              style="background:rgba(168,85,247,0.08);color:#A855F7;border:1px solid rgba(168,85,247,0.2);"
+            >{{ r.category }}</span>
+            <!-- T1: Format compliance badge -->
+            <span v-if="r.format_compliance"
+              class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm"
+              :style="formatComplianceBadgeStyle(r.format_compliance)"
+              :title="r.format_compliance_detail || ''"
+            >{{ r.format_compliance }}</span>
+            <!-- T2: Error type badge (shown on failed cases) -->
+            <span v-if="r.error_type && r.tool_selection_score < 1"
+              class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm"
+              style="background:rgba(255,59,92,0.08);color:var(--coral);border:1px solid rgba(255,59,92,0.2);"
+              title="Error classification"
+            >{{ r.error_type }}</span>
             <span v-if="r.latency_ms" class="text-[10px] text-zinc-700 font-mono ml-auto">{{ r.latency_ms }}ms</span>
           </div>
 
@@ -74,9 +91,19 @@
 
           <!-- Multi-turn chain -->
           <div v-if="r.multi_turn && r.tool_chain?.length" class="mt-2">
-            <div class="text-[10px] font-mono">
+            <!-- T5: Visual argument flow between tools -->
+            <div class="text-[10px] font-mono mb-1.5">
               <span class="text-zinc-600">Chain:</span>
-              <span style="color:var(--lime)">{{ r.tool_chain.map(c => c.tool_name).join(' \u2192 ') }}</span>
+              <span v-for="(step, si) in r.tool_chain" :key="si" class="inline-flex items-center">
+                <span v-if="si > 0" class="text-zinc-700 mx-1">&#8594;</span>
+                <span style="color:var(--lime)">{{ step.tool_name }}</span>
+                <!-- T5: argument source indicator -->
+                <span v-if="step.argument_source && step.argument_source !== 'user'"
+                  class="text-[8px] px-1 py-0.5 rounded-sm ml-0.5"
+                  :style="argSourceStyle(step.argument_source)"
+                  :title="argSourceTooltip(step.argument_source)"
+                >{{ step.argument_source }}</span>
+              </span>
               <span class="text-zinc-600 ml-1">({{ r.rounds_used || r.tool_chain.length }} round{{ (r.rounds_used || r.tool_chain.length) > 1 ? 's' : '' }})</span>
             </div>
             <div class="mt-1 grid grid-cols-4 gap-2 text-[10px] font-mono">
@@ -195,6 +222,29 @@ function scoreColor(pct) {
   if (pct >= 80) return 'var(--lime)'
   if (pct >= 50) return '#FBBF24'
   return 'var(--coral)'
+}
+
+// T1: format compliance badge style
+function formatComplianceBadgeStyle(val) {
+  if (!val) return {}
+  const v = val.toUpperCase()
+  if (v === 'PASS') return { background: 'rgba(191,255,0,0.08)', color: 'var(--lime)', border: '1px solid rgba(191,255,0,0.2)' }
+  if (v === 'NORMALIZED') return { background: 'rgba(251,191,36,0.08)', color: '#FBBF24', border: '1px solid rgba(251,191,36,0.2)' }
+  return { background: 'rgba(255,59,92,0.08)', color: 'var(--coral)', border: '1px solid rgba(255,59,92,0.2)' }
+}
+
+// T5: argument source styles
+function argSourceStyle(source) {
+  if (source === 'previous_tool') return { background: 'rgba(56,189,248,0.1)', color: '#38BDF8' }
+  if (source === 'inferred') return { background: 'rgba(168,85,247,0.1)', color: '#A855F7' }
+  return { background: 'rgba(255,255,255,0.04)', color: '#71717A' }
+}
+
+function argSourceTooltip(source) {
+  if (source === 'previous_tool') return 'Arguments sourced from previous tool output'
+  if (source === 'inferred') return 'Arguments inferred from conversation context'
+  if (source === 'user') return 'Arguments provided directly by user'
+  return `Argument source: ${source}`
 }
 
 function formatTool(tool) {

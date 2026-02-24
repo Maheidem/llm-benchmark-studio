@@ -1,4 +1,4 @@
-"""Parameter tuner routes (GridSearchCV for Tool Calling)."""
+"""Parameter tuner routes (GridSearchCV + Bayesian for Tool Calling)."""
 
 import json
 import logging
@@ -47,6 +47,8 @@ async def run_param_tune(request: Request, user: dict = Depends(auth.get_current
             targets=body.get("targets") or None,
             search_space=body.get("search_space", {}),
             experiment_id=body.get("experiment_id"),
+            optimization_mode=body.get("optimization_mode", "grid"),
+            n_trials=body.get("n_trials", 50),
         )
     except (ValidationError, Exception) as e:
         raise HTTPException(422, detail=str(e))
@@ -55,6 +57,8 @@ async def run_param_tune(request: Request, user: dict = Depends(auth.get_current
     model_ids, target_set = _parse_target_selection(body)
     search_space = validated.search_space
     per_model_search_spaces = body.get("per_model_search_spaces", {})
+    optimization_mode = validated.optimization_mode
+    n_trials = validated.n_trials
 
     # --- Validation ---
     if not isinstance(model_ids, list) or len(model_ids) == 0:
@@ -105,6 +109,9 @@ async def run_param_tune(request: Request, user: dict = Depends(auth.get_current
         "search_space": search_space,
         "per_model_search_spaces": per_model_search_spaces,
         "experiment_id": experiment_id,
+        # 2A: optimization mode
+        "optimization_mode": optimization_mode,
+        "n_trials": n_trials,
     }
 
     job_id = await job_registry.submit(
@@ -158,3 +165,112 @@ async def delete_param_tune(tune_id: str, user: dict = Depends(auth.get_current_
     if not deleted:
         return JSONResponse({"error": "Tune run not found"}, status_code=404)
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# 2B: Param + Quality Correlation View
+# ---------------------------------------------------------------------------
+
+@router.get("/api/param-tune/correlation/{run_id}")
+async def get_param_tune_correlation(run_id: str, user: dict = Depends(auth.get_current_user)):
+    """2B: Return 3-axis correlation data: speed × cost × quality per param combo.
+
+    Combines param tuner results with judge scores (if available) for the
+    'killer visualization' -- find optimal inference config across all 3 axes.
+    """
+    run = await db.get_param_tune_run(run_id, user["id"])
+    if not run:
+        return JSONResponse({"error": "Tune run not found"}, status_code=404)
+
+    try:
+        results = json.loads(run["results_json"] or "[]")
+    except (json.JSONDecodeError, TypeError):
+        results = []
+
+    # Load judge scores if available
+    judge_scores: dict[str, float] = {}
+    if run.get("judge_scores_json"):
+        try:
+            raw_scores = json.loads(run["judge_scores_json"])
+            if isinstance(raw_scores, list):
+                for s in raw_scores:
+                    key = f"{s.get('model_id', '')}_{s.get('combo_index', 0)}"
+                    judge_scores[key] = s.get("quality_score", 0.0)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    correlation_data = []
+    for r in results:
+        combo_idx = r.get("combo_index", 0)
+        model_id = r.get("model_id", "")
+        score_key = f"{model_id}_{combo_idx}"
+
+        # Extract config params for axes
+        config = r.get("config", {})
+        latency_avg_ms = r.get("latency_avg_ms", 0)
+        # Speed: tokens/sec estimate from latency (rough: assume 100 output tokens)
+        tokens_per_sec = round(100_000 / latency_avg_ms, 1) if latency_avg_ms > 0 else None
+
+        entry = {
+            "combo_index": combo_idx,
+            "model_id": model_id,
+            "model_name": r.get("model_name", model_id),
+            "provider_key": r.get("provider_key", ""),
+            "config": config,
+            # Axis 1: Speed (estimated from latency)
+            "latency_avg_ms": latency_avg_ms,
+            "tokens_per_sec_estimate": tokens_per_sec,
+            # Axis 2: Quality (tool + param accuracy from eval)
+            "tool_accuracy": r.get("tool_accuracy", 0.0),
+            "param_accuracy": r.get("param_accuracy", 0.0),
+            "overall_score": r.get("overall_score", 0.0),
+            "cases_passed": r.get("cases_passed", 0),
+            "cases_total": r.get("cases_total", 0),
+            # Axis 3: Judge quality score (if available)
+            "quality_score": judge_scores.get(score_key),
+            # Adjustments/clamping info
+            "adjustments": r.get("adjustments", []),
+        }
+        correlation_data.append(entry)
+
+    return {
+        "run_id": run_id,
+        "optimization_mode": run.get("optimization_mode", "grid"),
+        "has_judge_scores": bool(judge_scores),
+        "data": correlation_data,
+    }
+
+
+@router.post("/api/param-tune/correlation/{run_id}/score")
+async def score_param_tune_with_judge(
+    run_id: str, request: Request, user: dict = Depends(auth.get_current_user)
+):
+    """2B: Trigger judge scoring on param tuner output samples.
+
+    Submits a judge job for each combo's representative results.
+    The judge scores are stored as judge_scores_json on the param_tune_run.
+    """
+    run = await db.get_param_tune_run(run_id, user["id"])
+    if not run:
+        return JSONResponse({"error": "Tune run not found"}, status_code=404)
+
+    body = await request.json()
+    judge_model = body.get("judge_model")
+    judge_provider_key = body.get("judge_provider_key")
+    if not judge_model:
+        return JSONResponse({"error": "judge_model is required"}, status_code=400)
+
+    job_params = {
+        "user_id": user["id"],
+        "user_email": user.get("email", ""),
+        "tune_run_id": run_id,
+        "tune_type": "param_tuner",
+        "eval_run_id": None,  # No eval_run_id for param tune judge
+        "judge_model": judge_model,
+        "judge_provider_key": judge_provider_key,
+        "custom_instructions": body.get("custom_instructions", ""),
+        "concurrency": body.get("concurrency", 4),
+    }
+
+    job_id = await job_registry.submit("judge", user["id"], job_params)
+    return {"job_id": job_id, "status": "submitted", "run_id": run_id}

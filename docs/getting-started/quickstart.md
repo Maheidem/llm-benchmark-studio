@@ -41,11 +41,12 @@ Keys are encrypted with Fernet symmetric encryption and stored per-user in the d
     - **Warmup**: Enable/disable warmup run (discarded, reduces cold-start variance)
 4. Click **Run Benchmark**
 
-Results stream in real-time via Server-Sent Events:
+Results stream in real-time via WebSocket:
 
 - **Progress**: Shows current run number, model, and context tier
 - **Results**: Tokens/sec, TTFT, total time, cost per individual run
 - **Summary**: Aggregated statistics across all runs
+- **Process Tracker**: Active jobs appear in the notification area, so you can navigate away and return without losing progress
 
 <!-- Screenshot: Benchmark results streaming in -->
 
@@ -55,7 +56,10 @@ After the benchmark completes:
 
 - **Results Table**: Shows per-model averages for tokens/sec, TTFT, cost
 - **Charts**: Visual comparison across models (bar charts, scatter plots)
-- **History**: All runs are saved and accessible from the History screen
+- **History**: All runs are saved and accessible from the History page
+
+!!! tip "SPA Navigation"
+    LLM Benchmark Studio is a Vue 3 single-page application. Navigation between pages (Benchmark, History, Analytics, etc.) is instant -- there are no full page reloads.
 
 ## 5. Run a Tool Eval
 
@@ -77,12 +81,11 @@ See [Tool Calling Evaluation](../guide/tool-eval.md) for the full guide.
 
 ## 6. Explore Analytics
 
-The Analytics screen provides:
+The Analytics page has three tabs:
 
-- **Leaderboard**: Models ranked by speed, cost, or quality
-- **Trends**: Performance over time across benchmark runs
-- **Comparison**: Side-by-side model comparison with charts
-- **Cost Analysis**: Price per token and cost/quality ratios
+- **Leaderboard**: Models ranked by tokens/sec (benchmark) or overall score (tool eval), filterable by time period (7d, 30d, 90d, all)
+- **Compare**: Select 2-4 benchmark runs for side-by-side comparison with charts
+- **Trends**: Track model performance (tokens/sec and TTFT) over time with multi-model selection
 
 ## Next Steps
 

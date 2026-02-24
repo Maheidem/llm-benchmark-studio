@@ -32,6 +32,7 @@
         <router-link to="/schedules" class="tab" active-class="tab-active">Schedules</router-link>
         <router-link to="/settings" class="tab" active-class="tab-active">Settings</router-link>
         <router-link v-if="authStore.isAdmin" to="/admin" class="tab" active-class="tab-active">Admin</router-link>
+        <router-link to="/leaderboard" class="tab" active-class="tab-active" title="Public tool-calling leaderboard">Leaderboard</router-link>
 
         <!-- Notification Widget -->
         <NotificationWidget />

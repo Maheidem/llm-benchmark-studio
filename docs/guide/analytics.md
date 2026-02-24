@@ -27,41 +27,63 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" \
 
 ## Leaderboard
 
-The leaderboard ranks models across all your benchmark runs:
+The leaderboard ranks models across all your benchmark or tool eval runs. It supports two leaderboard types and four time periods.
 
 ```bash
+# Benchmark leaderboard (default, ranked by avg tokens/sec)
 curl -H "Authorization: Bearer $TOKEN" \
-  http://localhost:8501/api/analytics/leaderboard
+  "http://localhost:8501/api/analytics/leaderboard?type=benchmark&period=all"
+
+# Tool eval leaderboard (ranked by avg overall score)
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8501/api/analytics/leaderboard?type=tool_eval&period=30d"
 ```
 
-Models are ranked by:
+**Benchmark leaderboard** returns per-model:
 
-- **Speed**: Average tokens per second
-- **Latency**: Average time to first token
-- **Cost**: Average cost per run
-- **Overall**: Composite score
+- `avg_tps`: Average tokens per second
+- `avg_ttft_ms`: Average time to first token (ms)
+- `avg_cost`: Average cost per run
+- `total_runs`: Number of runs included
+
+**Tool eval leaderboard** returns per-model:
+
+- `avg_tool_pct`: Average tool selection accuracy (%)
+- `avg_param_pct`: Average parameter accuracy (%)
+- `avg_overall_pct`: Average overall score (%)
+- `total_evals`: Number of evals included
+
+**Period filter**: `7d`, `30d`, `90d`, `all`
 
 ## Trend Analysis
 
-Track model performance over time:
+Track model performance over time by selecting one or more models:
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8501/api/analytics/trends?model_id=gpt-4o&days=30"
+  "http://localhost:8501/api/analytics/trends?models=GPT-4o,Claude+Sonnet+4.5&metric=tps&period=30d"
 ```
 
-Shows how tokens/sec, TTFT, and cost have changed across benchmark runs for a specific model.
+Parameters:
 
-## Model Comparison
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `models` | Yes | Comma-separated model display names |
+| `metric` | No | `tps` (default) or `ttft` |
+| `period` | No | `7d`, `30d`, `90d`, or `all` (default) |
 
-Compare two or more models side by side:
+Returns time-series data points per model, displayed as line charts in the Trends tab.
+
+## Run Comparison
+
+Compare 2-4 specific benchmark runs side by side:
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8501/api/analytics/compare?models=gpt-4o,anthropic/claude-sonnet-4-5"
+  "http://localhost:8501/api/analytics/compare?runs=run_id_1,run_id_2"
 ```
 
-Returns comparative metrics, charts, and statistical analysis.
+Select runs from your history (up to 4). Returns per-run model results including avg tokens/sec, avg TTFT, context tokens, and cost. The Compare tab displays this data as side-by-side bar charts.
 
 ## Tool Eval History
 

@@ -165,15 +165,15 @@ These environment variables control application behavior:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `JWT_SECRET` | Auto-generated | Secret key for JWT token signing |
-| `ADMIN_EMAIL` | (none) | Auto-promote this email to admin on startup |
-| `ADMIN_PASSWORD` | (none) | Auto-create admin account with this password |
-| `FERNET_KEY` | Auto-generated | Master encryption key for API key storage |
-| `BENCHMARK_RATE_LIMIT` | `2000` | Max benchmark runs per user per hour |
-| `COOKIE_SECURE` | `false` | Set to `true` for HTTPS deployments |
+| `JWT_SECRET` | Auto-generated | Secret key for JWT token signing. Changes on restart if not set. |
+| `ADMIN_EMAIL` | (none) | Auto-promote this email to admin on startup (or create the account if it does not exist) |
+| `ADMIN_PASSWORD` | (none) | Password for auto-created admin account (requires `ADMIN_EMAIL`) |
+| `FERNET_KEY` | Auto-generated | Master encryption key for API key storage. Stored in `data/.fernet_key` if not set. |
+| `COOKIE_SECURE` | `false` | Set to `true` for HTTPS deployments (controls `Secure` flag on refresh token cookie) |
 | `CORS_ORIGINS` | (none) | Comma-separated list of allowed CORS origins |
-| `LOG_LEVEL` | `warning` | Uvicorn log level |
-| `APP_VERSION` | `dev` | Application version (set by Docker build) |
+| `LOG_LEVEL` | `warning` | Uvicorn log level (`debug`, `info`, `warning`, `error`) |
+| `LOG_ACCESS_TOKEN` | (none) | Static token for accessing `/api/admin/logs` without admin JWT |
+| `APP_VERSION` | `dev` | Application version string (set automatically by Docker build) |
 
 ## Local LLM Configuration
 

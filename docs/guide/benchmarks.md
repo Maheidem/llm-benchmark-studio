@@ -26,14 +26,32 @@ LLM Benchmark Studio measures token throughput (tokens/sec), time to first token
 
 **Context Tiers**: Test how models perform with different input sizes. The engine generates filler text (code snippets, prose, JSON, documentation) to pad the system prompt to the target token count. Models whose context window is too small for a tier automatically skip it.
 
+### Benchmark Execution Flow
+
+When you click **Run Benchmark**, the following happens:
+
+1. The frontend sends a `POST /api/benchmark` request with the selected models, parameters, and options
+2. The server validates the request, checks rate limits, and submits the job to the **JobRegistry**
+3. The API returns a `job_id` immediately (the benchmark runs in the background)
+4. Real-time progress and results are delivered via **WebSocket** events
+
+```json
+// POST /api/benchmark response
+{"job_id": "a1b2c3d4...", "status": "submitted"}
+```
+
 ### Real-Time Results
 
-Results stream via Server-Sent Events (SSE) as each run completes:
+Results stream via WebSocket as each run completes. The frontend receives the following event sequence:
 
-- **Progress events**: Current run number, model, context tier
-- **Result events**: Individual run metrics (tokens/sec, TTFT, total time, cost)
-- **Skipped events**: When a context tier exceeds a model's window
-- **Complete event**: All runs finished, results saved
+1. **`job_created`**: Job has been submitted to the registry
+2. **`benchmark_init`**: Sent before execution begins; contains the list of targets, run count, context tiers, and max tokens so the frontend can set up per-provider progress tracking
+3. **`benchmark_progress`**: Emitted before each individual run starts; includes provider, model, run number, and context tier
+4. **`benchmark_result`**: Individual run metrics (tokens/sec, TTFT, total time, cost, input/output tokens)
+5. **`job_progress`**: Overall progress percentage and detail string (e.g., "GPT-4o, Run 2/3")
+6. **`job_completed`**: All runs finished and results saved; includes `result_ref` (the benchmark_run ID)
+
+If a benchmark fails, a `job_failed` event is sent with the error message.
 
 ### Understanding Metrics
 
@@ -49,7 +67,13 @@ Results stream via Server-Sent Events (SSE) as each run completes:
 
 ### Cancelling a Benchmark
 
-Click **Cancel** during a running benchmark. The system sends a cancellation event and remaining provider tasks are stopped. Partial results are not saved.
+Benchmarks can be cancelled through several methods:
+
+- **Cancel button**: Click **Cancel** in the benchmark UI. This sends `POST /api/benchmark/cancel` with the `job_id`
+- **Job tracker**: Cancel from the notification widget dropdown
+- **WebSocket**: Send `{"type": "cancel", "job_id": "..."}` over the WebSocket connection
+
+The system signals the cancel event, remaining provider tasks are stopped, and partial results are not saved. A `job_cancelled` WebSocket event confirms the cancellation.
 
 ## CLI Usage
 
@@ -88,13 +112,13 @@ CLI results are saved as timestamped JSON files in the `results/` directory.
 
 ## Concurrency Model
 
-The benchmark engine uses an asyncio-based concurrency model:
+The benchmark engine uses an asyncio-based concurrency model managed by the JobRegistry:
 
 1. **Provider groups** execute in parallel via `asyncio.create_task()`
 2. **Models within a provider** run sequentially (avoids API self-contention)
-3. **Results flow** through an `asyncio.Queue` to the SSE stream
-4. **Per-user locking** prevents concurrent benchmark runs (one active run per user)
-5. **Heartbeat events** are sent every 15 seconds to keep the SSE connection alive
+3. **Results flow** through an `asyncio.Queue` to the handler, which broadcasts them via WebSocket
+4. **Per-user concurrency** is managed by the JobRegistry (configurable limit, default 1). Additional benchmark submissions are queued rather than rejected
+5. **Job progress** updates are persisted to the database and broadcast to all connected tabs
 
 ## Rate Limiting
 

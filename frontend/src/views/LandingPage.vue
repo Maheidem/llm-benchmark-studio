@@ -64,6 +64,18 @@
       </div>
     </div>
 
+    <!-- Public leaderboard link -->
+    <div class="flex justify-center mt-6 mb-2 landing-animate landing-animate-d9">
+      <router-link to="/leaderboard"
+        class="text-[11px] font-display tracking-wider uppercase px-4 py-2 rounded-sm inline-flex items-center gap-2"
+        style="background:rgba(191,255,0,0.04);border:1px solid rgba(191,255,0,0.15);color:rgba(191,255,0,0.7);"
+      >
+        <span>&#9733;</span>
+        View Public Tool-Calling Leaderboard
+        <span>&#8594;</span>
+      </router-link>
+    </div>
+
     <!-- How it works -->
     <div class="landing-how">
       <div class="section-title landing-animate landing-animate-d7">How It Works</div>

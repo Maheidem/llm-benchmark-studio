@@ -385,3 +385,121 @@ async def delete_prompt_tune(tune_id: str, user: dict = Depends(auth.get_current
     if not deleted:
         return JSONResponse({"error": "Tune run not found"}, status_code=404)
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# I2: Auto-Optimize endpoint
+# ---------------------------------------------------------------------------
+
+@router.post("/api/tool-eval/prompt-tune/auto-optimize")
+async def run_prompt_auto_optimize(request: Request, user: dict = Depends(auth.get_current_user)):
+    """I2: Run OPRO/APE-style prompt auto-optimization via job registry.
+
+    Iteratively generates prompt variants using a meta-model, evaluates them
+    against a test suite, and feeds top performers back for the next round.
+    Results are saved to the prompt_versions registry.
+
+    Body:
+        suite_id: str — test suite to evaluate against
+        target_models: list[str] — model IDs to evaluate prompts on
+        meta_model: str — model ID to use for prompt generation
+        meta_provider_key: str (optional) — provider key for meta model
+        base_prompt: str (optional) — starting prompt (default generic)
+        max_iterations: int (1-10, default 3) — number of optimization rounds
+        population_size: int (3-20, default 5) — prompts per iteration
+        selection_ratio: float (0.2-0.8, default 0.4) — fraction to keep as parents
+        eval_temperature: float (default 0.0) — temperature for eval calls
+        eval_tool_choice: str (default "required") — tool_choice for eval calls
+        experiment_id: str (optional) — auto-promote best prompt to experiment
+
+    Returns: {job_id, status: "submitted"}
+    """
+    body = await request.json()
+
+    suite_id = body.get("suite_id", "")
+    if not suite_id:
+        return JSONResponse({"error": "suite_id is required"}, status_code=400)
+
+    # Support precise target selection
+    _target_models_body = {"targets": body.get("target_targets"), "models": body.get("target_models", [])}
+    target_model_ids, target_set_eval = _parse_target_selection(_target_models_body)
+
+    meta_model_id = body.get("meta_model", "")
+    if not meta_model_id:
+        return JSONResponse({"error": "meta_model is required"}, status_code=400)
+
+    if not target_model_ids:
+        return JSONResponse({"error": "target_models must be a non-empty list"}, status_code=400)
+
+    # Validate suite exists + has test cases
+    suite = await db.get_tool_suite(suite_id, user["id"])
+    if not suite:
+        return JSONResponse({"error": "Suite not found"}, status_code=404)
+    cases = await db.get_test_cases(suite_id)
+    if not cases:
+        return JSONResponse({"error": "Suite has no test cases"}, status_code=400)
+
+    # Rate limit check
+    await _check_rate_limit(user["id"])
+
+    # Validate targets exist in config
+    config = await _get_user_config(user["id"])
+    all_targets = build_targets(config)
+
+    meta_targets = _find_target(all_targets, meta_model_id, body.get("meta_provider_key"))
+    if not meta_targets:
+        return JSONResponse({"error": f"Meta model '{meta_model_id}' not found in config"}, status_code=400)
+
+    eval_targets = _filter_targets(all_targets, target_model_ids, target_set_eval)
+    if not eval_targets:
+        return JSONResponse({"error": "No matching target models found in config"}, status_code=400)
+
+    # Clamp config params
+    max_iterations = max(1, min(int(body.get("max_iterations", 3)), 10))
+    population_size = max(3, min(int(body.get("population_size", 5)), 20))
+
+    progress_detail = (
+        f"Auto-Optimize: {max_iterations} iter, {len(eval_targets)} model"
+        f"{'s' if len(eval_targets) != 1 else ''}, {suite['name']}"
+    )
+
+    job_params = {
+        "user_id": user["id"],
+        "user_email": user.get("email", ""),
+        "suite_id": suite_id,
+        "target_models": target_model_ids,
+        "target_set": [list(t) for t in target_set_eval] if target_set_eval else None,
+        "meta_model": meta_model_id,
+        "meta_provider_key": body.get("meta_provider_key"),
+        "base_prompt": body.get("base_prompt"),
+        "max_iterations": max_iterations,
+        "population_size": population_size,
+        "selection_ratio": float(body.get("selection_ratio", 0.4)),
+        "eval_temperature": float(body.get("eval_temperature", 0.0)),
+        "eval_tool_choice": body.get("eval_tool_choice", "required"),
+        "experiment_id": body.get("experiment_id"),
+    }
+
+    job_id = await job_registry.submit(
+        job_type="prompt_auto_optimize",
+        user_id=user["id"],
+        params=job_params,
+        progress_detail=progress_detail,
+    )
+
+    return {"job_id": job_id, "status": "submitted"}
+
+
+@router.post("/api/tool-eval/prompt-tune/auto-optimize/cancel")
+async def cancel_prompt_auto_optimize(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Cancel a running prompt auto-optimize job."""
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    job_id = body.get("job_id")
+
+    if not job_id:
+        return JSONResponse({"error": "job_id is required"}, status_code=400)
+
+    cancelled = await job_registry.cancel(job_id, user["id"])
+    if cancelled:
+        return {"status": "ok", "message": "Cancellation requested"}
+    return JSONResponse({"error": "Job not found or already finished"}, status_code=404)
