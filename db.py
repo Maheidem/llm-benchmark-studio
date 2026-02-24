@@ -417,10 +417,11 @@ async def init_db():
                 id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
                 user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 
-                -- Type discriminator (one of 7 process types)
+                -- Type discriminator (one of 8 process types)
                 job_type TEXT NOT NULL CHECK(job_type IN (
                     'benchmark', 'tool_eval', 'judge', 'judge_compare',
-                    'param_tune', 'prompt_tune', 'scheduled_benchmark'
+                    'param_tune', 'prompt_tune', 'scheduled_benchmark',
+                    'prompt_auto_optimize'
                 )),
 
                 -- Lifecycle
@@ -612,7 +613,7 @@ async def init_db():
                 prompt_text TEXT NOT NULL,
                 label TEXT NOT NULL DEFAULT '',
                 source TEXT NOT NULL DEFAULT 'manual'
-                    CHECK(source IN ('manual', 'prompt_tuner')),
+                    CHECK(source IN ('manual', 'prompt_tuner', 'auto_optimize')),
                 parent_version_id TEXT REFERENCES prompt_versions(id) ON DELETE SET NULL,
                 origin_run_id TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))

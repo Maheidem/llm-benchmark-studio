@@ -13,7 +13,7 @@ pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
 # ===========================================================================
-# API contract tests — argument_source storage and retrieval
+# API contract tests — argument_source storage and retrieval (async)
 # ===========================================================================
 
 class TestArgumentSourceStorage:
@@ -228,7 +228,7 @@ class TestArgumentSourceStorage:
 
 
 # ===========================================================================
-# Unit tests — argument_source format validation
+# Unit tests — argument_source format validation (sync, no asyncio mark)
 # ===========================================================================
 
 class TestArgumentSourceFormat:

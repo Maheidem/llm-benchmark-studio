@@ -11,7 +11,6 @@ from unittest.mock import patch, MagicMock
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
-
 # ===========================================================================
 # Unit tests — _build_optuna_combos pure function
 # ===========================================================================
@@ -117,6 +116,24 @@ class TestBuildOptunaCombos:
 # ===========================================================================
 
 class TestOptimizationModeAPI:
+    async def _setup_zai_config(self, app_client, auth_headers):
+        """Add Zai provider + GLM model to test user config."""
+        resp = await app_client.post("/api/config/provider", headers=auth_headers, json={
+            "provider_key": "zai",
+            "display_name": "Zai",
+            "api_base": "https://api.z.ai/api/coding/paas/v4/",
+            "api_key_env": "ZAI_API_KEY",
+            "model_id_prefix": "",
+        })
+        assert resp.status_code in (200, 400)
+        resp = await app_client.post("/api/config/model", headers=auth_headers, json={
+            "provider_key": "zai",
+            "id": "GLM-4.5-Air",
+            "display_name": "GLM-4.5-Air",
+            "context_window": 128000,
+        })
+        assert resp.status_code in (200, 400)
+
     async def _create_suite(self, app_client, auth_headers, name="Optuna Suite"):
         """Helper: create a minimal tool eval suite."""
         resp = await app_client.post("/api/tool-eval/import", headers=auth_headers, json={
@@ -137,8 +154,9 @@ class TestOptimizationModeAPI:
         assert resp.status_code == 200
         return resp.json()["suite_id"]
 
-    async def test_grid_mode_accepted(self, app_client, auth_headers, clear_active_jobs, zai_config):
+    async def test_grid_mode_accepted(self, app_client, auth_headers, clear_active_jobs):
         """optimization_mode='grid' is accepted by param tune endpoint."""
+        await self._setup_zai_config(app_client, auth_headers)
         suite_id = await self._create_suite(app_client, auth_headers, "Grid Mode Suite")
 
         from unittest.mock import patch, MagicMock, AsyncMock
@@ -163,8 +181,9 @@ class TestOptimizationModeAPI:
             })
         assert resp.status_code == 200
 
-    async def test_random_mode_accepted(self, app_client, auth_headers, clear_active_jobs, zai_config):
+    async def test_random_mode_accepted(self, app_client, auth_headers, clear_active_jobs):
         """optimization_mode='random' with n_trials is accepted."""
+        await self._setup_zai_config(app_client, auth_headers)
         suite_id = await self._create_suite(app_client, auth_headers, "Random Mode Suite")
 
         from unittest.mock import patch, MagicMock, AsyncMock
@@ -190,8 +209,9 @@ class TestOptimizationModeAPI:
             })
         assert resp.status_code == 200
 
-    async def test_bayesian_mode_accepted(self, app_client, auth_headers, clear_active_jobs, zai_config):
+    async def test_bayesian_mode_accepted(self, app_client, auth_headers, clear_active_jobs):
         """optimization_mode='bayesian' with n_trials is accepted."""
+        await self._setup_zai_config(app_client, auth_headers)
         suite_id = await self._create_suite(app_client, auth_headers, "Bayesian Mode Suite")
 
         from unittest.mock import patch, MagicMock, AsyncMock
@@ -218,9 +238,10 @@ class TestOptimizationModeAPI:
         assert resp.status_code == 200
 
     async def test_optimization_mode_stored_in_run(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """optimization_mode is stored on the param_tune_run record."""
+        await self._setup_zai_config(app_client, auth_headers)
         suite_id = await self._create_suite(app_client, auth_headers, "Mode Storage Suite")
 
         from unittest.mock import patch, MagicMock, AsyncMock

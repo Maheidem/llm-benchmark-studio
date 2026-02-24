@@ -164,6 +164,22 @@ export const useToolEvalStore = defineStore('toolEval', () => {
     return await res.json()
   }
 
+  async function importBfclSuite(data, suiteName) {
+    const res = await apiFetch('/api/tool-eval/import/bfcl', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Suite-Name': suiteName || 'BFCL Import',
+      },
+      body: JSON.stringify(data),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err.error || 'BFCL import failed')
+    }
+    return await res.json()
+  }
+
   async function downloadImportExample() {
     const res = await apiFetch('/api/tool-eval/import/example')
     if (!res.ok) throw new Error('Failed to download example')
@@ -444,6 +460,7 @@ export const useToolEvalStore = defineStore('toolEval', () => {
     deleteSuite,
     exportSuite,
     importSuite,
+    importBfclSuite,
     downloadImportExample,
     createTestCase,
     updateTestCase,

@@ -194,10 +194,29 @@ class TestClassifyErrorType:
 # ===========================================================================
 
 class TestErrorTypeInEvalResult:
+    async def _setup_zai_config(self, app_client, auth_headers):
+        """Add Zai provider + GLM model to test user config."""
+        resp = await app_client.post("/api/config/provider", headers=auth_headers, json={
+            "provider_key": "zai",
+            "display_name": "Zai",
+            "api_base": "https://api.z.ai/api/coding/paas/v4/",
+            "api_key_env": "ZAI_API_KEY",
+            "model_id_prefix": "",
+        })
+        assert resp.status_code in (200, 400)
+        resp = await app_client.post("/api/config/model", headers=auth_headers, json={
+            "provider_key": "zai",
+            "id": "GLM-4.5-Air",
+            "display_name": "GLM-4.5-Air",
+            "context_window": 128000,
+        })
+        assert resp.status_code in (200, 400)
+
     async def test_eval_result_has_error_type_field(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """Running a tool eval produces results with error_type field."""
+        await self._setup_zai_config(app_client, auth_headers)
         from unittest.mock import patch, MagicMock, AsyncMock
         import json
 
@@ -254,9 +273,10 @@ class TestErrorTypeInEvalResult:
                     )
 
     async def test_successful_eval_error_type_is_none(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """When eval succeeds with score=1.0, error_type should be None."""
+        await self._setup_zai_config(app_client, auth_headers)
         from unittest.mock import patch, MagicMock, AsyncMock
         import json
 

@@ -11,7 +11,6 @@ import pytest
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
-
 # ===========================================================================
 # Unit tests — _compute_eval_summaries category breakdown
 # ===========================================================================
@@ -134,6 +133,24 @@ class TestComputeEvalSummariesCategory:
 # ===========================================================================
 
 class TestCategoryInImportAndResults:
+    async def _setup_zai_config(self, app_client, auth_headers):
+        """Add Zai provider + GLM model to test user config."""
+        resp = await app_client.post("/api/config/provider", headers=auth_headers, json={
+            "provider_key": "zai",
+            "display_name": "Zai",
+            "api_base": "https://api.z.ai/api/coding/paas/v4/",
+            "api_key_env": "ZAI_API_KEY",
+            "model_id_prefix": "",
+        })
+        assert resp.status_code in (200, 400)
+        resp = await app_client.post("/api/config/model", headers=auth_headers, json={
+            "provider_key": "zai",
+            "id": "GLM-4.5-Air",
+            "display_name": "GLM-4.5-Air",
+            "context_window": 128000,
+        })
+        assert resp.status_code in (200, 400)
+
     async def test_import_with_category_preserves_it(
         self, app_client, auth_headers
     ):
@@ -178,9 +195,10 @@ class TestCategoryInImportAndResults:
         assert "complex" in cats
 
     async def test_eval_result_has_category_field(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """Running a tool eval produces results with a category field."""
+        await self._setup_zai_config(app_client, auth_headers)
         from unittest.mock import patch, MagicMock, AsyncMock
 
         resp = await app_client.post("/api/tool-eval/import", headers=auth_headers, json={
@@ -229,9 +247,10 @@ class TestCategoryInImportAndResults:
                     assert "category" in r, f"category missing from result: {r.keys()}"
 
     async def test_eval_summary_has_category_breakdown(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """Eval summary (summary_json) includes category_breakdown per model."""
+        await self._setup_zai_config(app_client, auth_headers)
         from unittest.mock import patch, MagicMock, AsyncMock
 
         resp = await app_client.post("/api/tool-eval/import", headers=auth_headers, json={

@@ -82,10 +82,29 @@ async def _create_param_tune_run(app_client, auth_headers, suite_name="Corr Test
 # ===========================================================================
 
 class TestCorrelationEndpoint:
+    async def _setup_zai_config(self, app_client, auth_headers):
+        """Add Zai provider + GLM model to test user config."""
+        resp = await app_client.post("/api/config/provider", headers=auth_headers, json={
+            "provider_key": "zai",
+            "display_name": "Zai",
+            "api_base": "https://api.z.ai/api/coding/paas/v4/",
+            "api_key_env": "ZAI_API_KEY",
+            "model_id_prefix": "",
+        })
+        assert resp.status_code in (200, 400)
+        resp = await app_client.post("/api/config/model", headers=auth_headers, json={
+            "provider_key": "zai",
+            "id": "GLM-4.5-Air",
+            "display_name": "GLM-4.5-Air",
+            "context_window": 128000,
+        })
+        assert resp.status_code in (200, 400)
+
     async def test_correlation_returns_200(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """GET /api/param-tune/correlation/{run_id} returns 200 for valid run."""
+        await self._setup_zai_config(app_client, auth_headers)
         _, run_id = await _create_param_tune_run(
             app_client, auth_headers, "Corr 200 Suite"
         )
@@ -99,9 +118,10 @@ class TestCorrelationEndpoint:
         assert resp.status_code == 200
 
     async def test_correlation_returns_run_id(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """Correlation response includes run_id field."""
+        await self._setup_zai_config(app_client, auth_headers)
         _, run_id = await _create_param_tune_run(
             app_client, auth_headers, "Corr RunID Suite"
         )
@@ -118,9 +138,10 @@ class TestCorrelationEndpoint:
         assert data["run_id"] == run_id
 
     async def test_correlation_returns_data_array(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """Correlation response contains a 'data' array of combo entries."""
+        await self._setup_zai_config(app_client, auth_headers)
         _, run_id = await _create_param_tune_run(
             app_client, auth_headers, "Corr Data Suite"
         )
@@ -137,9 +158,10 @@ class TestCorrelationEndpoint:
         assert isinstance(data["data"], list)
 
     async def test_correlation_entry_has_three_axes(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """Each correlation data entry has speed, cost, and quality_score axes."""
+        await self._setup_zai_config(app_client, auth_headers)
         _, run_id = await _create_param_tune_run(
             app_client, auth_headers, "Corr Axes Suite"
         )
@@ -173,9 +195,10 @@ class TestCorrelationEndpoint:
             )
 
     async def test_correlation_has_judge_scores_flag(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """Correlation response includes has_judge_scores boolean flag."""
+        await self._setup_zai_config(app_client, auth_headers)
         _, run_id = await _create_param_tune_run(
             app_client, auth_headers, "Corr Scores Flag Suite"
         )
@@ -192,9 +215,10 @@ class TestCorrelationEndpoint:
         assert isinstance(data["has_judge_scores"], bool)
 
     async def test_correlation_has_optimization_mode(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """Correlation response includes optimization_mode field."""
+        await self._setup_zai_config(app_client, auth_headers)
         _, run_id = await _create_param_tune_run(
             app_client, auth_headers, "Corr Mode Suite"
         )
@@ -225,9 +249,10 @@ class TestCorrelationEndpoint:
         assert resp.status_code in (401, 403)
 
     async def test_correlation_without_judge_scores_has_null_quality(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """Without judge scoring, quality_score in data entries is None."""
+        await self._setup_zai_config(app_client, auth_headers)
         _, run_id = await _create_param_tune_run(
             app_client, auth_headers, "Corr No Quality Suite"
         )
@@ -250,10 +275,29 @@ class TestCorrelationEndpoint:
 # ===========================================================================
 
 class TestScoreEndpoint:
+    async def _setup_zai_config(self, app_client, auth_headers):
+        """Add Zai provider + GLM model to test user config."""
+        resp = await app_client.post("/api/config/provider", headers=auth_headers, json={
+            "provider_key": "zai",
+            "display_name": "Zai",
+            "api_base": "https://api.z.ai/api/coding/paas/v4/",
+            "api_key_env": "ZAI_API_KEY",
+            "model_id_prefix": "",
+        })
+        assert resp.status_code in (200, 400)
+        resp = await app_client.post("/api/config/model", headers=auth_headers, json={
+            "provider_key": "zai",
+            "id": "GLM-4.5-Air",
+            "display_name": "GLM-4.5-Air",
+            "context_window": 128000,
+        })
+        assert resp.status_code in (200, 400)
+
     async def test_score_endpoint_returns_200_or_runs(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """POST /api/param-tune/correlation/{run_id}/score returns 200."""
+        await self._setup_zai_config(app_client, auth_headers)
         _, run_id = await _create_param_tune_run(
             app_client, auth_headers, "Score Endpoint Suite"
         )

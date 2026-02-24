@@ -18,6 +18,13 @@
           Import Suite
         </button>
         <button
+          @click="importBfclJson"
+          class="px-4 py-2 rounded-sm text-xs font-display whitespace-nowrap flex items-center gap-2 border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors"
+        >
+          <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+          Import BFCL
+        </button>
+        <button
           @click="downloadExample"
           class="px-4 py-2 rounded-sm text-xs font-display whitespace-nowrap flex items-center gap-2 border border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-500 transition-colors"
           title="Download example JSON template for import"
@@ -142,6 +149,34 @@ function importSuiteJson() {
       openSuite(result.suite_id)
     } catch (err) {
       showToast('Failed to import: ' + (err.message || 'invalid JSON'), 'error')
+    }
+  }
+  input.click()
+}
+
+function importBfclJson() {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.json'
+  input.onchange = async (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    try {
+      const text = await file.text()
+      const data = JSON.parse(text)
+      // BFCL format has "function" + "question" keys (not "name" + "tools")
+      const entries = Array.isArray(data) ? data : [data]
+      if (!entries.length || (!entries[0].function && !entries[0].question)) {
+        showToast('Invalid BFCL format: expected "function" and "question" fields', 'error')
+        return
+      }
+      const suiteName = file.name.replace(/\.json$/i, '')
+      const result = await store.importBfclSuite(entries, suiteName)
+      showToast(`Imported BFCL suite with ${result.test_cases_created} test cases`, 'success')
+      await store.loadSuites()
+      openSuite(result.suite_id)
+    } catch (err) {
+      showToast('Failed to import BFCL: ' + (err.message || 'invalid JSON'), 'error')
     }
   }
   input.click()

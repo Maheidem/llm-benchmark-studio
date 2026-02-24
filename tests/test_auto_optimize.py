@@ -14,7 +14,7 @@ pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
 # ===========================================================================
-# Unit tests — param clamping logic
+# Unit tests — param clamping logic (sync, no asyncio mark needed)
 # ===========================================================================
 
 class TestAutoOptimizeParamClamping:
@@ -38,10 +38,28 @@ class TestAutoOptimizeParamClamping:
 
 
 # ===========================================================================
-# API contract tests
+# API contract tests (async)
 # ===========================================================================
 
 class TestAutoOptimizeEndpoint:
+    async def _setup_zai_config(self, app_client, auth_headers):
+        """Add Zai provider + GLM model to test user config."""
+        resp = await app_client.post("/api/config/provider", headers=auth_headers, json={
+            "provider_key": "zai",
+            "display_name": "Zai",
+            "api_base": "https://api.z.ai/api/coding/paas/v4/",
+            "api_key_env": "ZAI_API_KEY",
+            "model_id_prefix": "",
+        })
+        assert resp.status_code in (200, 400)
+        resp = await app_client.post("/api/config/model", headers=auth_headers, json={
+            "provider_key": "zai",
+            "id": "GLM-4.5-Air",
+            "display_name": "GLM-4.5-Air",
+            "context_window": 128000,
+        })
+        assert resp.status_code in (200, 400)
+
     async def _create_suite_with_prompt(self, app_client, auth_headers, name):
         """Helper: create suite and a prompt tune run for auto-optimize."""
         resp = await app_client.post("/api/tool-eval/import", headers=auth_headers, json={
@@ -95,7 +113,7 @@ class TestAutoOptimizeEndpoint:
         strict=False,
     )
     async def test_auto_optimize_job_submitted(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """Submitting auto-optimize with valid suite returns a job_id.
 
@@ -104,6 +122,7 @@ class TestAutoOptimizeEndpoint:
         new job_type), this test should pass with status_code == 200.
         See: db.py line ~421, jobs.job_type CHECK constraint.
         """
+        await self._setup_zai_config(app_client, auth_headers)
         suite_id = await self._create_suite_with_prompt(
             app_client, auth_headers, "AutoOpt Suite"
         )
@@ -176,7 +195,7 @@ class TestAutoOptimizeEndpoint:
 
 
 # ===========================================================================
-# WS event type validation (structure check)
+# WS event type validation (sync, no asyncio mark needed)
 # ===========================================================================
 
 class TestAutoOptimizeWSEvents:
@@ -209,19 +228,38 @@ class TestAutoOptimizeWSEvents:
 
 
 # ===========================================================================
-# Job type registration
+# Job type registration (async)
 # ===========================================================================
 
 class TestAutoOptimizeJobType:
+    async def _setup_zai_config(self, app_client, auth_headers):
+        """Add Zai provider + GLM model to test user config."""
+        resp = await app_client.post("/api/config/provider", headers=auth_headers, json={
+            "provider_key": "zai",
+            "display_name": "Zai",
+            "api_base": "https://api.z.ai/api/coding/paas/v4/",
+            "api_key_env": "ZAI_API_KEY",
+            "model_id_prefix": "",
+        })
+        assert resp.status_code in (200, 400)
+        resp = await app_client.post("/api/config/model", headers=auth_headers, json={
+            "provider_key": "zai",
+            "id": "GLM-4.5-Air",
+            "display_name": "GLM-4.5-Air",
+            "context_window": 128000,
+        })
+        assert resp.status_code in (200, 400)
+
     @pytest.mark.xfail(
         reason="DB schema gap: 'prompt_auto_optimize' not in jobs.job_type CHECK constraint. "
                "Fix: add 'prompt_auto_optimize' to db.py jobs table CHECK and re-run migration.",
         strict=False,
     )
     async def test_auto_optimize_job_type_in_jobs_list(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """After submitting, a job of type 'prompt_auto_optimize' appears in jobs list."""
+        await self._setup_zai_config(app_client, auth_headers)
         suite_id = await TestAutoOptimizeEndpoint()._create_suite_with_prompt(
             app_client, auth_headers, "AutoOpt Job Type Suite"
         )

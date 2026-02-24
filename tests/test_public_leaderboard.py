@@ -152,10 +152,29 @@ class TestLeaderboardOptIn:
 # ===========================================================================
 
 class TestLeaderboardAutoContribution:
+    async def _setup_zai_config(self, app_client, auth_headers):
+        """Add Zai provider + GLM model to test user config."""
+        resp = await app_client.post("/api/config/provider", headers=auth_headers, json={
+            "provider_key": "zai",
+            "display_name": "Zai",
+            "api_base": "https://api.z.ai/api/coding/paas/v4/",
+            "api_key_env": "ZAI_API_KEY",
+            "model_id_prefix": "",
+        })
+        assert resp.status_code in (200, 400)
+        resp = await app_client.post("/api/config/model", headers=auth_headers, json={
+            "provider_key": "zai",
+            "id": "GLM-4.5-Air",
+            "display_name": "GLM-4.5-Air",
+            "context_window": 128000,
+        })
+        assert resp.status_code in (200, 400)
+
     async def test_opted_in_eval_contributes_to_leaderboard(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """When user is opted in and runs an eval, leaderboard is updated."""
+        await self._setup_zai_config(app_client, auth_headers)
         from unittest.mock import patch, MagicMock, AsyncMock
 
         # Opt in
@@ -229,9 +248,10 @@ class TestLeaderboardAutoContribution:
         )
 
     async def test_opted_out_eval_does_not_contribute(
-        self, app_client, auth_headers, clear_active_jobs, _patch_db_path, zai_config
+        self, app_client, auth_headers, clear_active_jobs, _patch_db_path
     ):
         """When user is opted out, eval run does not change leaderboard."""
+        await self._setup_zai_config(app_client, auth_headers)
         import aiosqlite
         from unittest.mock import patch, MagicMock, AsyncMock
 

@@ -878,7 +878,10 @@ async def export_tool_suite_bfcl(suite_id: str, user: dict = Depends(auth.get_cu
 @router.post("/api/tool-eval/import/bfcl")
 async def import_bfcl_suite(request: Request, user: dict = Depends(auth.get_current_user)):
     """T4: Import a BFCL V3-compatible JSON file as a tool suite."""
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
     # Support both single entry and array
     if isinstance(body, dict):

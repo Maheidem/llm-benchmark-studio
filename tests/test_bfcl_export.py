@@ -307,3 +307,137 @@ class TestBFCLImport:
             json=BFCL_SAMPLE,
         )
         assert resp.status_code in (401, 403)
+
+    async def test_import_valid_bfcl_v3_json(self, app_client, auth_headers):
+        """BFCL import with valid V3 JSON (function, question, answer keys) returns 200."""
+        bfcl_v3 = [
+            {
+                "function": [
+                    {
+                        "name": "get_weather",
+                        "description": "Get current weather for a city",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "city": {"type": "string", "description": "City name"},
+                            },
+                            "required": ["city"],
+                        },
+                    }
+                ],
+                "question": [[{"role": "user", "content": "What's the weather in Tokyo?"}]],
+                "answer": [{"get_weather": {"city": "Tokyo"}}],
+            }
+        ]
+        resp = await app_client.post(
+            "/api/tool-eval/import/bfcl",
+            headers=auth_headers,
+            json=bfcl_v3,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "suite_id" in data
+        assert data["suite_id"]
+
+    async def test_import_x_suite_name_header_sets_suite_name(self, app_client, auth_headers):
+        """X-Suite-Name header sets the suite name on the imported suite."""
+        suite_name = "My Custom BFCL Suite"
+        resp = await app_client.post(
+            "/api/tool-eval/import/bfcl",
+            headers={**auth_headers, "X-Suite-Name": suite_name},
+            json=BFCL_SAMPLE,
+        )
+        assert resp.status_code == 200
+        suite_id = resp.json()["suite_id"]
+
+        detail_resp = await app_client.get(
+            f"/api/tool-suites/{suite_id}",
+            headers=auth_headers,
+        )
+        assert detail_resp.status_code == 200
+        assert detail_resp.json()["name"] == suite_name
+
+    async def test_import_empty_array_returns_400(self, app_client, auth_headers):
+        """BFCL import with empty array returns 400."""
+        resp = await app_client.post(
+            "/api/tool-eval/import/bfcl",
+            headers=auth_headers,
+            json=[],
+        )
+        assert resp.status_code == 400
+        assert "error" in resp.json()
+
+    async def test_import_invalid_non_json_returns_400(self, app_client, auth_headers):
+        """BFCL import with non-JSON body returns 400 with error message."""
+        resp = await app_client.post(
+            "/api/tool-eval/import/bfcl",
+            headers={**auth_headers, "Content-Type": "application/json"},
+            content=b"not valid json at all!!!",
+        )
+        assert resp.status_code == 400
+        assert "Invalid JSON" in resp.json()["error"]
+
+    async def test_import_creates_correct_number_of_test_cases(self, app_client, auth_headers):
+        """BFCL import creates exactly as many test cases as entries with valid questions."""
+        multi_entry = [
+            {
+                "function": [
+                    {
+                        "name": "search",
+                        "description": "Search the web",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"query": {"type": "string"}},
+                            "required": ["query"],
+                        },
+                    }
+                ],
+                "question": [[{"role": "user", "content": "Search for cats"}]],
+                "answer": [{"search": {"query": "cats"}}],
+            },
+            {
+                "function": [
+                    {
+                        "name": "search",
+                        "description": "Search the web",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"query": {"type": "string"}},
+                            "required": ["query"],
+                        },
+                    }
+                ],
+                "question": [[{"role": "user", "content": "Search for dogs"}]],
+                "answer": [{"search": {"query": "dogs"}}],
+            },
+            {
+                "function": [
+                    {
+                        "name": "search",
+                        "description": "Search the web",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"query": {"type": "string"}},
+                            "required": ["query"],
+                        },
+                    }
+                ],
+                "question": [[{"role": "user", "content": "Search for birds"}]],
+                "answer": [{"search": {"query": "birds"}}],
+            },
+        ]
+        resp = await app_client.post(
+            "/api/tool-eval/import/bfcl",
+            headers=auth_headers,
+            json=multi_entry,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["test_cases_created"] == 3
+
+        detail_resp = await app_client.get(
+            f"/api/tool-suites/{data['suite_id']}",
+            headers=auth_headers,
+        )
+        assert detail_resp.status_code == 200
+        assert len(detail_resp.json().get("test_cases", [])) == 3

@@ -20,9 +20,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 
-pytestmark = pytest.mark.asyncio(loop_scope="session")
-
-
 def _clear_forgot_limiter():
     """Reset the forgot-password rate limiter so tests don't interfere with each other."""
     import auth as auth_module
@@ -44,6 +41,7 @@ def _sha256(raw: str) -> str:
 # =========================================================================
 
 
+@pytest.mark.asyncio(loop_scope="session")
 class TestForgotPassword:
     """Tests for the forgot-password endpoint."""
 
@@ -169,6 +167,7 @@ class TestForgotPassword:
 # =========================================================================
 
 
+@pytest.mark.asyncio(loop_scope="session")
 class TestResetPassword:
     """Tests for the reset-password endpoint."""
 
@@ -350,6 +349,7 @@ class TestResetPassword:
 # =========================================================================
 
 
+@pytest.mark.asyncio(loop_scope="session")
 class TestGoogleAuthorize:
     """Tests for the Google OAuth authorize endpoint."""
 
@@ -435,6 +435,7 @@ class TestGoogleAuthorize:
 # =========================================================================
 
 
+@pytest.mark.asyncio(loop_scope="session")
 class TestGoogleCallback:
     """Tests for the Google OAuth callback endpoint."""
 

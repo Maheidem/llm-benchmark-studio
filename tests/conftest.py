@@ -119,7 +119,32 @@ async def test_user(app_client):
 
 
 @pytest_asyncio.fixture(scope="session")
-async def auth_headers(test_user):
+async def _set_test_rate_limits(test_user, _patch_db_path):
+    """Set very high rate limits for the test user to prevent 429 errors.
+
+    The test suite creates many jobs (40+ tests using clear_active_jobs).
+    Default hourly limit is 20, which is exceeded in a full suite run.
+    This fixture raises the limits once at session start.
+    """
+    import aiosqlite
+
+    user, _ = test_user
+    async with aiosqlite.connect(str(_patch_db_path), timeout=10) as conn:
+        await conn.execute(
+            """
+            INSERT INTO rate_limits (user_id, benchmarks_per_hour, max_concurrent)
+            VALUES (?, 10000, 10)
+            ON CONFLICT(user_id) DO UPDATE SET
+                benchmarks_per_hour = 10000,
+                max_concurrent = 10
+            """,
+            (user["id"],),
+        )
+        await conn.commit()
+
+
+@pytest_asyncio.fixture(scope="session")
+async def auth_headers(test_user, _set_test_rate_limits):
     """Authorization headers for the test user."""
     _, token = test_user
     return {"Authorization": f"Bearer {token}"}
@@ -181,17 +206,29 @@ async def clear_active_jobs(test_user, _patch_db_path):
 
     This prevents rate-limit 429 errors when multiple tests create jobs
     sequentially within the same session-scoped user.
+
+    Retries up to 15 times with 0.5s sleep between attempts to wait out
+    any background job that holds a write lock on the SQLite database.
     """
     import aiosqlite
 
     user, _ = test_user
-    async with aiosqlite.connect(str(_patch_db_path)) as conn:
-        await conn.execute(
-            "UPDATE jobs SET status = 'done', completed_at = datetime('now') "
-            "WHERE user_id = ? AND status IN ('pending', 'queued', 'running')",
-            (user["id"],),
-        )
-        await conn.commit()
+    last_exc = None
+    for attempt in range(15):
+        try:
+            async with aiosqlite.connect(str(_patch_db_path), timeout=5) as conn:
+                await conn.execute(
+                    "UPDATE jobs SET status = 'done', completed_at = datetime('now') "
+                    "WHERE user_id = ? AND status IN ('pending', 'queued', 'running')",
+                    (user["id"],),
+                )
+                await conn.commit()
+            return  # success
+        except Exception as exc:
+            last_exc = exc
+            await asyncio.sleep(0.5)
+    # If all retries exhausted, raise the last exception
+    raise last_exc
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +249,36 @@ ZAI_MODEL = {
     "display_name": "GLM-4.5-Air",
     "context_window": 128000,
 }
+
+@pytest_asyncio.fixture(scope="session")
+async def zai_config(app_client, auth_headers):
+    """Add Zai provider + GLM-4.5-Air model to the test user's config.
+
+    Required for mock-based tool eval tests that pass 'models: ["GLM-4.5-Air"]'.
+    Session-scoped: runs once per session. Safe to re-run (idempotent).
+    """
+    # Add provider
+    resp = await app_client.post("/api/config/provider", headers=auth_headers, json={
+        "provider_key": "zai",
+        "display_name": "Zai",
+        "api_base": "https://api.z.ai/api/coding/paas/v4/",
+        "api_key_env": "ZAI_API_KEY",
+        "model_id_prefix": "",
+    })
+    # 400 with "already exists" is fine — it's idempotent
+    assert resp.status_code in (200, 400), f"Add provider failed: {resp.text}"
+
+    # Add model
+    resp = await app_client.post("/api/config/model", headers=auth_headers, json={
+        "provider_key": "zai",
+        "id": "GLM-4.5-Air",
+        "display_name": "GLM-4.5-Air",
+        "context_window": 128000,
+    })
+    assert resp.status_code in (200, 400), f"Add model failed: {resp.text}"
+
+    return {"provider_key": "zai", "model_id": "GLM-4.5-Air"}
+
 
 TOOL_SUITE_FIXTURE = {
     "name": "Test Weather Suite",

@@ -15,7 +15,7 @@ VALID_VALUES = {"PASS", "NORMALIZED", "FAIL"}
 
 
 # ===========================================================================
-# Unit tests — pure function, no DB needed
+# Unit tests — pure function, no DB needed (sync, no asyncio mark needed)
 # ===========================================================================
 
 class TestClassifyFormatCompliance:
@@ -118,14 +118,33 @@ class TestClassifyFormatCompliance:
 
 
 # ===========================================================================
-# API contract tests — format_compliance appears in eval results
+# API contract tests — format_compliance appears in eval results (async)
 # ===========================================================================
 
 class TestFormatComplianceInEvalResult:
+    async def _setup_zai_config(self, app_client, auth_headers):
+        """Add Zai provider + GLM model to test user config."""
+        resp = await app_client.post("/api/config/provider", headers=auth_headers, json={
+            "provider_key": "zai",
+            "display_name": "Zai",
+            "api_base": "https://api.z.ai/api/coding/paas/v4/",
+            "api_key_env": "ZAI_API_KEY",
+            "model_id_prefix": "",
+        })
+        assert resp.status_code in (200, 400)
+        resp = await app_client.post("/api/config/model", headers=auth_headers, json={
+            "provider_key": "zai",
+            "id": "GLM-4.5-Air",
+            "display_name": "GLM-4.5-Air",
+            "context_window": 128000,
+        })
+        assert resp.status_code in (200, 400)
+
     async def test_eval_result_has_format_compliance_field(
-        self, app_client, auth_headers, clear_active_jobs, zai_config
+        self, app_client, auth_headers, clear_active_jobs
     ):
         """Running a tool eval produces results with format_compliance field."""
+        await self._setup_zai_config(app_client, auth_headers)
         from unittest.mock import patch, MagicMock, AsyncMock
         import json
 
