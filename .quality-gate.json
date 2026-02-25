@@ -1,0 +1,20 @@
+{
+  "journey_docs_path": ".documentation/user-journeys",
+  "gated_patterns": [
+    {"pattern": "routers/*.py", "exclude": ["routers/helpers.py", "routers/__init__.py"]},
+    {"pattern": "frontend/src/views/*.vue"},
+    {"pattern": "frontend/src/stores/*.js"},
+    {"pattern": "job_handlers.py"},
+    {"pattern": "schemas.py"}
+  ],
+  "tab_mapping": {
+    "benchmark": ["routers/benchmark.py", "Benchmark*", "benchmark*"],
+    "tool-eval": ["routers/tool_eval.py", "ToolEval*", "toolEval*"],
+    "param-tune": ["routers/param_tune.py", "ParamTun*", "paramTune*"],
+    "prompt-tune": ["routers/prompt_tune.py", "PromptTun*", "promptTune*"],
+    "auto-optimize": ["routers/prompt_tune.py"],
+    "judge": ["routers/judge.py", "Judge*", "judge*"],
+    "analytics": ["routers/analytics.py", "Analytics*", "analytics*"],
+    "settings": ["routers/settings.py", "routers/keys.py", "routers/admin.py", "routers/onboarding.py", "Settings*", "settings*"]
+  }
+}
