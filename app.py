@@ -230,6 +230,10 @@ async def lifespan(app_instance):
     await db.init_db()
     # Clean up old audit log entries
     await db.cleanup_audit_log(retention_days=90)
+    # Clean up expired refresh tokens (CRIT-4)
+    expired_count = await db.cleanup_expired_tokens()
+    if expired_count > 0:
+        logger.info("Cleaned up %d expired refresh tokens", expired_count)
     # Ensure ADMIN_EMAIL user has admin role (promote existing or create new)
     admin_email = os.environ.get("ADMIN_EMAIL")
     if admin_email:
@@ -256,6 +260,14 @@ async def lifespan(app_instance):
     stale_prompt = await db.cleanup_stale_prompt_tune_runs(minutes=0)
     if stale_prompt:
         logger.info("Cleaned up %d stale prompt tune run(s)", stale_prompt)
+    # Clean up terminal jobs older than 180 days
+    old_jobs = await db.cleanup_old_jobs(retention_days=180)
+    if old_jobs:
+        logger.info("Cleaned up %d old job record(s)", old_jobs)
+    # Clean up expired/used password reset tokens
+    old_tokens = await db.cleanup_old_password_reset_tokens()
+    if old_tokens:
+        logger.info("Cleaned up %d expired password reset token(s)", old_tokens)
     # Initialize job registry (startup recovery + watchdog)
     job_registry.set_ws_manager(ws_manager)
     await job_registry.startup()

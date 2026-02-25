@@ -223,28 +223,26 @@ async def mcp_import(request: Request, user: dict = Depends(auth.get_current_use
     if err:
         return JSONResponse({"error": f"Schema conversion error: {err}"}, status_code=400)
 
-    # Create suite via existing DB function
-    suite_id = await db.create_tool_suite(
-        user["id"], suite_name, suite_description, json.dumps(openai_tools)
-    )
-
-    # Generate test cases if requested
-    test_cases_generated = 0
+    # Build cases list for atomic batch insert (CRIT-5)
+    cases = []
     if generate_tests:
         for tool in openai_tools:
             tc = generate_test_case(tool)
-            await db.create_test_case(
-                suite_id,
-                tc["prompt"],
-                tc["expected_tool"],
-                json.dumps(tc["expected_params"]) if tc["expected_params"] else None,
-                "exact",
-            )
-            test_cases_generated += 1
+            cases.append({
+                "prompt": tc["prompt"],
+                "expected_tool": tc["expected_tool"],
+                "expected_params": json.dumps(tc["expected_params"]) if tc["expected_params"] else None,
+                "param_scoring": "exact",
+            })
+
+    # Create suite + test cases in one atomic transaction
+    suite_id = await db.create_suite_with_cases(
+        user["id"], suite_name, suite_description, json.dumps(openai_tools), cases
+    )
 
     return {
         "status": "ok",
         "suite_id": suite_id,
         "tools_imported": len(openai_tools),
-        "test_cases_generated": test_cases_generated,
+        "test_cases_generated": len(cases),
     }

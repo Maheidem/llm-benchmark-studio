@@ -623,9 +623,9 @@ async def import_tool_suite(request: Request, user: dict = Depends(auth.get_curr
         err = _validate_tools(tools)
         if err:
             return JSONResponse({"error": err}, status_code=400)
-    suite_id = await db.create_tool_suite(user["id"], name, description, json.dumps(tools))
+    # Build cases list for atomic batch insert (CRIT-5)
     test_cases = body.get("test_cases", [])
-    created = 0
+    cases = []
     for item in test_cases:
         prompt = item.get("prompt", "").strip()
         if not prompt:
@@ -657,9 +657,20 @@ async def import_tool_suite(request: Request, user: dict = Depends(auth.get_curr
         should_call_tool = bool(item.get("should_call_tool", True))
         # T3: category tag
         category = item.get("category")
-        await db.create_test_case(suite_id, prompt, expected_tool, expected_params, param_scoring, multi_turn_config=mt_config, scoring_config_json=sc_json, should_call_tool=should_call_tool, category=category)
-        created += 1
-    return {"status": "ok", "suite_id": suite_id, "test_cases_created": created}
+        cases.append({
+            "prompt": prompt,
+            "expected_tool": expected_tool,
+            "expected_params": expected_params,
+            "param_scoring": param_scoring,
+            "multi_turn_config": mt_config,
+            "scoring_config_json": sc_json,
+            "should_call_tool": should_call_tool,
+            "category": category,
+        })
+    suite_id = await db.create_suite_with_cases(
+        user["id"], name, description, json.dumps(tools), cases
+    )
+    return {"status": "ok", "suite_id": suite_id, "test_cases_created": len(cases)}
 
 
 @router.get("/api/tool-suites/{suite_id}")
@@ -923,9 +934,8 @@ async def import_bfcl_suite(request: Request, user: dict = Depends(auth.get_curr
         if err:
             return JSONResponse({"error": f"Invalid tools: {err}"}, status_code=400)
 
-    suite_id = await db.create_tool_suite(user["id"], suite_name, "", json.dumps(tools))
-    created = 0
-
+    # Build cases list for atomic batch insert (CRIT-5)
+    cases = []
     for entry in entries:
         # BFCL question format: [[{role, content}, ...], ...]
         question = entry.get("question", [])
@@ -955,13 +965,18 @@ async def import_bfcl_suite(request: Request, user: dict = Depends(auth.get_curr
                 break
 
         category = entry.get("test_category")
-        await db.create_test_case(
-            suite_id, prompt, expected_tool_val, expected_params_val,
-            "exact", category=category,
-        )
-        created += 1
+        cases.append({
+            "prompt": prompt,
+            "expected_tool": expected_tool_val,
+            "expected_params": expected_params_val,
+            "param_scoring": "exact",
+            "category": category,
+        })
 
-    return {"status": "ok", "suite_id": suite_id, "test_cases_created": created}
+    suite_id = await db.create_suite_with_cases(
+        user["id"], suite_name, "", json.dumps(tools), cases
+    )
+    return {"status": "ok", "suite_id": suite_id, "test_cases_created": len(cases)}
 
 
 @router.get("/api/tool-eval/import/example")

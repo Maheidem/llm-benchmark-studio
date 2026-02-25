@@ -135,16 +135,16 @@ class JobRegistry:
             active_count = self._user_slots.get(user_id, 0)
             initial_status = "queued" if active_count >= limit else "pending"
 
-        # Insert into DB
-        await db.create_job(
-            job_id=job_id,
-            user_id=user_id,
-            job_type=job_type,
-            status=initial_status,
-            params_json=json.dumps(params),
-            timeout_seconds=timeout_seconds,
-            progress_detail=progress_detail,
-        )
+            # Insert into DB while holding the lock to prevent TOCTOU race (MED-3)
+            await db.create_job(
+                job_id=job_id,
+                user_id=user_id,
+                job_type=job_type,
+                status=initial_status,
+                params_json=json.dumps(params),
+                timeout_seconds=timeout_seconds,
+                progress_detail=progress_detail,
+            )
 
         logger.info("Job created: job_id=%s type=%s user_id=%s status=%s", job_id, job_type, user_id, initial_status)
 
