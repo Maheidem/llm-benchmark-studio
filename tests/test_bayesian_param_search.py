@@ -110,6 +110,91 @@ class TestBuildOptunaCombos:
         # With no search space params, combos may be empty dicts or empty list
         assert isinstance(result, list)
 
+    # -------------------------------------------------------------------
+    # Dict-format {min, max, step} tests (bug fix: were silently dropped)
+    # -------------------------------------------------------------------
+
+    def test_dict_format_float_param_not_dropped(self):
+        """Dict-format float param is included in every combo (was silently dropped before fix)."""
+        from job_handlers import _build_optuna_combos
+        result = _build_optuna_combos(
+            {"temperature": {"min": 0.0, "max": 1.0, "step": 0.1}},
+            n_trials=5,
+            mode="random",
+        )
+        assert len(result) == 5
+        for combo in result:
+            assert "temperature" in combo, f"temperature missing from combo: {combo}"
+
+    def test_dict_format_float_param_values_in_range(self):
+        """Dict-format float param values stay within [min, max]."""
+        from job_handlers import _build_optuna_combos
+        result = _build_optuna_combos(
+            {"top_p": {"min": 0.5, "max": 1.0, "step": 0.1}},
+            n_trials=10,
+            mode="random",
+        )
+        for combo in result:
+            assert "top_p" in combo
+            assert 0.5 <= combo["top_p"] <= 1.0, f"top_p={combo['top_p']} out of [0.5, 1.0]"
+
+    def test_dict_format_int_param_not_dropped(self):
+        """Dict-format int param (top_k) is included in every combo."""
+        from job_handlers import _build_optuna_combos
+        result = _build_optuna_combos(
+            {"top_k": {"min": 10, "max": 50, "step": 10}},
+            n_trials=5,
+            mode="random",
+        )
+        assert len(result) == 5
+        for combo in result:
+            assert "top_k" in combo, f"top_k missing from combo: {combo}"
+            assert 10 <= combo["top_k"] <= 50
+
+    def test_dict_format_min_equals_max_returns_fixed_value(self):
+        """Dict-format where min==max returns that fixed value, not dropped."""
+        from job_handlers import _build_optuna_combos
+        result = _build_optuna_combos(
+            {"temperature": {"min": 0.7, "max": 0.7, "step": 0.1}},
+            n_trials=3,
+            mode="random",
+        )
+        for combo in result:
+            assert "temperature" in combo
+            assert combo["temperature"] == 0.7
+
+    def test_dict_format_mixed_with_list_format(self):
+        """Mixed search space: dict-format float + list-format categorical both appear."""
+        from job_handlers import _build_optuna_combos
+        result = _build_optuna_combos(
+            {
+                "temperature": {"min": 0.0, "max": 1.0, "step": 0.1},
+                "tool_choice": ["auto", "required"],
+            },
+            n_trials=5,
+            mode="bayesian",
+        )
+        assert len(result) == 5
+        for combo in result:
+            assert "temperature" in combo, f"temperature missing: {combo}"
+            assert "tool_choice" in combo, f"tool_choice missing: {combo}"
+            assert combo["tool_choice"] in ("auto", "required")
+
+    def test_dict_format_multiple_float_params(self):
+        """Multiple dict-format float params all appear in combos."""
+        from job_handlers import _build_optuna_combos
+        result = _build_optuna_combos(
+            {
+                "temperature": {"min": 0.0, "max": 2.0, "step": 0.1},
+                "top_p": {"min": 0.0, "max": 1.0, "step": 0.1},
+            },
+            n_trials=5,
+            mode="random",
+        )
+        for combo in result:
+            assert "temperature" in combo, f"temperature missing: {combo}"
+            assert "top_p" in combo, f"top_p missing: {combo}"
+
 
 # ===========================================================================
 # API contract tests — optimization_mode and n_trials in param tune request

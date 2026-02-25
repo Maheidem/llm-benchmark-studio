@@ -1022,9 +1022,25 @@ def _build_optuna_combos(search_space: dict, n_trials: int, mode: str) -> list[d
     # search_space format: {"temperature": [0.0, 0.5, 1.0], "top_p": [0.9, 0.95]}
     combos = []
 
+    _float_params = frozenset(("temperature", "top_p", "min_p", "repetition_penalty", "frequency_penalty", "presence_penalty"))
+
     def objective(trial):
         combo = {}
         for param_name, values in search_space.items():
+            # Handle dict format {min, max, step} from SearchSpaceBuilder
+            if isinstance(values, dict) and "min" in values and "max" in values:
+                min_v = float(values["min"])
+                max_v = float(values["max"])
+                step_v = float(values.get("step", 0.1))
+                if min_v == max_v:
+                    combo[param_name] = min_v
+                elif param_name in _float_params or isinstance(values.get("min"), float) or isinstance(values.get("max"), float):
+                    combo[param_name] = trial.suggest_float(param_name, min_v, max_v, step=step_v)
+                else:
+                    # Integer param (e.g. top_k, max_tokens)
+                    combo[param_name] = trial.suggest_int(param_name, int(min_v), int(max_v), step=max(1, int(step_v)))
+                continue
+            # Handle list format (categorical/enum params)
             if not isinstance(values, list) or not values:
                 continue
             # For numeric params with >2 distinct values, use float range
@@ -1033,7 +1049,7 @@ def _build_optuna_combos(search_space: dict, n_trials: int, mode: str) -> list[d
                 max_v = max(values)
                 if min_v == max_v:
                     combo[param_name] = min_v
-                elif param_name in ("temperature", "top_p", "min_p", "repetition_penalty", "frequency_penalty", "presence_penalty"):
+                elif param_name in _float_params:
                     combo[param_name] = trial.suggest_float(param_name, min_v, max_v)
                 else:
                     # Integer param (e.g. top_k, max_tokens)
