@@ -1001,6 +1001,35 @@ async def init_db():
         except Exception:
             logger.exception("Failed to migrate param_tune_runs CHECK constraint")
 
+        # Migration: add 'prompt_auto_optimize' to jobs CHECK constraint
+        try:
+            cursor = await db.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'"
+            )
+            row = await cursor.fetchone()
+            if row:
+                ddl = row[0] if isinstance(row, (tuple, list)) else row["sql"]
+                if "'prompt_auto_optimize'" not in ddl:
+                    logger.info("Migrating jobs: adding 'prompt_auto_optimize' to job_type CHECK")
+                    new_ddl = ddl.replace(
+                        "'scheduled_benchmark'\n                )",
+                        "'scheduled_benchmark',\n                    'prompt_auto_optimize'\n                )",
+                    )
+                    if new_ddl == ddl:
+                        # Try alternate formatting
+                        new_ddl = ddl.replace(
+                            "'scheduled_benchmark')",
+                            "'scheduled_benchmark', 'prompt_auto_optimize')",
+                        )
+                    await db.execute("ALTER TABLE jobs RENAME TO _jobs_old")
+                    await db.execute(new_ddl)
+                    await db.execute("INSERT INTO jobs SELECT * FROM _jobs_old")
+                    await db.execute("DROP TABLE _jobs_old")
+                    await db.commit()
+                    logger.info("Migration complete for jobs table")
+        except Exception:
+            logger.exception("Failed to migrate jobs CHECK constraint")
+
 
 # --- User CRUD ---
 
