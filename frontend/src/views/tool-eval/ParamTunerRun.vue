@@ -99,6 +99,20 @@
         {{ store.bestConfig.model_name || store.bestConfig.model_id || '' }}
         - {{ store.bestConfig.cases_passed || 0 }}/{{ store.bestConfig.cases_total || 0 }} cases passed
       </div>
+
+      <!-- Action buttons (visible when run is complete) -->
+      <div v-if="!store.isRunning" class="flex items-center gap-2 mt-3 pt-3" style="border-top:1px solid var(--border-subtle);">
+        <button
+          @click="applyBestConfig"
+          class="text-[10px] font-display tracking-wider uppercase px-3 py-1.5 rounded-sm transition-colors"
+          style="background:rgba(191,255,0,0.08);border:1px solid rgba(191,255,0,0.2);color:var(--lime);cursor:pointer;"
+        >Apply to Context</button>
+        <button
+          @click="saveAsProfile"
+          class="text-[10px] font-display tracking-wider uppercase px-3 py-1.5 rounded-sm transition-colors"
+          style="background:rgba(255,255,255,0.03);border:1px solid var(--border-subtle);color:var(--zinc-400);cursor:pointer;"
+        >Save as Profile</button>
+      </div>
     </div>
 
     <!-- Live Results -->
@@ -186,13 +200,19 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useParamTunerStore } from '../../stores/paramTuner.js'
+import { useProfilesStore } from '../../stores/profiles.js'
 import { useNotificationsStore } from '../../stores/notifications.js'
+import { useSharedContext } from '../../composables/useSharedContext.js'
 import { useToast } from '../../composables/useToast.js'
+import { useModal } from '../../composables/useModal.js'
 import ParamTunerResults from '../../components/tool-eval/ParamTunerResults.vue'
 
 const store = useParamTunerStore()
+const profilesStore = useProfilesStore()
 const notifStore = useNotificationsStore()
+const { setConfig } = useSharedContext()
 const { showToast } = useToast()
+const { inputModal } = useModal()
 
 const selectedResult = ref(null)
 
@@ -265,6 +285,49 @@ async function cancelTuning() {
 
 function onSelectResult(result) {
   selectedResult.value = result
+}
+
+function applyBestConfig() {
+  const bestConfig = store.bestConfig?.config
+  if (!bestConfig) {
+    showToast('No best config available', 'error')
+    return
+  }
+
+  const updates = { lastUpdatedBy: 'param_tuner' }
+  if (bestConfig.temperature != null) updates.temperature = bestConfig.temperature
+  if (bestConfig.tool_choice) updates.toolChoice = bestConfig.tool_choice
+  if (bestConfig.provider_params) updates.providerParams = bestConfig.provider_params
+
+  setConfig(updates)
+  showToast('Best config applied to shared context', 'success')
+}
+
+async function saveAsProfile() {
+  const bestConfig = store.bestConfig?.config
+  if (!bestConfig) {
+    showToast('No best config available', 'error')
+    return
+  }
+
+  const modelId = store.bestConfig.model_id || store.bestConfig.model_name || null
+
+  const result = await inputModal('Save as Profile', 'Profile name', { confirmLabel: 'Save' })
+  if (!result?.value?.trim()) return
+
+  try {
+    await profilesStore.createFromTuner({
+      source_type: 'param_tuner',
+      source_id: store.activeRunId,
+      model_id: modelId,
+      name: result.value.trim(),
+      params_json: bestConfig,
+      system_prompt: null,
+    })
+    showToast('Profile saved', 'success')
+  } catch (e) {
+    showToast(e.message || 'Failed to save profile', 'error')
+  }
 }
 
 function formatValue(val) {

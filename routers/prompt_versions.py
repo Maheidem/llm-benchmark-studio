@@ -34,6 +34,7 @@ async def create_prompt_version(request: Request, user: dict = Depends(auth.get_
         validated = PromptVersionCreate(
             prompt_text=body.get("prompt_text", ""),
             label=body.get("label", ""),
+            source=body.get("source", "manual"),
             parent_version_id=body.get("parent_version_id"),
         )
     except (ValidationError, Exception) as e:
@@ -43,7 +44,7 @@ async def create_prompt_version(request: Request, user: dict = Depends(auth.get_
         user_id=user["id"],
         prompt_text=validated.prompt_text,
         label=validated.label,
-        source="manual",
+        source=validated.source,
         parent_version_id=validated.parent_version_id,
     )
     return {"status": "ok", "version_id": version_id}

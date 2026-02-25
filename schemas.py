@@ -287,6 +287,7 @@ class ProfileFromTuner(BaseModel):
 class PromptVersionCreate(BaseModel):
     prompt_text: str = Field(..., min_length=1, max_length=500_000)
     label: str = Field(default="", max_length=256)
+    source: Literal["manual", "prompt_tuner", "auto_optimize", "import"] = "manual"
     parent_version_id: Optional[str] = None
 
 

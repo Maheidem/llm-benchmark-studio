@@ -41,6 +41,28 @@
         >{{ tab.label }}</button>
       </div>
 
+      <!-- Load from Prompt Library -->
+      <div class="flex items-center gap-2 mb-2">
+        <select
+          :value="''"
+          @change="loadFromLibrary($event.target.value); $event.target.value = ''"
+          class="flex-1 text-[11px] font-body px-2 py-1.5 rounded-sm"
+          style="background:rgba(255,255,255,0.03);border:1px solid var(--border-subtle);color:var(--zinc-400);outline:none;cursor:pointer;"
+        >
+          <option value="" disabled>Load from Prompt Library...</option>
+          <option
+            v-for="v in libraryVersions"
+            :key="v.id"
+            :value="v.id"
+          >{{ v.label || truncate(v.prompt_text, 60) }} ({{ v.source || 'manual' }})</option>
+        </select>
+        <button
+          v-if="libraryLoading"
+          disabled
+          class="text-[9px] text-zinc-600 font-body px-2"
+        >Loading...</button>
+      </div>
+
       <textarea
         :value="currentPrompt"
         @input="updatePrompt($event.target.value)"
@@ -54,7 +76,12 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
+import { usePromptLibraryStore } from '../../stores/promptLibrary.js'
+
+const libraryStore = usePromptLibraryStore()
+const libraryVersions = computed(() => libraryStore.versions)
+const libraryLoading = computed(() => libraryStore.loading)
 
 const props = defineProps({
   models: { type: Array, default: () => [] },
@@ -95,6 +122,25 @@ function clearAll() {
   emit('update:systemPrompts', {})
   activeTab.value = '_global'
 }
+
+function loadFromLibrary(versionId) {
+  const version = libraryVersions.value.find(v => v.id === versionId)
+  if (!version) return
+  updatePrompt(version.prompt_text)
+  expanded.value = true
+}
+
+function truncate(text, len) {
+  if (!text) return ''
+  return text.length > len ? text.slice(0, len) + '...' : text
+}
+
+// Load library versions on mount
+onMounted(() => {
+  if (libraryStore.versions.length === 0) {
+    libraryStore.loadVersions()
+  }
+})
 
 // Auto-expand if there's content
 watch(() => props.systemPrompts, (sp) => {
