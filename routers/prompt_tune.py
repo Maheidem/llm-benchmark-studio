@@ -424,12 +424,13 @@ async def run_prompt_auto_optimize(request: Request, user: dict = Depends(auth.g
     _target_models_body = {"targets": body.get("target_targets"), "models": body.get("target_models", [])}
     target_model_ids, target_set_eval = _parse_target_selection(_target_models_body)
 
-    meta_model_id = body.get("meta_model", "")
+    meta_model_id = body.get("meta_model") or body.get("optimization_model", "")
     if not meta_model_id:
         return JSONResponse({"error": "meta_model is required"}, status_code=400)
 
+    # If no target models specified, default to meta model (auto-optimize UI only sends optimization_model)
     if not target_model_ids:
-        return JSONResponse({"error": "target_models must be a non-empty list"}, status_code=400)
+        target_model_ids = [meta_model_id]
 
     # Validate suite exists + has test cases
     suite = await db.get_tool_suite(suite_id, user["id"])
@@ -446,7 +447,8 @@ async def run_prompt_auto_optimize(request: Request, user: dict = Depends(auth.g
     config = await _get_user_config(user["id"])
     all_targets = build_targets(config)
 
-    meta_targets = _find_target(all_targets, meta_model_id, body.get("meta_provider_key"))
+    meta_provider_key = body.get("meta_provider_key") or body.get("optimization_provider_key")
+    meta_targets = _find_target(all_targets, meta_model_id, meta_provider_key)
     if not meta_targets:
         return JSONResponse({"error": f"Meta model '{meta_model_id}' not found in config"}, status_code=400)
 
@@ -470,7 +472,7 @@ async def run_prompt_auto_optimize(request: Request, user: dict = Depends(auth.g
         "target_models": target_model_ids,
         "target_set": [list(t) for t in target_set_eval] if target_set_eval else None,
         "meta_model": meta_model_id,
-        "meta_provider_key": body.get("meta_provider_key"),
+        "meta_provider_key": meta_provider_key,
         "base_prompt": body.get("base_prompt"),
         "max_iterations": max_iterations,
         "population_size": population_size,
