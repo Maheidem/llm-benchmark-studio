@@ -64,6 +64,13 @@
                   class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm"
                   :style="originBadgeStyle(profile.origin_type)"
                 >{{ profile.origin_type }}</span>
+                <!-- Linked prompt version badge -->
+                <span
+                  v-if="profile.prompt_version_id"
+                  class="text-[9px] font-body px-1.5 py-0.5 rounded-sm"
+                  style="background:rgba(168,85,247,0.08);color:#A855F7;border:1px solid rgba(168,85,247,0.2)"
+                  :title="'Linked to prompt library version'"
+                >Linked: {{ profile.prompt_version_label || 'Library' }}</span>
               </div>
               <!-- Description -->
               <p v-if="profile.description" class="text-[10px] text-zinc-600 font-body mt-0.5 truncate">
@@ -155,8 +162,50 @@
 
           <!-- System Prompt -->
           <div>
-            <label class="field-label">System Prompt</label>
+            <div class="flex items-center justify-between mb-1.5">
+              <label class="field-label" style="margin-bottom:0">System Prompt</label>
+              <div class="flex items-center gap-0" style="border:1px solid var(--border-subtle);border-radius:2px;overflow:hidden;">
+                <button
+                  @click="promptMode = 'library'; form.system_prompt = ''"
+                  class="text-[9px] font-display tracking-wider uppercase px-2 py-1 transition-colors"
+                  :style="promptMode === 'library'
+                    ? 'background:rgba(168,85,247,0.15);color:#A855F7;'
+                    : 'background:transparent;color:#71717A;'"
+                >Link from Library</button>
+                <button
+                  @click="promptMode = 'inline'; form.prompt_version_id = null"
+                  class="text-[9px] font-display tracking-wider uppercase px-2 py-1 transition-colors"
+                  :style="promptMode === 'inline'
+                    ? 'background:rgba(191,255,0,0.08);color:var(--lime);'
+                    : 'background:transparent;color:#71717A;'"
+                >Write Inline</button>
+              </div>
+            </div>
+
+            <!-- Library mode -->
+            <div v-if="promptMode === 'library'" class="space-y-2">
+              <select
+                v-model="form.prompt_version_id"
+                class="settings-input"
+              >
+                <option :value="null">-- Select a prompt version --</option>
+                <option
+                  v-for="v in promptLibraryStore.versions"
+                  :key="v.id"
+                  :value="v.id"
+                >{{ v.label || `#${v.version_number || v.id?.slice(0, 6)}` }} ({{ v.source || 'manual' }})</option>
+              </select>
+              <!-- Preview of selected prompt -->
+              <div
+                v-if="form.prompt_version_id"
+                class="px-3 py-2 rounded-sm text-[10px] font-mono text-zinc-500 whitespace-pre-wrap break-all"
+                style="background:rgba(0,0,0,0.2);border:1px solid var(--border-subtle);max-height:80px;overflow-y:auto;"
+              >{{ promptLibraryStore.versions.find(v => v.id === form.prompt_version_id)?.prompt_text || '' }}</div>
+            </div>
+
+            <!-- Inline mode -->
             <textarea
+              v-else
               v-model="form.system_prompt"
               rows="3"
               placeholder="Optional system prompt override"
@@ -239,23 +288,27 @@
 import { ref, reactive, onMounted } from 'vue'
 import { useProfilesStore } from '../../stores/profiles.js'
 import { useConfigStore } from '../../stores/config.js'
+import { usePromptLibraryStore } from '../../stores/promptLibrary.js'
 import { useToast } from '../../composables/useToast.js'
 import { useModal } from '../../composables/useModal.js'
 
 const store = useProfilesStore()
 const configStore = useConfigStore()
+const promptLibraryStore = usePromptLibraryStore()
 const { showToast } = useToast()
 const { confirm } = useModal()
 
 const modalVisible = ref(false)
 const editingProfile = ref(null)
 const saving = ref(false)
+const promptMode = ref('inline') // 'inline' | 'library'
 
 const form = reactive({
   model_id: '',
   name: '',
   description: '',
   system_prompt: '',
+  prompt_version_id: null,
   is_default: false,
 })
 
@@ -305,7 +358,9 @@ function openCreate(prefillModelId = '') {
   form.name = ''
   form.description = ''
   form.system_prompt = ''
+  form.prompt_version_id = null
   form.is_default = false
+  promptMode.value = 'inline'
   paramPairs.value = []
   modalVisible.value = true
 }
@@ -314,8 +369,15 @@ function openEdit(profile) {
   editingProfile.value = profile
   form.name = profile.name
   form.description = profile.description || ''
-  form.system_prompt = profile.system_prompt || ''
   form.is_default = !!profile.is_default
+  form.prompt_version_id = profile.prompt_version_id || null
+  if (profile.prompt_version_id) {
+    promptMode.value = 'library'
+    form.system_prompt = ''
+  } else {
+    promptMode.value = 'inline'
+    form.system_prompt = profile.system_prompt || ''
+  }
   const params = safeParseParams(profile.params_json)
   paramPairs.value = Object.entries(params).map(([key, value]) => ({ key, value: String(value) }))
   modalVisible.value = true
@@ -354,13 +416,18 @@ async function handleSave() {
   saving.value = true
   try {
     const params_json = buildParamsJson()
+    const isLibrary = promptMode.value === 'library'
+    const promptPayload = isLibrary
+      ? { prompt_version_id: form.prompt_version_id || null, system_prompt: null }
+      : { system_prompt: form.system_prompt.trim() || null, prompt_version_id: null }
+
     if (editingProfile.value) {
       await store.updateProfile(editingProfile.value.id, {
         name: form.name.trim(),
         description: form.description.trim() || null,
-        system_prompt: form.system_prompt.trim() || null,
         is_default: form.is_default,
         params_json,
+        ...promptPayload,
       })
       showToast('Profile updated', 'success')
     } else {
@@ -368,10 +435,10 @@ async function handleSave() {
         model_id: form.model_id.trim(),
         name: form.name.trim(),
         description: form.description.trim() || '',
-        system_prompt: form.system_prompt.trim() || null,
         is_default: form.is_default,
         params_json,
         origin_type: 'manual',
+        ...promptPayload,
       })
       showToast('Profile created', 'success')
     }
@@ -411,6 +478,7 @@ async function handleDelete(profile) {
 onMounted(() => {
   store.fetchProfiles()
   if (!configStore.config) configStore.loadConfig()
+  promptLibraryStore.loadVersions()
 })
 </script>
 

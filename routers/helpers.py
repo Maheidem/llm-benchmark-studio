@@ -127,22 +127,14 @@ async def _get_user_config(user_id: str) -> dict:
     # 1. Non-provider settings from user_configs (defaults, prompt_templates, judge_settings, etc.)
     settings = await db.get_user_config(user_id)
     if settings is None:
-        # New user: seed defaults and providers
+        # New user: save default settings (no provider seeding — onboarding handles that)
         settings = {k: v for k, v in DEFAULT_CONFIG.items() if k != "providers"}
         await db.save_user_config(user_id, settings)
-        # Seed providers/models tables if empty
-        providers = await db.get_providers(user_id)
-        if not providers:
-            await db.seed_providers_for_new_user(user_id)
 
     config = dict(settings)
 
     # 2. Build providers section from normalized tables (always authoritative)
     providers = await db.get_providers(user_id)
-    if not providers:
-        # Fallback: seed from config.yaml if tables are empty
-        await db.seed_providers_for_new_user(user_id)
-        providers = await db.get_providers(user_id)
 
     config["providers"] = {}
     for p in providers:

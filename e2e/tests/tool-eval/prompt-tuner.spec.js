@@ -15,7 +15,7 @@ const { test, expect } = require('@playwright/test');
 const { AuthModal } = require('../../components/AuthModal');
 const { ProviderSetup } = require('../../components/ProviderSetup');
 const { SuiteSetup } = require('../../components/SuiteSetup');
-const { uniqueEmail, TEST_PASSWORD, TIMEOUT } = require('../../helpers/constants');
+const { uniqueEmail, TEST_PASSWORD, TIMEOUT, dismissOnboarding } = require('../../helpers/constants');
 
 const TEST_EMAIL = uniqueEmail('e2e-prompt-tuner');
 
@@ -181,6 +181,7 @@ test.describe('@critical Prompt Tuner', () => {
   test('Step 11: Refresh + verify notification persists', async () => {
     await page.reload();
     await page.waitForLoadState('networkidle');
+    await dismissOnboarding(page);
 
     // Wait for app hydration - bell should be interactive again
     await expect(page.locator('.notif-bell')).toBeVisible({ timeout: TIMEOUT.nav });
@@ -216,6 +217,7 @@ test.describe('@critical Prompt Tuner', () => {
     // Navigate back to prompt-tuner run page
     await page.goto('/tool-eval/prompt-tuner/run');
     await page.waitForLoadState('networkidle');
+    await dismissOnboarding(page);
 
     // Wait for "Best Prompt" text to appear (up to stress timeout)
     await expect(page.getByText('Best Prompt')).toBeVisible({
@@ -258,6 +260,7 @@ test.describe('@critical Prompt Tuner', () => {
   test('Step 16: Navigate to History, verify entry', async () => {
     await page.goto('/tool-eval/prompt-tuner/history');
     await page.waitForURL('**/tool-eval/prompt-tuner/history', { timeout: TIMEOUT.nav });
+    await dismissOnboarding(page);
 
     await expect(page.getByText('Prompt Tuner History')).toBeVisible({
       timeout: TIMEOUT.nav,

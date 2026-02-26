@@ -1171,6 +1171,9 @@ async def init_db():
         # Phase 6: Final cutover — drop deprecated string columns via table rebuilds
         await _apply_migration(db, 600, "Drop deprecated string columns from normalized tables", _migration_600_final_cutover)
 
+        # Phase 7: Repair broken FK references from migration 200
+        await _apply_migration(db, 601, "Repair judge_reports FK references", _migration_601_repair_judge_fks)
+
 
 # --- Migration helpers ---
 
@@ -1312,6 +1315,12 @@ async def _migration_200_drop_suite_name(conn):
     if "suite_name" not in ddl:
         logger.info("Migration 200: suite_name already absent from tables, skipping rebuild")
         return
+
+    # Must disable FK checks before RENAME to prevent SQLite 3.26+ from
+    # rewriting FK references in other tables to point to the temp _old name.
+    # PRAGMA foreign_keys can only be set outside a transaction.
+    await conn.commit()
+    await conn.execute("PRAGMA foreign_keys = OFF")
 
     # --- tool_eval_runs ---
     old_count_cursor = await conn.execute("SELECT COUNT(*) FROM tool_eval_runs")
@@ -1466,6 +1475,9 @@ async def _migration_200_drop_suite_name(conn):
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_tune_runs_experiment ON prompt_tune_runs(experiment_id)")
     await conn.commit()
     logger.info("Migration 200: prompt_tune_runs rebuilt successfully")
+
+    # Re-enable FK enforcement now that all table rebuilds are done
+    await conn.execute("PRAGMA foreign_keys = ON")
 
 
 async def _migration_300_prompt_fks(conn):
@@ -1893,6 +1905,116 @@ async def _migration_600_final_cutover(conn):
         await conn.execute("DROP TABLE _public_leaderboard_old")
         await conn.commit()
         logger.info("Migration 600: public_leaderboard rebuilt successfully")
+
+
+async def _migration_601_repair_judge_fks(conn):
+    """Migration 601: Repair broken FK references in judge_reports.
+
+    Migration 200 renamed tool_eval_runs -> _tool_eval_runs_old with
+    PRAGMA foreign_keys=ON, which caused SQLite 3.26+ to silently rewrite
+    FK references in judge_reports to point to '_tool_eval_runs_old'.
+    After migration 200 dropped that temp table, the FKs became dangling.
+    This migration rebuilds judge_reports with correct FK targets.
+    """
+    # Check if repair is needed by inspecting the current DDL
+    cursor = await conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='judge_reports'"
+    )
+    row = await cursor.fetchone()
+    if not row:
+        logger.info("Migration 601: judge_reports table not found, skipping")
+        return
+
+    ddl = row[0] if isinstance(row, (tuple, list)) else row["sql"]
+    if "_tool_eval_runs_old" not in ddl:
+        logger.info("Migration 601: judge_reports FKs are correct, skipping repair")
+        return
+
+    logger.info("Migration 601: repairing broken FK references in judge_reports")
+
+    old_count_cursor = await conn.execute("SELECT COUNT(*) FROM judge_reports")
+    old_count = (await old_count_cursor.fetchone())[0]
+
+    # Determine schema variant: pre-600 has 'judge_model TEXT' column, post-600 does not
+    has_judge_model_str = "judge_model TEXT" in ddl and "judge_model_id" in ddl
+
+    # Disable FK checks — PRAGMA can only be set outside a transaction
+    await conn.commit()
+    await conn.execute("PRAGMA foreign_keys = OFF")
+
+    await conn.execute("ALTER TABLE judge_reports RENAME TO _judge_reports_fk_repair")
+
+    if has_judge_model_str:
+        # Pre-600 schema: still has judge_model string column alongside judge_model_id
+        await conn.execute("""
+            CREATE TABLE judge_reports (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                eval_run_id TEXT,
+                eval_run_id_b TEXT,
+                judge_model TEXT NOT NULL,
+                mode TEXT NOT NULL CHECK(mode IN ('post_eval','live_inline','comparative')),
+                verdicts_json TEXT NOT NULL DEFAULT '[]',
+                report_json TEXT,
+                overall_grade TEXT,
+                overall_score REAL,
+                status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','error','interrupted')),
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                experiment_id TEXT,
+                parent_report_id TEXT,
+                version INTEGER NOT NULL DEFAULT 1,
+                instructions_json TEXT,
+                judge_model_id TEXT REFERENCES models(id) ON DELETE SET NULL,
+                FOREIGN KEY (eval_run_id) REFERENCES tool_eval_runs(id) ON DELETE SET NULL,
+                FOREIGN KEY (eval_run_id_b) REFERENCES tool_eval_runs(id) ON DELETE SET NULL,
+                FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE SET NULL
+            )
+        """)
+    else:
+        # Post-600 schema: judge_model string already dropped
+        await conn.execute("""
+            CREATE TABLE judge_reports (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                eval_run_id TEXT,
+                eval_run_id_b TEXT,
+                judge_model_id TEXT REFERENCES models(id) ON DELETE SET NULL,
+                mode TEXT NOT NULL CHECK(mode IN ('post_eval','live_inline','comparative')),
+                verdicts_json TEXT NOT NULL DEFAULT '[]',
+                report_json TEXT,
+                overall_grade TEXT,
+                overall_score REAL,
+                status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','error','interrupted')),
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                experiment_id TEXT,
+                parent_report_id TEXT,
+                version INTEGER NOT NULL DEFAULT 1,
+                instructions_json TEXT,
+                FOREIGN KEY (eval_run_id) REFERENCES tool_eval_runs(id) ON DELETE SET NULL,
+                FOREIGN KEY (eval_run_id_b) REFERENCES tool_eval_runs(id) ON DELETE SET NULL,
+                FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE SET NULL
+            )
+        """)
+
+    await conn.execute(
+        "INSERT INTO judge_reports SELECT * FROM _judge_reports_fk_repair"
+    )
+
+    new_count_cursor = await conn.execute("SELECT COUNT(*) FROM judge_reports")
+    new_count = (await new_count_cursor.fetchone())[0]
+    assert old_count == new_count, f"judge_reports row count mismatch: {old_count} vs {new_count}"
+
+    await conn.execute("DROP TABLE _judge_reports_fk_repair")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_user ON judge_reports(user_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_eval ON judge_reports(eval_run_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_ts ON judge_reports(user_id, timestamp DESC)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_experiment ON judge_reports(experiment_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_parent ON judge_reports(parent_report_id)")
+    await conn.commit()
+
+    # Re-enable FK enforcement
+    await conn.execute("PRAGMA foreign_keys = ON")
+    logger.info("Migration 601: judge_reports FK references repaired successfully (%d rows)", new_count)
 
 
 # --- User CRUD ---

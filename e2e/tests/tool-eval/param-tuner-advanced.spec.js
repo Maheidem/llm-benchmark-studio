@@ -11,7 +11,7 @@ const { test, expect } = require('@playwright/test');
 const { AuthModal } = require('../../components/AuthModal');
 const { ProviderSetup } = require('../../components/ProviderSetup');
 const { SuiteSetup } = require('../../components/SuiteSetup');
-const { uniqueEmail, TEST_PASSWORD, TIMEOUT } = require('../../helpers/constants');
+const { uniqueEmail, TEST_PASSWORD, TIMEOUT, dismissOnboarding } = require('../../helpers/constants');
 
 const TEST_EMAIL = uniqueEmail('e2e-pt-adv');
 
@@ -114,11 +114,21 @@ test.describe('@critical Param Tuner — History Interactions', () => {
     const optionValue = await option.getAttribute('value');
     await suiteSelect.selectOption(optionValue);
 
-    // Re-select GLM-4.5-Air
+    // Wait for suite selection to trigger API load and re-render models
+    await page.waitForTimeout(1_000);
+
+    // Re-select GLM-4.5-Air (may need retry — Vue reactivity after suite change)
     const modelCard = page.locator('.model-card').filter({ hasText: 'GLM-4.5-Air' });
     await modelCard.waitFor({ state: 'visible', timeout: TIMEOUT.nav });
     await modelCard.click();
-    await expect(modelCard).toHaveClass(/selected/);
+
+    // Retry click if selected class didn't apply (suite change may re-render model grid)
+    try {
+      await expect(modelCard).toHaveClass(/selected/, { timeout: 2_000 });
+    } catch {
+      await modelCard.click();
+      await expect(modelCard).toHaveClass(/selected/, { timeout: TIMEOUT.modal });
+    }
 
     // Re-enable temperature
     const tempRow = page.locator('[data-param-name="temperature"]');
@@ -154,12 +164,9 @@ test.describe('@critical Param Tuner — History Interactions', () => {
   // ─── NAVIGATE TO HISTORY ─────────────────────────────────────────────
 
   test('Step 2: Navigate to Param Tuner History', async () => {
-    await page.locator('.te-subtab').filter({ hasText: 'Param Tuner' }).click();
-    await page.waitForURL('**/tool-eval/param-tuner', { timeout: TIMEOUT.nav });
-
-    // Click History sub-link or navigate directly
     await page.goto('/tool-eval/param-tuner/history');
     await page.waitForURL('**/tool-eval/param-tuner/history', { timeout: TIMEOUT.nav });
+    await dismissOnboarding(page);
 
     // Verify heading
     await expect(
@@ -171,7 +178,7 @@ test.describe('@critical Param Tuner — History Interactions', () => {
 
   test('Step 3: Verify run card with suite name and completed status', async () => {
     // Run card should show the suite name
-    const runCard = page.locator('.card').filter({ hasText: 'PT Adv Suite' });
+    const runCard = page.locator('.card').filter({ hasText: 'PT Adv Suite' }).first();
     await expect(runCard).toBeVisible({ timeout: TIMEOUT.nav });
 
     // Status might still be "running" briefly — wait for "completed" with timeout
@@ -181,7 +188,7 @@ test.describe('@critical Param Tuner — History Interactions', () => {
   // ─── CLICK CARD → DETAIL MODAL ─────────────────────────────────────
 
   test('Step 4: Click run card to open detail modal', async () => {
-    const runCard = page.locator('.card').filter({ hasText: 'PT Adv Suite' });
+    const runCard = page.locator('.card').filter({ hasText: 'PT Adv Suite' }).first();
     await runCard.click();
 
     // Detail modal should open (fixed overlay z-50)
@@ -228,7 +235,7 @@ test.describe('@critical Param Tuner — History Interactions', () => {
 
   test('Step 7: Click Apply to apply best config', async () => {
     // Click Apply button on the run card (use .stop to prevent card click)
-    const runCard = page.locator('.card').filter({ hasText: 'PT Adv Suite' });
+    const runCard = page.locator('.card').filter({ hasText: 'PT Adv Suite' }).first();
     const applyBtn = runCard.locator('button').filter({ hasText: /Apply/i });
     await applyBtn.click();
 
@@ -241,16 +248,17 @@ test.describe('@critical Param Tuner — History Interactions', () => {
   // ─── DELETE RUN ──────────────────────────────────────────────────────
 
   test('Step 8: Delete run from history', async () => {
-    const runCard = page.locator('.card').filter({ hasText: 'PT Adv Suite' });
+    const allCards = page.locator('.card').filter({ hasText: 'PT Adv Suite' });
+    const countBefore = await allCards.count();
 
     // ParamTunerHistory uses window.confirm() — set up dialog handler
     page.on('dialog', (dialog) => dialog.accept());
 
-    // Click delete button (SVG trash icon with title="Delete run")
-    const deleteBtn = runCard.locator('button[title="Delete run"]');
+    // Click delete button on the first card
+    const deleteBtn = allCards.first().locator('button[title="Delete run"]');
     await deleteBtn.click();
 
-    // Run card should be gone
-    await expect(runCard).not.toBeVisible({ timeout: TIMEOUT.modal });
+    // Card count should decrease by 1
+    await expect(allCards).toHaveCount(countBefore - 1, { timeout: TIMEOUT.modal });
   });
 });

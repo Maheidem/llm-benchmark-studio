@@ -195,12 +195,6 @@ async def register_handler(request: Request) -> JSONResponse:
     user = await db.create_user(email, hashed, role)
     logger.info("User registered: %s (role=%s)", email, role)
 
-    # Seed providers/models from config.yaml for the new user
-    try:
-        await db.seed_providers_for_new_user(user["id"])
-    except Exception as e:
-        logger.warning("Failed to seed providers for new user %s: %s", email, e)
-
     # Audit: user registration
     ip = request.client.host if request.client else None
     await db.log_audit(

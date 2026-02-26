@@ -1,9 +1,12 @@
 /**
  * ProviderSetup component object — encapsulates the full provider creation workflow.
- * Extracted from zai-provider-setup.spec.js and stress-test.spec.js.
  *
  * CONSTRAINT: All test data uses ZAI provider and its models ONLY.
  * No fake/mock providers — Zai has real API access for E2E testing.
+ *
+ * New users start with ZERO providers (onboarding handles initial setup).
+ * setupZai() creates the Zai provider from scratch, sets the API key,
+ * fetches models, and configures context windows.
  *
  * Usage:
  *   const ps = new ProviderSetup(page);
@@ -34,8 +37,9 @@ class ProviderSetup {
       .locator('input[placeholder="Optional -- prepended to model IDs"]')
       .fill(prefix);
     await this.page.getByRole('button', { name: 'Create Provider' }).click();
+    // Wait for the new provider card to appear with its badge
     await expect(
-      this.page.locator('.badge', { hasText: name }),
+      this.page.locator('.badge', { hasText: new RegExp(`^${name}$`) }),
     ).toBeVisible({ timeout: TIMEOUT.modal });
   }
 
@@ -57,7 +61,7 @@ class ProviderSetup {
     await modal.locator('.modal-btn-confirm').click();
     await modal.waitFor({ state: 'hidden', timeout: TIMEOUT.modal });
     await expect(
-      this.page.getByText('YOUR KEY').first(),
+      row.getByText('YOUR KEY'),
     ).toBeVisible({ timeout: TIMEOUT.modal });
   }
 
@@ -109,7 +113,7 @@ class ProviderSetup {
   }
 
   /**
-   * Full Zai provider setup: create → set key → fetch models → set context.
+   * Full Zai provider setup: create -> set key -> fetch models -> set context.
    * @param {string[]} models - Model names to add (default: ['GLM-4.5-Air'])
    * @param {string} contextTier - Context tier button label (default: '200K')
    */

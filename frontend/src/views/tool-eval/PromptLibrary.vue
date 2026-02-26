@@ -131,6 +131,13 @@
                 :style="sourceBadgeStyle(v.source)"
               >{{ v.source || 'manual' }}</span>
 
+              <!-- Used by N profiles badge -->
+              <span
+                v-if="v.profile_count > 0"
+                class="text-[10px] px-1.5 py-0.5 rounded-sm font-body"
+                style="background:rgba(56,189,248,0.08);color:#38BDF8;"
+              >{{ v.profile_count }} profile{{ v.profile_count > 1 ? 's' : '' }}</span>
+
               <span class="text-[10px] text-zinc-700 font-body ml-auto">{{ formatDate(v.created_at) }}</span>
             </div>
 
@@ -240,7 +247,11 @@ async function saveLabel(id) {
 }
 
 async function deleteVersion(v) {
-  if (!confirm(`Delete this prompt version${v.label ? ` "${v.label}"` : ''}?`)) return
+  const versionName = v.label ? `"${v.label}"` : `#${v.version_number || v.id?.slice(0, 6)}`
+  const profileWarning = v.profile_count > 0
+    ? ` This version is linked by ${v.profile_count} profile${v.profile_count > 1 ? 's' : ''}. Deleting will unlink them.`
+    : ''
+  if (!confirm(`Delete prompt version ${versionName}?${profileWarning}`)) return
   try {
     await store.deleteVersion(v.id)
     diffPair.value = diffPair.value.filter(id => id !== v.id)

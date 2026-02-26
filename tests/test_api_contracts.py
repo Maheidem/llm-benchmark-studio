@@ -165,12 +165,11 @@ class TestConfigEndpoints:
                 f"Provider '{prov_name}' missing provider_key in /api/config response"
             )
 
-    async def test_get_config_returns_default_providers(self, app_client, auth_headers):
+    async def test_get_config_returns_empty_providers_for_new_user(self, app_client, auth_headers):
         resp = await app_client.get("/api/config", headers=auth_headers)
         data = resp.json()
-        # Default config should have at least OpenAI
-        provider_keys = {p["provider_key"] for p in data["providers"].values()}
-        assert "openai" in provider_keys
+        # New users start with zero providers (onboarding adds them)
+        assert data["providers"] == {}
 
     async def test_add_provider(self, app_client, auth_headers):
         resp = await app_client.post("/api/config/provider", headers=auth_headers, json={

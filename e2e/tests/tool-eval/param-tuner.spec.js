@@ -16,7 +16,7 @@ const { test, expect } = require('@playwright/test');
 const { AuthModal } = require('../../components/AuthModal');
 const { ProviderSetup } = require('../../components/ProviderSetup');
 const { SuiteSetup } = require('../../components/SuiteSetup');
-const { uniqueEmail, TEST_PASSWORD, TIMEOUT } = require('../../helpers/constants');
+const { uniqueEmail, TEST_PASSWORD, TIMEOUT, dismissOnboarding } = require('../../helpers/constants');
 
 const TEST_EMAIL = uniqueEmail('e2e-param-tuner');
 
@@ -189,6 +189,7 @@ test.describe('@critical Param Tuner', () => {
   test('Step 10: Refresh + verify notification persists', async () => {
     await page.reload();
     await page.waitForLoadState('networkidle');
+    await dismissOnboarding(page);
 
     // Wait for app hydration - bell should be interactive again
     await expect(page.locator('.notif-bell')).toBeVisible({ timeout: TIMEOUT.nav });
@@ -222,6 +223,7 @@ test.describe('@critical Param Tuner', () => {
     // Navigate to param tuner run page directly
     await page.goto('/tool-eval/param-tuner/run');
     await page.waitForURL('**/tool-eval/param-tuner/run', { timeout: TIMEOUT.nav });
+    await dismissOnboarding(page);
 
     // Wait for completion: pulse-dot gone OR "Best Config" text visible
     await expect(
@@ -271,6 +273,7 @@ test.describe('@critical Param Tuner', () => {
   test('Step 16: Navigate to History, verify entry', async () => {
     await page.goto('/tool-eval/param-tuner/history');
     await page.waitForURL('**/tool-eval/param-tuner/history', { timeout: TIMEOUT.nav });
+    await dismissOnboarding(page);
 
     await expect(page.getByText('Param Tuner History')).toBeVisible({
       timeout: TIMEOUT.nav,

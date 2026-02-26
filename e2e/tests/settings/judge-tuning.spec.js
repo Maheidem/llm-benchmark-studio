@@ -11,7 +11,7 @@
 const { test, expect } = require('@playwright/test');
 const { AuthModal } = require('../../components/AuthModal');
 const { ProviderSetup } = require('../../components/ProviderSetup');
-const { uniqueEmail, TEST_PASSWORD, TIMEOUT } = require('../../helpers/constants');
+const { uniqueEmail, TEST_PASSWORD, TIMEOUT, dismissOnboarding } = require('../../helpers/constants');
 
 const TEST_EMAIL = uniqueEmail('e2e-judge-tuning');
 
@@ -152,6 +152,7 @@ test.describe('@smoke Judge & Tuning Settings', () => {
 
   test('Step 5: Reload page and verify settings persisted', async () => {
     await page.reload({ waitUntil: 'networkidle' });
+    await dismissOnboarding(page);
 
     // --- Verify judge settings persisted ---
     await page.getByRole('link', { name: /Judge/ }).click();

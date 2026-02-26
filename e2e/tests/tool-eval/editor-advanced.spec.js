@@ -15,7 +15,7 @@
  */
 const { test, expect } = require('@playwright/test');
 const { AuthModal } = require('../../components/AuthModal');
-const { uniqueEmail, TEST_PASSWORD, TIMEOUT } = require('../../helpers/constants');
+const { uniqueEmail, TEST_PASSWORD, TIMEOUT, dismissOnboarding } = require('../../helpers/constants');
 
 const TEST_EMAIL = uniqueEmail('e2e-editor-adv');
 
@@ -96,6 +96,7 @@ test.describe('@regression Tool Eval — Editor Advanced', () => {
     // Reload and verify persisted
     await page.reload();
     await page.waitForLoadState('networkidle');
+    await dismissOnboarding(page);
 
     await expect(page.locator('input[placeholder="Suite Name"]')).toHaveValue('Advanced Editor Suite');
     await expect(page.locator('input[placeholder="Optional description"]')).toHaveValue('Testing editor advanced features');

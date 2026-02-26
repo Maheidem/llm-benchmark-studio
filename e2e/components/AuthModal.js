@@ -68,11 +68,24 @@ class AuthModal {
    * Must be called AFTER page navigation completes (e.g., after waitForURL).
    */
   async dismissOnboarding() {
+    // Belt-and-suspenders: call API directly to persist onboarding status
+    try {
+      await this.page.evaluate(async () => {
+        const token = localStorage.getItem('auth_token');
+        if (token) {
+          await fetch('/api/onboarding/complete', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+        }
+      });
+    } catch { /* ignore */ }
+
+    // Then dismiss the wizard UI if visible
     try {
       const skipBtn = this.page.getByRole('button', { name: 'Skip All' });
       await skipBtn.waitFor({ state: 'visible', timeout: 5_000 });
       await skipBtn.click();
-      // Wait for wizard overlay to disappear
       const heading = this.page.getByRole('heading', { name: 'Welcome to Benchmark Studio!' });
       await heading.waitFor({ state: 'hidden', timeout: 5_000 });
     } catch {

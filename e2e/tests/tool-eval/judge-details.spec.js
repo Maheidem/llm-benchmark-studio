@@ -12,7 +12,7 @@ const { test, expect } = require('@playwright/test');
 const { AuthModal } = require('../../components/AuthModal');
 const { ProviderSetup } = require('../../components/ProviderSetup');
 const { SuiteSetup } = require('../../components/SuiteSetup');
-const { uniqueEmail, TEST_PASSWORD, TIMEOUT } = require('../../helpers/constants');
+const { uniqueEmail, TEST_PASSWORD, TIMEOUT, dismissOnboarding } = require('../../helpers/constants');
 
 const TEST_EMAIL = uniqueEmail('e2e-judge-detail');
 
@@ -62,6 +62,24 @@ test.describe('@critical Tool Eval — Judge Report Details', () => {
     });
     expect(evalRunId).toBeTruthy();
 
+    // Wait for the eval job to fully complete in the registry.
+    // The eval job must be 'done' before the judge can start (per-user concurrency limit = 1).
+    for (let i = 0; i < 24; i++) {
+      const allDone = await page.evaluate(async () => {
+        const token = localStorage.getItem('auth_token');
+        const res = await fetch('/api/jobs', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return false;
+        const data = await res.json();
+        const jobs = data.jobs || data || [];
+        // Check that no tool_eval jobs are still running/queued
+        return !jobs.some(j => j.job_type === 'tool_eval' && ['running', 'pending', 'queued'].includes(j.status));
+      });
+      if (allDone) break;
+      await page.waitForTimeout(5_000);
+    }
+
     // 2. Find the correct model_id from config
     const modelInfo = await page.evaluate(async () => {
       const token = localStorage.getItem('auth_token');
@@ -105,26 +123,48 @@ test.describe('@critical Tool Eval — Judge Report Details', () => {
     );
     expect(judgeResult.status).toBe(200);
 
-    // 4. Poll Judge tab until report completes (page doesn't auto-refresh for
-    //    externally-triggered judge jobs — activeJobId is not set in jgStore)
-    const deadline = Date.now() + TIMEOUT.stress;
+    // 4. Poll API for judge report completion (more reliable than UI polling)
     let completed = false;
-    while (Date.now() < deadline) {
-      await page.goto('/tool-eval/judge', { waitUntil: 'networkidle' });
+    let lastDiag = '';
+    for (let i = 0; i < 36; i++) {
+      const diag = await page.evaluate(async () => {
+        const token = localStorage.getItem('auth_token');
+        const headers = { Authorization: `Bearer ${token}` };
 
-      const firstRow = page.locator('.results-table tbody tr').first();
-      const hasRow = await firstRow.isVisible().catch(() => false);
-      if (hasRow) {
-        const text = await firstRow.textContent().catch(() => '');
-        if (/completed/i.test(text)) {
-          completed = true;
-          break;
-        }
+        // Check judge reports
+        const reportsRes = await fetch('/api/tool-eval/judge/reports', { headers });
+        const reportsData = reportsRes.ok ? await reportsRes.json() : { reports: [] };
+        const reports = reportsData.reports || [];
+
+        // Check jobs for judge type
+        const jobsRes = await fetch('/api/jobs', { headers });
+        const jobsData = jobsRes.ok ? await jobsRes.json() : { jobs: [] };
+        const judgeJobs = (jobsData.jobs || []).filter(j => j.job_type === 'judge');
+
+        return {
+          reportCount: reports.length,
+          reportStatus: reports[0]?.status || 'N/A',
+          judgeJobCount: judgeJobs.length,
+          judgeJobStatus: judgeJobs[0]?.status || 'N/A',
+          judgeJobError: judgeJobs[0]?.error_msg || '',
+        };
+      });
+      lastDiag = JSON.stringify(diag);
+
+      if (diag.reportStatus === 'completed') {
+        completed = true;
+        break;
       }
-      // Wait 5s before next poll
+      // Also break if report exists with error status (don't poll forever)
+      if (diag.reportStatus === 'error') break;
       await page.waitForTimeout(5_000);
     }
-    expect(completed).toBe(true);
+    // Include diagnostic info in the error message
+    expect(completed, `Judge never completed. Last diagnostic: ${lastDiag}`).toBe(true);
+
+    // Navigate to Judge tab to verify UI
+    await page.goto('/tool-eval/judge', { waitUntil: 'networkidle' });
+    await dismissOnboarding(page);
 
     // Verify table has the completed row with a grade (A-F or "?" if LLM parse failed)
     const table = page.locator('.results-table');

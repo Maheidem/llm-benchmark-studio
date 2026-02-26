@@ -11,7 +11,7 @@ const { test, expect } = require('@playwright/test');
 const { AuthModal } = require('../../components/AuthModal');
 const { ProviderSetup } = require('../../components/ProviderSetup');
 const { SuiteSetup } = require('../../components/SuiteSetup');
-const { uniqueEmail, TEST_PASSWORD, TIMEOUT } = require('../../helpers/constants');
+const { uniqueEmail, TEST_PASSWORD, TIMEOUT, dismissOnboarding } = require('../../helpers/constants');
 
 const TEST_EMAIL = uniqueEmail('e2e-prt-adv');
 
@@ -99,6 +99,7 @@ test.describe('@critical Prompt Tuner — History Interactions', () => {
   test('Step 2: Navigate to Prompt Tuner History', async () => {
     await page.goto('/tool-eval/prompt-tuner/history');
     await page.waitForURL('**/tool-eval/prompt-tuner/history', { timeout: TIMEOUT.nav });
+    await dismissOnboarding(page);
 
     // Verify heading
     await expect(

@@ -24,4 +24,34 @@ const TIMEOUT = {
   stress: 120_000,
 };
 
-module.exports = { TEST_PASSWORD, ZAI_API_KEY, uniqueEmail, TIMEOUT };
+/**
+ * Dismiss the onboarding wizard if visible (safe no-op if absent).
+ * Also calls the API directly to guarantee persistence across page reloads.
+ *
+ * Call this after page.reload() or page.goto() to handle the wizard overlay.
+ */
+async function dismissOnboarding(page) {
+  // 1. Ensure onboarding is marked complete via direct API call
+  try {
+    await page.evaluate(async () => {
+      const token = localStorage.getItem('auth_token');
+      if (token) {
+        await fetch('/api/onboarding/complete', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      }
+    });
+  } catch { /* ignore — page may still be loading */ }
+
+  // 2. Dismiss the wizard UI if it's already visible
+  try {
+    const skipBtn = page.getByRole('button', { name: 'Skip All' });
+    await skipBtn.waitFor({ state: 'visible', timeout: 3_000 });
+    await skipBtn.click();
+    await page.getByRole('heading', { name: 'Welcome to Benchmark Studio!' })
+      .waitFor({ state: 'hidden', timeout: 5_000 });
+  } catch { /* Wizard not visible — expected */ }
+}
+
+module.exports = { TEST_PASSWORD, ZAI_API_KEY, uniqueEmail, TIMEOUT, dismissOnboarding };

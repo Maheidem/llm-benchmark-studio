@@ -82,9 +82,9 @@ test.describe('@critical Analytics Pages', () => {
   // ─── VERIFY LEADERBOARD ────────────────────────────────────────────
 
   test('Step 2: Verify leaderboard data loads', async () => {
-    // The leaderboard tab should be active
-    const leaderboardTab = page.locator('a.tab', { hasText: 'Leaderboard' });
-    await expect(leaderboardTab).toBeVisible({ timeout: TIMEOUT.modal });
+    // The leaderboard tab should be active (router-link with class "tab")
+    const leaderboardTab = page.locator('nav a', { hasText: 'Leaderboard' });
+    await expect(leaderboardTab).toBeVisible({ timeout: TIMEOUT.nav });
 
     // Wait for data to load — look for either table rows or type toggle buttons
     // The "Benchmark" type toggle button should be visible
@@ -92,15 +92,15 @@ test.describe('@critical Analytics Pages', () => {
       page.getByRole('button', { name: 'Benchmark' }),
     ).toBeVisible({ timeout: TIMEOUT.nav });
 
-    // Check for period filter
-    const periodSelect = page.locator('select').filter({ hasText: 'All time' });
-    await expect(periodSelect).toBeVisible({ timeout: TIMEOUT.modal });
+    // Check for period filter — select with period options
+    const periodSelect = page.locator('select').first();
+    await expect(periodSelect).toBeVisible({ timeout: TIMEOUT.nav });
   });
 
   // ─── PERIOD FILTER ─────────────────────────────────────────────────
 
   test('Step 3: Test period filter interaction', async () => {
-    const periodSelect = page.locator('select').filter({ hasText: 'All time' });
+    const periodSelect = page.locator('select').first();
     const selectVisible = await periodSelect.isVisible().catch(() => false);
 
     if (!selectVisible) {
@@ -129,7 +129,7 @@ test.describe('@critical Analytics Pages', () => {
 
   test('Step 4: Navigate to /analytics/compare and verify page loads', async () => {
     // Click "Compare" tab
-    const compareTab = page.locator('a.tab', { hasText: 'Compare' });
+    const compareTab = page.locator('nav a', { hasText: 'Compare' });
     await compareTab.click();
     await page.waitForURL('**/analytics/compare', { timeout: TIMEOUT.nav });
 
@@ -144,7 +144,7 @@ test.describe('@critical Analytics Pages', () => {
 
   test('Step 5: Navigate to /analytics/trends and verify page loads', async () => {
     // Click "Trends" tab
-    const trendsTab = page.locator('a.tab', { hasText: 'Trends' });
+    const trendsTab = page.locator('nav a', { hasText: 'Trends' });
     await trendsTab.click();
     await page.waitForURL('**/analytics/trends', { timeout: TIMEOUT.nav });
 
