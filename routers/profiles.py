@@ -44,6 +44,7 @@ async def create_from_tuner(body: ProfileFromTuner, user: dict = Depends(auth.ge
             is_default=body.set_as_default,
             origin_type=body.source_type,
             origin_ref=body.source_id,
+            prompt_version_id=body.prompt_version_id,
         )
         return {"status": "ok", "profile_id": profile_id}
     except ValueError as e:
@@ -77,6 +78,7 @@ async def create_profile(body: ProfileCreate, user: dict = Depends(auth.get_curr
             is_default=body.is_default,
             origin_type=body.origin_type,
             origin_ref=body.origin_ref,
+            prompt_version_id=body.prompt_version_id,
         )
         return {"status": "ok", "profile_id": profile_id}
     except ValueError as e:
@@ -101,6 +103,13 @@ async def update_profile(profile_id: str, body: ProfileUpdate, user: dict = Depe
         update_data["system_prompt"] = body.system_prompt
     if body.is_default is not None:
         update_data["is_default"] = body.is_default
+
+    # Mutual exclusion: version link vs inline prompt
+    if body.prompt_version_id is not None:
+        update_data["prompt_version_id"] = body.prompt_version_id
+        update_data["system_prompt"] = None  # clear inline when linking
+    elif "system_prompt" in update_data:
+        update_data["prompt_version_id"] = None  # clear link when writing inline
 
     if not update_data:
         return JSONResponse({"error": "No fields to update"}, status_code=400)

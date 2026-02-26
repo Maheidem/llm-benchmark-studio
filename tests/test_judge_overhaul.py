@@ -66,7 +66,6 @@ async def _save_eval_run(test_user, suite_id: str) -> str:
     run_id = await db.save_tool_eval_run(
         user_id=user["id"],
         suite_id=suite_id,
-        suite_name="Judge Overhaul Test Suite",
         models_json=json.dumps(["gpt-4o"]),
         results_json=results,
         summary_json=json.dumps({"total": 1, "passed": 1}),

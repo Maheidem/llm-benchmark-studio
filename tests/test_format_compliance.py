@@ -210,9 +210,9 @@ class TestFormatComplianceInEvalResult:
                        "model_id": "old-model", "prompt": "test"}]
         async with aiosqlite.connect(str(_patch_db_path)) as conn:
             await conn.execute(
-                "INSERT INTO tool_eval_runs (id, user_id, suite_id, suite_name, "
-                "models_json, results_json, summary_json) VALUES (?,?,?,?,?,?,?)",
-                (str(uuid.uuid4()), "missing-user", "s-old", "Old Suite",
+                "INSERT INTO tool_eval_runs (id, user_id, suite_id, "
+                "models_json, results_json, summary_json) VALUES (?,?,?,?,?,?)",
+                (str(uuid.uuid4()), "missing-user", "s-old",
                  "[]", json.dumps(old_result), "{}"),
             )
             await conn.commit()

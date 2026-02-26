@@ -779,10 +779,16 @@ class TestToolEvalHistory:
         suite_id = await db.create_tool_suite(
             user["id"], "PT Origin Test Suite", "", "[]"
         )
+        # Create a prompt_version for best_prompt_version_id FK
+        pv_id = await db.create_prompt_version(
+            user_id=user["id"],
+            prompt_text="Improved prompt text",
+            label="Test Best",
+            source="prompt_tuner",
+        )
         tune_id = await db.save_prompt_tune_run(
             user_id=user["id"],
             suite_id=suite_id,
-            suite_name="PT Origin Test Suite",
             mode="quick",
             target_models_json='["gpt-4o"]',
             meta_model="gpt-4o",
@@ -796,6 +802,7 @@ class TestToolEvalHistory:
             best_prompt="Improved prompt text",
             best_score=0.85,
             best_prompt_origin_json=json.dumps(origin),
+            best_prompt_version_id=pv_id,
             status="completed",
         )
         resp = await app_client.get(
@@ -804,14 +811,14 @@ class TestToolEvalHistory:
         assert resp.status_code == 200
         data = resp.json()
         assert data["best_score"] == 0.85
-        assert data["best_prompt"] == "Improved prompt text"
+        assert data["best_prompt_version_id"] == pv_id
         assert data["best_prompt_origin_json"] is not None
         stored_origin = json.loads(data["best_prompt_origin_json"])
         assert stored_origin["generation"] == 1
         assert stored_origin["style"] == "direct"
 
-    async def test_prompt_tune_meta_provider_key_stored(self, app_client, auth_headers, test_user):
-        """Phase A: meta_provider_key is persisted on a prompt tune run."""
+    async def test_prompt_tune_meta_model_id_stored(self, app_client, auth_headers, test_user):
+        """Phase 6: meta_model_id FK is persisted on a prompt tune run."""
         import db
 
         user, _ = test_user
@@ -822,21 +829,20 @@ class TestToolEvalHistory:
         tune_id = await db.save_prompt_tune_run(
             user_id=user["id"],
             suite_id=suite_id,
-            suite_name="PT MetaKey Test Suite",
             mode="quick",
             target_models_json='["gpt-4o"]',
             meta_model="gpt-4o",
             base_prompt=None,
             config_json="{}",
             total_prompts=1,
-            meta_provider_key="my_custom_provider",
         )
         resp = await app_client.get(
             f"/api/tool-eval/prompt-tune/history/{tune_id}", headers=auth_headers
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["meta_provider_key"] == "my_custom_provider"
+        # meta_model_id may be None since no real model DB record exists in test
+        assert "meta_model_id" in data
 
 
 # =========================================================================

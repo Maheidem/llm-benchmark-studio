@@ -7,6 +7,7 @@ All tables are created on first startup via init_db().
 import json
 import logging
 import re
+import secrets
 import aiosqlite
 import uuid
 from pathlib import Path
@@ -122,6 +123,16 @@ async def init_db():
         await db.execute("PRAGMA busy_timeout=5000")
         await db.execute("PRAGMA foreign_keys=ON")
 
+        # Schema versioning (must be first -- migration helpers depend on it)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY,
+                description TEXT NOT NULL,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.commit()
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -132,6 +143,44 @@ async def init_db():
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
         """)
+
+        # --- Normalized providers + models (Phase 1) ---
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS providers (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                api_base TEXT,
+                api_key_env TEXT,
+                model_prefix TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(user_id, key)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_providers_user ON providers(user_id)")
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS models (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+                litellm_id TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                context_window INTEGER NOT NULL DEFAULT 128000,
+                max_output_tokens INTEGER,
+                skip_params TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(provider_id, litellm_id)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_models_litellm ON models(litellm_id)")
+        await db.commit()
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS refresh_tokens (
@@ -263,7 +312,6 @@ async def init_db():
                 id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
                 user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 suite_id TEXT NOT NULL,
-                suite_name TEXT NOT NULL,
                 models_json TEXT NOT NULL,
                 results_json TEXT NOT NULL,
                 summary_json TEXT NOT NULL,
@@ -346,7 +394,6 @@ async def init_db():
                 id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
                 user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 suite_id TEXT NOT NULL,
-                suite_name TEXT NOT NULL,
                 models_json TEXT NOT NULL,
                 search_space_json TEXT NOT NULL,
                 results_json TEXT NOT NULL DEFAULT '[]',
@@ -377,14 +424,11 @@ async def init_db():
                 id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
                 user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 suite_id TEXT NOT NULL,
-                suite_name TEXT NOT NULL,
                 mode TEXT NOT NULL CHECK(mode IN ('quick','evolutionary')),
                 target_models_json TEXT NOT NULL,
-                meta_model TEXT NOT NULL,
                 base_prompt TEXT,
                 config_json TEXT NOT NULL,
                 generations_json TEXT NOT NULL DEFAULT '[]',
-                best_prompt TEXT,
                 best_score REAL DEFAULT 0.0,
                 status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','cancelled','error','interrupted')),
                 total_prompts INTEGER DEFAULT 0,
@@ -392,6 +436,10 @@ async def init_db():
                 duration_s REAL,
                 timestamp TEXT NOT NULL DEFAULT (datetime('now')),
                 experiment_id TEXT,
+                best_prompt_origin_json TEXT,
+                meta_model_id TEXT REFERENCES models(id) ON DELETE SET NULL,
+                best_prompt_version_id TEXT REFERENCES prompt_versions(id) ON DELETE SET NULL,
+                best_profile_id TEXT REFERENCES model_profiles(id) ON DELETE SET NULL,
                 FOREIGN KEY (suite_id) REFERENCES tool_suites(id) ON DELETE CASCADE,
                 FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE SET NULL
             )
@@ -409,7 +457,7 @@ async def init_db():
                 user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 eval_run_id TEXT,
                 eval_run_id_b TEXT,
-                judge_model TEXT NOT NULL,
+                judge_model_id TEXT REFERENCES models(id) ON DELETE SET NULL,
                 mode TEXT NOT NULL CHECK(mode IN ('post_eval','live_inline','comparative')),
                 verdicts_json TEXT NOT NULL DEFAULT '[]',
                 report_json TEXT,
@@ -418,6 +466,9 @@ async def init_db():
                 status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','error','interrupted')),
                 timestamp TEXT NOT NULL DEFAULT (datetime('now')),
                 experiment_id TEXT,
+                parent_report_id TEXT,
+                version INTEGER NOT NULL DEFAULT 1,
+                instructions_json TEXT,
                 FOREIGN KEY (eval_run_id) REFERENCES tool_eval_runs(id) ON DELETE SET NULL,
                 FOREIGN KEY (eval_run_id_b) REFERENCES tool_eval_runs(id) ON DELETE SET NULL,
                 FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE SET NULL
@@ -478,6 +529,36 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_timeout ON jobs(status, timeout_at)")
         await db.commit()
 
+        # --- Normalized run_results (Phase 4) ---
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS run_results (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                run_id TEXT NOT NULL,
+                run_type TEXT NOT NULL CHECK(run_type IN ('benchmark','tool_eval','param_tune','prompt_tune','judge')),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                model_litellm_id TEXT NOT NULL,
+                model_db_id TEXT REFERENCES models(id) ON DELETE SET NULL,
+                profile_id TEXT REFERENCES model_profiles(id) ON DELETE SET NULL,
+                provider_key TEXT,
+                tool_accuracy_pct REAL,
+                param_accuracy_pct REAL,
+                throughput_tps REAL,
+                ttft_ms REAL,
+                tokens_generated INTEGER,
+                latency_p99_ms REAL,
+                score REAL,
+                cost REAL,
+                raw_response_json TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_run_results_run ON run_results(run_id, run_type)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_run_results_user ON run_results(user_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_run_results_model ON run_results(model_litellm_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_run_results_model_db ON run_results(model_db_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_run_results_ts ON run_results(user_id, created_at DESC)")
+        await db.commit()
+
         # experiment_id indexes (columns now in CREATE TABLE above)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_tool_eval_runs_experiment ON tool_eval_runs(experiment_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_param_tune_runs_experiment ON param_tune_runs(experiment_id)")
@@ -497,6 +578,7 @@ async def init_db():
                 is_default INTEGER NOT NULL DEFAULT 0,
                 params_json TEXT NOT NULL DEFAULT '{}',
                 system_prompt TEXT,
+                prompt_version_id TEXT REFERENCES prompt_versions(id) ON DELETE SET NULL,
                 origin_type TEXT NOT NULL DEFAULT 'manual'
                     CHECK(origin_type IN ('manual', 'param_tuner', 'prompt_tuner', 'import')),
                 origin_ref TEXT,
@@ -681,8 +763,7 @@ async def init_db():
         await db.execute("""
             CREATE TABLE IF NOT EXISTS public_leaderboard (
                 id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-                model_name TEXT NOT NULL,
-                provider TEXT NOT NULL,
+                model_db_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
                 tool_accuracy_pct REAL DEFAULT 0.0,
                 param_accuracy_pct REAL DEFAULT 0.0,
                 irrel_accuracy_pct REAL,
@@ -690,10 +771,9 @@ async def init_db():
                 ttft_ms REAL,
                 sample_count INTEGER NOT NULL DEFAULT 0,
                 last_updated TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(model_name, provider)
+                UNIQUE(model_db_id)
             )
         """)
-        # idx_leaderboard_model removed: duplicates UNIQUE(model_name, provider)
         await db.commit()
 
         # 2D: leaderboard_opt_in on users
@@ -966,7 +1046,6 @@ async def init_db():
                             id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
                             user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                             suite_id TEXT NOT NULL,
-                            suite_name TEXT NOT NULL,
                             models_json TEXT NOT NULL,
                             search_space_json TEXT NOT NULL,
                             results_json TEXT NOT NULL DEFAULT '[]',
@@ -985,7 +1064,18 @@ async def init_db():
                             FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE SET NULL
                         )
                     """)
-                    await db.execute("INSERT INTO param_tune_runs SELECT * FROM _param_tune_runs_old")
+                    await db.execute(
+                        "INSERT INTO param_tune_runs "
+                        "(id, user_id, suite_id, models_json, search_space_json, "
+                        "results_json, best_config_json, best_score, total_combos, "
+                        "completed_combos, status, duration_s, timestamp, experiment_id, "
+                        "judge_scores_json, optimization_mode) "
+                        "SELECT id, user_id, suite_id, models_json, search_space_json, "
+                        "results_json, best_config_json, best_score, total_combos, "
+                        "completed_combos, status, duration_s, timestamp, experiment_id, "
+                        "judge_scores_json, optimization_mode "
+                        "FROM _param_tune_runs_old"
+                    )
 
                     new_count_cursor = await db.execute("SELECT COUNT(*) FROM param_tune_runs")
                     new_count = (await new_count_cursor.fetchone())[0]
@@ -1029,6 +1119,780 @@ async def init_db():
                     logger.info("Migration complete for jobs table")
         except Exception:
             logger.exception("Failed to migrate jobs CHECK constraint")
+
+        # --- Migration: prompt_version_id FK on model_profiles ---
+        try:
+            await db.execute(
+                "ALTER TABLE model_profiles ADD COLUMN prompt_version_id TEXT "
+                "REFERENCES prompt_versions(id) ON DELETE SET NULL"
+            )
+            await db.commit()
+            logger.info("Added prompt_version_id column to model_profiles")
+        except Exception:
+            logger.debug("Column model_profiles.prompt_version_id already exists")
+
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_model_profiles_prompt_version "
+            "ON model_profiles(prompt_version_id)"
+        )
+        await db.commit()
+
+        # Phase 1: dual-column additions for provider/model normalization
+        for col_sql in [
+            "ALTER TABLE user_api_keys ADD COLUMN provider_id TEXT REFERENCES providers(id) ON DELETE SET NULL",
+            "ALTER TABLE model_profiles ADD COLUMN model_db_id TEXT REFERENCES models(id) ON DELETE SET NULL",
+            "ALTER TABLE prompt_versions ADD COLUMN model_db_id TEXT REFERENCES models(id) ON DELETE SET NULL",
+            "ALTER TABLE judge_reports ADD COLUMN judge_model_id TEXT REFERENCES models(id) ON DELETE SET NULL",
+            "ALTER TABLE public_leaderboard ADD COLUMN model_db_id TEXT REFERENCES models(id) ON DELETE SET NULL",
+            "ALTER TABLE prompt_tune_runs ADD COLUMN meta_model_id TEXT REFERENCES models(id) ON DELETE SET NULL",
+        ]:
+            try:
+                await db.execute(col_sql)
+                await db.commit()
+            except Exception:
+                pass
+
+        # Phase 1: Seed providers/models from config for all existing users
+        await _apply_migration(db, 100, "Seed providers/models from config", _seed_providers_from_config)
+
+        # Phase 2: Drop denormalized suite_name from 3 tables
+        await _apply_migration(db, 200, "Drop suite_name from eval/tune tables", _migration_200_drop_suite_name)
+
+        # Phase 3: Prompt → prompt_versions FK columns
+        await _apply_migration(db, 300, "Add prompt FK columns", _migration_300_prompt_fks)
+        await _apply_migration(db, 301, "Backfill prompt version FKs", _migration_301_backfill_prompts)
+
+        # Phase 4: Normalized run_results table
+        await _apply_migration(db, 400, "Create run_results table", _migration_400_run_results)
+
+        # Phase 5: best_profile_id FK on param_tune_runs
+        await _apply_migration(db, 500, "Add best_profile_id FK to param_tune_runs", _migration_500_best_profile_id)
+
+        # Phase 6: Final cutover — drop deprecated string columns via table rebuilds
+        await _apply_migration(db, 600, "Drop deprecated string columns from normalized tables", _migration_600_final_cutover)
+
+
+# --- Migration helpers ---
+
+async def _get_schema_version(conn) -> int:
+    """Get current schema version."""
+    try:
+        cursor = await conn.execute("SELECT MAX(version) FROM schema_version")
+        row = await cursor.fetchone()
+        return row[0] if row and row[0] else 0
+    except Exception:
+        return 0
+
+
+async def _apply_migration(conn, version: int, description: str, migration_fn):
+    """Apply a numbered migration if not already applied."""
+    current = await _get_schema_version(conn)
+    if current >= version:
+        logger.debug("Migration %d already applied, skipping", version)
+        return False
+    logger.info("Applying migration %d: %s", version, description)
+    await migration_fn(conn)
+    await conn.execute(
+        "INSERT INTO schema_version (version, description) VALUES (?, ?)",
+        (version, description)
+    )
+    await conn.commit()
+    logger.info("Migration %d complete", version)
+    return True
+
+
+async def _seed_providers_from_config(conn):
+    """Migration 100: Seed providers/models tables from existing config data."""
+    import yaml
+
+    # Load default config
+    config_path = Path(__file__).parent / "config.yaml"
+    if config_path.exists():
+        with open(config_path) as f:
+            default_config = yaml.safe_load(f)
+    else:
+        default_config = {"providers": {}}
+
+    # Get all users
+    cursor = await conn.execute("SELECT id FROM users")
+    users = await cursor.fetchall()
+
+    for user_row in users:
+        user_id = user_row[0] if isinstance(user_row, (tuple, list)) else user_row["id"]
+
+        # Check if already seeded
+        check = await conn.execute(
+            "SELECT COUNT(*) FROM providers WHERE user_id = ?", (user_id,)
+        )
+        count = (await check.fetchone())[0]
+        if count > 0:
+            continue
+
+        # Try user-specific config first
+        uc_cursor = await conn.execute(
+            "SELECT config_yaml FROM user_configs WHERE user_id = ?", (user_id,)
+        )
+        uc_row = await uc_cursor.fetchone()
+        if uc_row:
+            try:
+                user_config = yaml.safe_load(
+                    uc_row[0] if isinstance(uc_row, (tuple, list)) else uc_row["config_yaml"]
+                )
+            except Exception:
+                user_config = default_config
+        else:
+            user_config = default_config
+
+        # Seed providers and models
+        sort_order = 0
+        for prov_key, prov_cfg in user_config.get("providers", {}).items():
+            provider_id = secrets.token_hex(16)
+            await conn.execute(
+                "INSERT OR IGNORE INTO providers "
+                "(id, user_id, key, name, api_base, api_key_env, model_prefix, sort_order) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (provider_id, user_id, prov_key,
+                 prov_cfg.get("display_name", prov_key),
+                 prov_cfg.get("api_base"),
+                 prov_cfg.get("api_key_env"),
+                 prov_cfg.get("model_id_prefix"),
+                 sort_order),
+            )
+            sort_order += 1
+            for model in prov_cfg.get("models", []):
+                await conn.execute(
+                    "INSERT OR IGNORE INTO models "
+                    "(id, provider_id, litellm_id, display_name, context_window, "
+                    "max_output_tokens, skip_params) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (secrets.token_hex(16), provider_id, model["id"],
+                     model.get("display_name", model["id"]),
+                     model.get("context_window", 128000),
+                     model.get("max_output_tokens"),
+                     json.dumps(model.get("skip_params", []))),
+                )
+
+        # Backfill user_api_keys.provider_id
+        await conn.execute("""
+            UPDATE user_api_keys SET provider_id = (
+                SELECT p.id FROM providers p
+                WHERE p.user_id = user_api_keys.user_id AND p.key = user_api_keys.provider_key
+            )
+            WHERE user_id = ? AND provider_id IS NULL
+        """, (user_id,))
+
+        # Backfill model_profiles.model_db_id
+        await conn.execute("""
+            UPDATE model_profiles SET model_db_id = (
+                SELECT m.id FROM models m
+                JOIN providers p ON m.provider_id = p.id
+                WHERE p.user_id = model_profiles.user_id
+                AND m.litellm_id = model_profiles.model_id
+                LIMIT 1
+            )
+            WHERE user_id = ? AND model_db_id IS NULL
+        """, (user_id,))
+
+    await conn.commit()
+
+
+async def _migration_200_drop_suite_name(conn):
+    """Migration 200: Remove denormalized suite_name column from tool_eval_runs, param_tune_runs, prompt_tune_runs.
+
+    Suite name is always available via JOIN on tool_suites.id = suite_id.
+    Uses the standard table-rebuild pattern: RENAME -> CREATE -> INSERT SELECT -> verify -> DROP -> reindex.
+    Only rebuilds tables that still have the suite_name column (skip on fresh DBs).
+    """
+
+    # Check if suite_name column exists before attempting rebuild
+    cursor = await conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='tool_eval_runs'"
+    )
+    row = await cursor.fetchone()
+    ddl = (row[0] if isinstance(row, (tuple, list)) else row["sql"]) if row else ""
+    if "suite_name" not in ddl:
+        logger.info("Migration 200: suite_name already absent from tables, skipping rebuild")
+        return
+
+    # --- tool_eval_runs ---
+    old_count_cursor = await conn.execute("SELECT COUNT(*) FROM tool_eval_runs")
+    old_count = (await old_count_cursor.fetchone())[0]
+
+    logger.info("Migration 200: rebuilding tool_eval_runs without suite_name (%d rows)", old_count)
+    await conn.execute("ALTER TABLE tool_eval_runs RENAME TO _tool_eval_runs_old")
+    await conn.execute("""
+        CREATE TABLE tool_eval_runs (
+            id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            suite_id TEXT NOT NULL,
+            models_json TEXT NOT NULL,
+            results_json TEXT NOT NULL,
+            summary_json TEXT NOT NULL,
+            temperature REAL DEFAULT 0.0,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            config_json TEXT,
+            experiment_id TEXT,
+            profiles_json TEXT,
+            judge_explanations_json TEXT,
+            FOREIGN KEY (suite_id) REFERENCES tool_suites(id) ON DELETE CASCADE,
+            FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE SET NULL
+        )
+    """)
+    await conn.execute("""
+        INSERT INTO tool_eval_runs
+        (id, user_id, suite_id, models_json, results_json, summary_json,
+         temperature, timestamp, config_json, experiment_id, profiles_json, judge_explanations_json)
+        SELECT id, user_id, suite_id, models_json, results_json, summary_json,
+               temperature, timestamp, config_json, experiment_id, profiles_json, judge_explanations_json
+        FROM _tool_eval_runs_old
+    """)
+
+    new_count_cursor = await conn.execute("SELECT COUNT(*) FROM tool_eval_runs")
+    new_count = (await new_count_cursor.fetchone())[0]
+    assert old_count == new_count, f"tool_eval_runs row count mismatch: {old_count} vs {new_count}"
+
+    await conn.execute("DROP TABLE _tool_eval_runs_old")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_eval_runs_user ON tool_eval_runs(user_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_eval_runs_ts ON tool_eval_runs(user_id, timestamp DESC)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_eval_runs_suite ON tool_eval_runs(suite_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_eval_runs_experiment ON tool_eval_runs(experiment_id)")
+    await conn.commit()
+    logger.info("Migration 200: tool_eval_runs rebuilt successfully")
+
+    # --- param_tune_runs ---
+    old_count_cursor = await conn.execute("SELECT COUNT(*) FROM param_tune_runs")
+    old_count = (await old_count_cursor.fetchone())[0]
+
+    logger.info("Migration 200: rebuilding param_tune_runs without suite_name (%d rows)", old_count)
+    await conn.execute("ALTER TABLE param_tune_runs RENAME TO _param_tune_runs_old")
+    await conn.execute("""
+        CREATE TABLE param_tune_runs (
+            id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            suite_id TEXT NOT NULL,
+            models_json TEXT NOT NULL,
+            search_space_json TEXT NOT NULL,
+            results_json TEXT NOT NULL DEFAULT '[]',
+            best_config_json TEXT,
+            best_score REAL DEFAULT 0.0,
+            total_combos INTEGER NOT NULL,
+            completed_combos INTEGER DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','cancelled','error','interrupted')),
+            duration_s REAL,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            experiment_id TEXT,
+            judge_scores_json TEXT,
+            optimization_mode TEXT NOT NULL DEFAULT 'grid'
+                CHECK(optimization_mode IN ('grid','random','bayesian')),
+            FOREIGN KEY (suite_id) REFERENCES tool_suites(id) ON DELETE CASCADE,
+            FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE SET NULL
+        )
+    """)
+    await conn.execute("""
+        INSERT INTO param_tune_runs
+        (id, user_id, suite_id, models_json, search_space_json, results_json,
+         best_config_json, best_score, total_combos, completed_combos, status,
+         duration_s, timestamp, experiment_id, judge_scores_json, optimization_mode)
+        SELECT id, user_id, suite_id, models_json, search_space_json, results_json,
+               best_config_json, best_score, total_combos, completed_combos, status,
+               duration_s, timestamp, experiment_id, judge_scores_json, optimization_mode
+        FROM _param_tune_runs_old
+    """)
+
+    new_count_cursor = await conn.execute("SELECT COUNT(*) FROM param_tune_runs")
+    new_count = (await new_count_cursor.fetchone())[0]
+    assert old_count == new_count, f"param_tune_runs row count mismatch: {old_count} vs {new_count}"
+
+    await conn.execute("DROP TABLE _param_tune_runs_old")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_param_tune_runs_user ON param_tune_runs(user_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_param_tune_runs_ts ON param_tune_runs(user_id, timestamp DESC)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_param_tune_runs_suite ON param_tune_runs(suite_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_param_tune_runs_experiment ON param_tune_runs(experiment_id)")
+    await conn.commit()
+    logger.info("Migration 200: param_tune_runs rebuilt successfully")
+
+    # --- prompt_tune_runs ---
+    old_count_cursor = await conn.execute("SELECT COUNT(*) FROM prompt_tune_runs")
+    old_count = (await old_count_cursor.fetchone())[0]
+
+    logger.info("Migration 200: rebuilding prompt_tune_runs without suite_name (%d rows)", old_count)
+    await conn.execute("ALTER TABLE prompt_tune_runs RENAME TO _prompt_tune_runs_old")
+    await conn.execute("""
+        CREATE TABLE prompt_tune_runs (
+            id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            suite_id TEXT NOT NULL,
+            mode TEXT NOT NULL CHECK(mode IN ('quick','evolutionary')),
+            target_models_json TEXT NOT NULL,
+            meta_model TEXT NOT NULL,
+            base_prompt TEXT,
+            config_json TEXT NOT NULL,
+            generations_json TEXT NOT NULL DEFAULT '[]',
+            best_prompt TEXT,
+            best_score REAL DEFAULT 0.0,
+            status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','cancelled','error','interrupted')),
+            total_prompts INTEGER DEFAULT 0,
+            completed_prompts INTEGER DEFAULT 0,
+            duration_s REAL,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            experiment_id TEXT,
+            best_prompt_origin_json TEXT,
+            meta_provider_key TEXT,
+            meta_model_id TEXT REFERENCES models(id) ON DELETE SET NULL,
+            FOREIGN KEY (suite_id) REFERENCES tool_suites(id) ON DELETE CASCADE,
+            FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE SET NULL
+        )
+    """)
+    await conn.execute("""
+        INSERT INTO prompt_tune_runs
+        (id, user_id, suite_id, mode, target_models_json, meta_model,
+         base_prompt, config_json, generations_json, best_prompt, best_score, status,
+         total_prompts, completed_prompts, duration_s, timestamp, experiment_id,
+         best_prompt_origin_json, meta_provider_key, meta_model_id)
+        SELECT id, user_id, suite_id, mode, target_models_json, meta_model,
+               base_prompt, config_json, generations_json, best_prompt, best_score, status,
+               total_prompts, completed_prompts, duration_s, timestamp, experiment_id,
+               best_prompt_origin_json, meta_provider_key, meta_model_id
+        FROM _prompt_tune_runs_old
+    """)
+
+    new_count_cursor = await conn.execute("SELECT COUNT(*) FROM prompt_tune_runs")
+    new_count = (await new_count_cursor.fetchone())[0]
+    assert old_count == new_count, f"prompt_tune_runs row count mismatch: {old_count} vs {new_count}"
+
+    await conn.execute("DROP TABLE _prompt_tune_runs_old")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_tune_runs_user ON prompt_tune_runs(user_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_tune_runs_ts ON prompt_tune_runs(user_id, timestamp DESC)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_tune_runs_suite ON prompt_tune_runs(suite_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_tune_runs_experiment ON prompt_tune_runs(experiment_id)")
+    await conn.commit()
+    logger.info("Migration 200: prompt_tune_runs rebuilt successfully")
+
+
+async def _migration_300_prompt_fks(conn):
+    """Migration 300: Add prompt_version_id FK to schedules and best_prompt_version_id to prompt_tune_runs."""
+    # schedules.prompt_version_id -- links schedule prompt to prompt_versions
+    try:
+        await conn.execute(
+            "ALTER TABLE schedules ADD COLUMN prompt_version_id TEXT "
+            "REFERENCES prompt_versions(id) ON DELETE SET NULL"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_schedules_prompt_version "
+            "ON schedules(prompt_version_id)"
+        )
+        await conn.commit()
+        logger.info("Added prompt_version_id to schedules")
+    except Exception:
+        logger.debug("schedules.prompt_version_id already exists")
+
+    # prompt_tune_runs.best_prompt_version_id -- links best prompt result to prompt_versions
+    try:
+        await conn.execute(
+            "ALTER TABLE prompt_tune_runs ADD COLUMN best_prompt_version_id TEXT "
+            "REFERENCES prompt_versions(id) ON DELETE SET NULL"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_prompt_tune_best_pv "
+            "ON prompt_tune_runs(best_prompt_version_id)"
+        )
+        await conn.commit()
+        logger.info("Added best_prompt_version_id to prompt_tune_runs")
+    except Exception:
+        logger.debug("prompt_tune_runs.best_prompt_version_id already exists")
+
+
+async def _migration_301_backfill_prompts(conn):
+    """Migration 301: Backfill prompt_version_id FKs for existing data.
+
+    - For prompt_tune_runs: link best_prompt to existing prompt_versions via origin_run_id match.
+    - For schedules: create a new prompt_version for each schedule's prompt text.
+    """
+    conn.row_factory = aiosqlite.Row
+
+    # --- Backfill prompt_tune_runs ---
+    # The prompt_tune_handler already creates a prompt_version with origin_run_id=tune_id.
+    # Link those existing versions to best_prompt_version_id.
+    # Note: On fresh databases (post-migration 600 schema), best_prompt column doesn't exist.
+    # Check if the column exists before querying it.
+    ddl_cursor = await conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='prompt_tune_runs'"
+    )
+    ddl_row = await ddl_cursor.fetchone()
+    ddl_text = (ddl_row[0] if isinstance(ddl_row, (tuple, list)) else ddl_row["sql"]) if ddl_row else ""
+    has_best_prompt_col = "best_prompt " in ddl_text and "best_prompt_version_id" in ddl_text
+
+    linked_tunes = 0
+    if has_best_prompt_col:
+        cursor = await conn.execute(
+            "SELECT ptr.id AS tune_id, ptr.user_id, ptr.best_prompt "
+            "FROM prompt_tune_runs ptr "
+            "WHERE ptr.best_prompt IS NOT NULL AND ptr.best_prompt_version_id IS NULL"
+        )
+        tune_rows = await cursor.fetchall()
+
+        for row in tune_rows:
+            tune_id = row["tune_id"]
+            user_id = row["user_id"]
+            best_prompt = row["best_prompt"]
+
+            # Check for existing prompt_version linked by origin_run_id
+            pv_cursor = await conn.execute(
+                "SELECT id FROM prompt_versions "
+                "WHERE user_id = ? AND origin_run_id = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (user_id, tune_id),
+            )
+            pv_row = await pv_cursor.fetchone()
+
+            if pv_row:
+                # Link existing version
+                await conn.execute(
+                    "UPDATE prompt_tune_runs SET best_prompt_version_id = ? WHERE id = ?",
+                    (pv_row["id"], tune_id),
+                )
+                linked_tunes += 1
+            else:
+                # Check for matching prompt_text from same user
+                pv_cursor2 = await conn.execute(
+                    "SELECT id FROM prompt_versions "
+                    "WHERE user_id = ? AND prompt_text = ? "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (user_id, best_prompt),
+                )
+                pv_row2 = await pv_cursor2.fetchone()
+                if pv_row2:
+                    await conn.execute(
+                        "UPDATE prompt_tune_runs SET best_prompt_version_id = ? WHERE id = ?",
+                        (pv_row2["id"], tune_id),
+                    )
+                    linked_tunes += 1
+                else:
+                    # Create new prompt_version
+                    new_pv_id = secrets.token_hex(16)
+                    await conn.execute(
+                        "INSERT INTO prompt_versions (id, user_id, prompt_text, label, source, origin_run_id) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (new_pv_id, user_id, best_prompt,
+                         f"Prompt Tune Best (backfill)", "prompt_tuner", tune_id),
+                    )
+                    await conn.execute(
+                        "UPDATE prompt_tune_runs SET best_prompt_version_id = ? WHERE id = ?",
+                        (new_pv_id, tune_id),
+                    )
+                    linked_tunes += 1
+    else:
+        logger.info("Migration 301: best_prompt column absent (fresh DB), skipping prompt_tune_runs backfill")
+
+    logger.info("Migration 301: linked %d prompt_tune_runs to prompt_versions", linked_tunes)
+
+    # --- Backfill schedules ---
+    cursor = await conn.execute(
+        "SELECT id, user_id, name, prompt FROM schedules "
+        "WHERE prompt IS NOT NULL AND prompt != '' AND prompt_version_id IS NULL"
+    )
+    sched_rows = await cursor.fetchall()
+    linked_scheds = 0
+
+    for row in sched_rows:
+        sched_id = row["id"]
+        user_id = row["user_id"]
+        sched_name = row["name"]
+        prompt_text = row["prompt"]
+
+        new_pv_id = secrets.token_hex(16)
+        await conn.execute(
+            "INSERT INTO prompt_versions (id, user_id, prompt_text, label, source, origin_run_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (new_pv_id, user_id, prompt_text,
+             f"Schedule: {sched_name}", "manual", sched_id),
+        )
+        await conn.execute(
+            "UPDATE schedules SET prompt_version_id = ? WHERE id = ?",
+            (new_pv_id, sched_id),
+        )
+        linked_scheds += 1
+
+    logger.info("Migration 301: created %d prompt_versions for schedules", linked_scheds)
+    await conn.commit()
+
+
+async def _migration_400_run_results(conn):
+    """Migration 400: Create run_results table for normalized per-model metrics."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS run_results (
+            id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+            run_id TEXT NOT NULL,
+            run_type TEXT NOT NULL CHECK(run_type IN ('benchmark','tool_eval','param_tune','prompt_tune','judge')),
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            model_litellm_id TEXT NOT NULL,
+            model_db_id TEXT REFERENCES models(id) ON DELETE SET NULL,
+            profile_id TEXT REFERENCES model_profiles(id) ON DELETE SET NULL,
+            provider_key TEXT,
+            tool_accuracy_pct REAL,
+            param_accuracy_pct REAL,
+            throughput_tps REAL,
+            ttft_ms REAL,
+            tokens_generated INTEGER,
+            latency_p99_ms REAL,
+            score REAL,
+            cost REAL,
+            raw_response_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_run_results_run ON run_results(run_id, run_type)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_run_results_user ON run_results(user_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_run_results_model ON run_results(model_litellm_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_run_results_model_db ON run_results(model_db_id)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_run_results_ts ON run_results(user_id, created_at DESC)")
+    await conn.commit()
+    logger.info("Created run_results table with indexes")
+
+
+async def _migration_500_best_profile_id(conn):
+    """Migration 500: Add best_profile_id FK to param_tune_runs."""
+    try:
+        await conn.execute(
+            "ALTER TABLE param_tune_runs ADD COLUMN best_profile_id TEXT "
+            "REFERENCES model_profiles(id) ON DELETE SET NULL"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_param_tune_best_profile "
+            "ON param_tune_runs(best_profile_id)"
+        )
+        await conn.commit()
+        logger.info("Added best_profile_id to param_tune_runs")
+    except Exception:
+        logger.debug("param_tune_runs.best_profile_id already exists")
+
+
+async def _migration_600_final_cutover(conn):
+    """Migration 600: Drop deprecated string columns from normalized tables.
+
+    Table rebuilds:
+    - prompt_tune_runs: drop meta_model, meta_provider_key, best_prompt (keep FKs)
+    - judge_reports: drop judge_model string (keep judge_model_id FK)
+    - public_leaderboard: drop model_name, provider strings (keep model_db_id FK)
+
+    SKIPPED (still needed by UI):
+    - user_api_keys: provider_key still used by key management UI
+    - model_profiles: model_id (litellm string) still used by profiles UI
+    - schedules: prompt text still needed as fallback display (prompt_version_id may be NULL)
+    """
+    conn.row_factory = aiosqlite.Row
+
+    # ---- 6e: prompt_tune_runs — drop meta_model, meta_provider_key, best_prompt ----
+    # First check if the deprecated columns even exist (they won't on fresh DBs).
+    ptr_ddl_cursor = await conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='prompt_tune_runs'"
+    )
+    ptr_ddl_row = await ptr_ddl_cursor.fetchone()
+    ptr_ddl = (ptr_ddl_row[0] if isinstance(ptr_ddl_row, (tuple, list)) else ptr_ddl_row["sql"]) if ptr_ddl_row else ""
+    ptr_has_meta_model = "meta_model " in ptr_ddl and "meta_model_id" != "meta_model "
+
+    # More precise check: look for meta_model as a standalone column (not meta_model_id)
+    ptr_has_old_columns = ("meta_model TEXT" in ptr_ddl or "meta_provider_key TEXT" in ptr_ddl
+                           or "\n                best_prompt TEXT" in ptr_ddl
+                           or ",\n                best_prompt " in ptr_ddl)
+
+    if not ptr_has_old_columns:
+        logger.info("Migration 600: prompt_tune_runs already has new schema, skipping rebuild")
+    else:
+        # Safety: only drop if meta_model_id and best_prompt_version_id are populated
+        check = await conn.execute(
+            "SELECT COUNT(*) FROM prompt_tune_runs WHERE meta_model_id IS NULL AND status = 'completed'"
+        )
+        null_meta_count = (await check.fetchone())[0]
+
+        null_bpv_count = 0
+        if "best_prompt " in ptr_ddl:
+            check2 = await conn.execute(
+                "SELECT COUNT(*) FROM prompt_tune_runs "
+                "WHERE best_prompt IS NOT NULL AND best_prompt_version_id IS NULL"
+            )
+            null_bpv_count = (await check2.fetchone())[0]
+
+        if null_meta_count > 0:
+            logger.warning(
+                "Migration 600: SKIPPING prompt_tune_runs rebuild — %d completed rows have NULL meta_model_id",
+                null_meta_count,
+            )
+        elif null_bpv_count > 0:
+            logger.warning(
+                "Migration 600: SKIPPING prompt_tune_runs rebuild — %d rows have best_prompt without best_prompt_version_id",
+                null_bpv_count,
+            )
+        else:
+            old_count_cursor = await conn.execute("SELECT COUNT(*) FROM prompt_tune_runs")
+            old_count = (await old_count_cursor.fetchone())[0]
+
+            logger.info("Migration 600: rebuilding prompt_tune_runs — dropping meta_model, meta_provider_key, best_prompt (%d rows)", old_count)
+            await conn.execute("ALTER TABLE prompt_tune_runs RENAME TO _prompt_tune_runs_old")
+            await conn.execute("""
+                CREATE TABLE prompt_tune_runs (
+                    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    suite_id TEXT NOT NULL,
+                    mode TEXT NOT NULL CHECK(mode IN ('quick','evolutionary')),
+                    target_models_json TEXT NOT NULL,
+                    base_prompt TEXT,
+                    config_json TEXT NOT NULL,
+                    generations_json TEXT NOT NULL DEFAULT '[]',
+                    best_score REAL DEFAULT 0.0,
+                    status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','cancelled','error','interrupted')),
+                    total_prompts INTEGER DEFAULT 0,
+                    completed_prompts INTEGER DEFAULT 0,
+                    duration_s REAL,
+                    timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                    experiment_id TEXT,
+                    best_prompt_origin_json TEXT,
+                    meta_model_id TEXT REFERENCES models(id) ON DELETE SET NULL,
+                    best_prompt_version_id TEXT REFERENCES prompt_versions(id) ON DELETE SET NULL,
+                    best_profile_id TEXT REFERENCES model_profiles(id) ON DELETE SET NULL,
+                    FOREIGN KEY (suite_id) REFERENCES tool_suites(id) ON DELETE CASCADE,
+                    FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE SET NULL
+                )
+            """)
+            await conn.execute("""
+                INSERT INTO prompt_tune_runs
+                (id, user_id, suite_id, mode, target_models_json,
+                 base_prompt, config_json, generations_json, best_score, status,
+                 total_prompts, completed_prompts, duration_s, timestamp, experiment_id,
+                 best_prompt_origin_json, meta_model_id, best_prompt_version_id, best_profile_id)
+                SELECT id, user_id, suite_id, mode, target_models_json,
+                       base_prompt, config_json, generations_json, best_score, status,
+                       total_prompts, completed_prompts, duration_s, timestamp, experiment_id,
+                       best_prompt_origin_json, meta_model_id, best_prompt_version_id, best_profile_id
+                FROM _prompt_tune_runs_old
+            """)
+
+            new_count_cursor = await conn.execute("SELECT COUNT(*) FROM prompt_tune_runs")
+            new_count = (await new_count_cursor.fetchone())[0]
+            assert old_count == new_count, f"prompt_tune_runs row count mismatch: {old_count} vs {new_count}"
+
+            await conn.execute("DROP TABLE _prompt_tune_runs_old")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_tune_runs_user ON prompt_tune_runs(user_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_tune_runs_ts ON prompt_tune_runs(user_id, timestamp DESC)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_tune_runs_suite ON prompt_tune_runs(suite_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_tune_runs_experiment ON prompt_tune_runs(experiment_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_tune_best_pv ON prompt_tune_runs(best_prompt_version_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_param_tune_best_profile ON prompt_tune_runs(best_profile_id)")
+            await conn.commit()
+            logger.info("Migration 600: prompt_tune_runs rebuilt successfully")
+
+    # ---- 6f: judge_reports — drop judge_model string (keep judge_model_id FK) ----
+    check_jr = await conn.execute(
+        "SELECT COUNT(*) FROM judge_reports WHERE judge_model_id IS NULL"
+    )
+    null_jm_count = (await check_jr.fetchone())[0]
+
+    if null_jm_count > 0:
+        logger.warning(
+            "Migration 600: SKIPPING judge_reports rebuild — %d rows have NULL judge_model_id",
+            null_jm_count,
+        )
+    else:
+        old_count_cursor = await conn.execute("SELECT COUNT(*) FROM judge_reports")
+        old_count = (await old_count_cursor.fetchone())[0]
+
+        logger.info("Migration 600: rebuilding judge_reports — dropping judge_model string (%d rows)", old_count)
+        await conn.execute("ALTER TABLE judge_reports RENAME TO _judge_reports_old")
+        await conn.execute("""
+            CREATE TABLE judge_reports (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                eval_run_id TEXT,
+                eval_run_id_b TEXT,
+                judge_model_id TEXT REFERENCES models(id) ON DELETE SET NULL,
+                mode TEXT NOT NULL CHECK(mode IN ('post_eval','live_inline','comparative')),
+                verdicts_json TEXT NOT NULL DEFAULT '[]',
+                report_json TEXT,
+                overall_grade TEXT,
+                overall_score REAL,
+                status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','error','interrupted')),
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                experiment_id TEXT,
+                parent_report_id TEXT,
+                version INTEGER NOT NULL DEFAULT 1,
+                instructions_json TEXT,
+                FOREIGN KEY (eval_run_id) REFERENCES tool_eval_runs(id) ON DELETE SET NULL,
+                FOREIGN KEY (eval_run_id_b) REFERENCES tool_eval_runs(id) ON DELETE SET NULL,
+                FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE SET NULL
+            )
+        """)
+        await conn.execute("""
+            INSERT INTO judge_reports
+            (id, user_id, eval_run_id, eval_run_id_b, judge_model_id, mode,
+             verdicts_json, report_json, overall_grade, overall_score,
+             status, timestamp, experiment_id,
+             parent_report_id, version, instructions_json)
+            SELECT id, user_id, eval_run_id, eval_run_id_b, judge_model_id, mode,
+                   verdicts_json, report_json, overall_grade, overall_score,
+                   status, timestamp, experiment_id,
+                   parent_report_id, version, instructions_json
+            FROM _judge_reports_old
+        """)
+
+        new_count_cursor = await conn.execute("SELECT COUNT(*) FROM judge_reports")
+        new_count = (await new_count_cursor.fetchone())[0]
+        assert old_count == new_count, f"judge_reports row count mismatch: {old_count} vs {new_count}"
+
+        await conn.execute("DROP TABLE _judge_reports_old")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_user ON judge_reports(user_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_eval ON judge_reports(eval_run_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_ts ON judge_reports(user_id, timestamp DESC)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_experiment ON judge_reports(experiment_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_parent ON judge_reports(parent_report_id)")
+        await conn.commit()
+        logger.info("Migration 600: judge_reports rebuilt successfully")
+
+    # ---- 6h: public_leaderboard — drop model_name, provider strings (keep model_db_id FK) ----
+    check_lb = await conn.execute(
+        "SELECT COUNT(*) FROM public_leaderboard WHERE model_db_id IS NULL"
+    )
+    null_lb_count = (await check_lb.fetchone())[0]
+
+    if null_lb_count > 0:
+        logger.warning(
+            "Migration 600: SKIPPING public_leaderboard rebuild — %d rows have NULL model_db_id",
+            null_lb_count,
+        )
+    else:
+        old_count_cursor = await conn.execute("SELECT COUNT(*) FROM public_leaderboard")
+        old_count = (await old_count_cursor.fetchone())[0]
+
+        logger.info("Migration 600: rebuilding public_leaderboard — dropping model_name, provider strings (%d rows)", old_count)
+        await conn.execute("ALTER TABLE public_leaderboard RENAME TO _public_leaderboard_old")
+        await conn.execute("""
+            CREATE TABLE public_leaderboard (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                model_db_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+                tool_accuracy_pct REAL DEFAULT 0.0,
+                param_accuracy_pct REAL DEFAULT 0.0,
+                irrel_accuracy_pct REAL,
+                throughput_tps REAL,
+                ttft_ms REAL,
+                sample_count INTEGER NOT NULL DEFAULT 0,
+                last_updated TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(model_db_id)
+            )
+        """)
+        await conn.execute("""
+            INSERT INTO public_leaderboard
+            (id, model_db_id, tool_accuracy_pct, param_accuracy_pct,
+             irrel_accuracy_pct, throughput_tps, ttft_ms, sample_count, last_updated)
+            SELECT id, model_db_id, tool_accuracy_pct, param_accuracy_pct,
+                   irrel_accuracy_pct, throughput_tps, ttft_ms, sample_count, last_updated
+            FROM _public_leaderboard_old
+        """)
+
+        new_count_cursor = await conn.execute("SELECT COUNT(*) FROM public_leaderboard")
+        new_count = (await new_count_cursor.fetchone())[0]
+        assert old_count == new_count, f"public_leaderboard row count mismatch: {old_count} vs {new_count}"
+
+        await conn.execute("DROP TABLE _public_leaderboard_old")
+        await conn.commit()
+        logger.info("Migration 600: public_leaderboard rebuilt successfully")
 
 
 # --- User CRUD ---
@@ -1304,6 +2168,68 @@ async def delete_benchmark_run(run_id: str, user_id: str) -> bool:
     return count > 0
 
 
+# --- Run Results (Phase 4 normalization) ---
+
+async def save_run_result(
+    run_id: str, run_type: str, user_id: str,
+    model_litellm_id: str, model_db_id: str | None = None,
+    profile_id: str | None = None, provider_key: str | None = None,
+    tool_accuracy_pct: float | None = None, param_accuracy_pct: float | None = None,
+    throughput_tps: float | None = None, ttft_ms: float | None = None,
+    tokens_generated: int | None = None, latency_p99_ms: float | None = None,
+    score: float | None = None, cost: float | None = None,
+    raw_response_json: str | None = None,
+) -> str:
+    """Insert a single run result row. Returns the result ID."""
+    result_id = secrets.token_hex(16)
+    await _db.execute(
+        "INSERT INTO run_results (id, run_id, run_type, user_id, model_litellm_id, "
+        "model_db_id, profile_id, provider_key, tool_accuracy_pct, param_accuracy_pct, "
+        "throughput_tps, ttft_ms, tokens_generated, latency_p99_ms, score, cost, raw_response_json) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (result_id, run_id, run_type, user_id, model_litellm_id,
+         model_db_id, profile_id, provider_key, tool_accuracy_pct, param_accuracy_pct,
+         throughput_tps, ttft_ms, tokens_generated, latency_p99_ms, score, cost, raw_response_json),
+    )
+    return result_id
+
+
+async def get_run_results(run_id: str, run_type: str) -> list[dict]:
+    """Get all results for a specific run."""
+    return await _db.fetch_all(
+        "SELECT * FROM run_results WHERE run_id = ? AND run_type = ? ORDER BY created_at",
+        (run_id, run_type),
+    )
+
+
+async def get_run_results_for_user(
+    user_id: str, run_type: str | None = None,
+    limit: int = 100, offset: int = 0,
+) -> list[dict]:
+    """Get run results for a user, optionally filtered by run_type."""
+    if run_type:
+        return await _db.fetch_all(
+            "SELECT * FROM run_results WHERE user_id = ? AND run_type = ? "
+            "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (user_id, run_type, limit, offset),
+        )
+    return await _db.fetch_all(
+        "SELECT * FROM run_results WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (user_id, limit, offset),
+    )
+
+
+async def get_run_results_by_model(
+    user_id: str, model_litellm_id: str, limit: int = 50,
+) -> list[dict]:
+    """Get all results for a specific model across run types."""
+    return await _db.fetch_all(
+        "SELECT * FROM run_results WHERE user_id = ? AND model_litellm_id = ? "
+        "ORDER BY created_at DESC LIMIT ?",
+        (user_id, model_litellm_id, limit),
+    )
+
+
 # --- Audit Log ---
 
 async def log_audit(
@@ -1548,13 +2474,13 @@ async def delete_test_case(case_id: str, suite_id: str) -> bool:
 
 # --- Tool Eval Runs CRUD ---
 
-async def save_tool_eval_run(user_id: str, suite_id: str, suite_name: str, models_json: str, results_json: str, summary_json: str, temperature: float, config_json: str | None = None, experiment_id: str | None = None, profiles_json: str | None = None) -> str:
+async def save_tool_eval_run(user_id: str, suite_id: str, models_json: str, results_json: str, summary_json: str, temperature: float, config_json: str | None = None, experiment_id: str | None = None, profiles_json: str | None = None) -> str:
     """Save eval run. Returns run_id."""
     run_id = uuid.uuid4().hex
     await _db.execute(
-        "INSERT INTO tool_eval_runs (id, user_id, suite_id, suite_name, models_json, results_json, summary_json, temperature, config_json, experiment_id, profiles_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (run_id, user_id, suite_id, suite_name, models_json, results_json, summary_json, temperature, config_json, experiment_id, profiles_json),
+        "INSERT INTO tool_eval_runs (id, user_id, suite_id, models_json, results_json, summary_json, temperature, config_json, experiment_id, profiles_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, user_id, suite_id, models_json, results_json, summary_json, temperature, config_json, experiment_id, profiles_json),
     )
     return run_id
 
@@ -1566,10 +2492,11 @@ async def get_tool_eval_runs(user_id: str, limit: int = 50) -> list[dict]:
     via a LEFT JOIN on judge_reports (M5).
     """
     return await _db.fetch_all(
-        "SELECT r.id, r.suite_id, r.suite_name, r.models_json, r.summary_json, "
+        "SELECT r.id, r.suite_id, ts.name AS suite_name, r.models_json, r.summary_json, "
         "r.temperature, r.timestamp, r.config_json, "
         "j.overall_grade AS judge_grade, j.overall_score AS judge_score "
         "FROM tool_eval_runs r "
+        "LEFT JOIN tool_suites ts ON ts.id = r.suite_id "
         "LEFT JOIN ("
         "  SELECT eval_run_id, overall_grade, overall_score, "
         "    ROW_NUMBER() OVER (PARTITION BY eval_run_id ORDER BY timestamp DESC) AS rn "
@@ -1581,9 +2508,12 @@ async def get_tool_eval_runs(user_id: str, limit: int = 50) -> list[dict]:
 
 
 async def get_tool_eval_run(run_id: str, user_id: str) -> dict | None:
-    """Get full eval run including results_json."""
+    """Get full eval run including results_json. Includes suite_name via JOIN."""
     return await _db.fetch_one(
-        "SELECT * FROM tool_eval_runs WHERE id = ? AND user_id = ?",
+        "SELECT r.*, ts.name AS suite_name "
+        "FROM tool_eval_runs r "
+        "LEFT JOIN tool_suites ts ON ts.id = r.suite_id "
+        "WHERE r.id = ? AND r.user_id = ?",
         (run_id, user_id),
     )
 
@@ -1617,16 +2547,16 @@ async def delete_tool_eval_run(run_id: str, user_id: str) -> bool:
 # --- Parameter Tuner CRUD ---
 
 async def save_param_tune_run(
-    user_id: str, suite_id: str, suite_name: str, models_json: str,
+    user_id: str, suite_id: str, models_json: str,
     search_space_json: str, total_combos: int,
     experiment_id: str | None = None,
 ) -> str:
     """Create a new param tune run (status=running). Returns run_id."""
     run_id = uuid.uuid4().hex
     await _db.execute(
-        "INSERT INTO param_tune_runs (id, user_id, suite_id, suite_name, models_json, search_space_json, total_combos, experiment_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (run_id, user_id, suite_id, suite_name, models_json, search_space_json, total_combos, experiment_id),
+        "INSERT INTO param_tune_runs (id, user_id, suite_id, models_json, search_space_json, total_combos, experiment_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (run_id, user_id, suite_id, models_json, search_space_json, total_combos, experiment_id),
     )
     return run_id
 
@@ -1640,6 +2570,7 @@ async def update_param_tune_run(
     status: str | None = None,
     duration_s: float | None = None,
     judge_scores_json: str | None = None,
+    best_profile_id: str | None = None,
 ) -> bool:
     """Update a param tune run. Only non-None fields are updated."""
     updates = []
@@ -1665,6 +2596,9 @@ async def update_param_tune_run(
     if judge_scores_json is not None:
         updates.append("judge_scores_json = ?")
         values.append(judge_scores_json)
+    if best_profile_id is not None:
+        updates.append("best_profile_id = ?")
+        values.append(best_profile_id)
     if not updates:
         return False
     values.extend([run_id, user_id])
@@ -1678,17 +2612,22 @@ async def update_param_tune_run(
 async def get_param_tune_runs(user_id: str, limit: int = 50) -> list[dict]:
     """List user's param tune runs (exclude full results_json for list view)."""
     return await _db.fetch_all(
-        "SELECT id, suite_id, suite_name, models_json, total_combos, completed_combos, "
-        "best_score, best_config_json, status, duration_s, timestamp "
-        "FROM param_tune_runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+        "SELECT r.id, r.suite_id, ts.name AS suite_name, r.models_json, r.total_combos, r.completed_combos, "
+        "r.best_score, r.best_config_json, r.status, r.duration_s, r.timestamp "
+        "FROM param_tune_runs r "
+        "LEFT JOIN tool_suites ts ON ts.id = r.suite_id "
+        "WHERE r.user_id = ? ORDER BY r.timestamp DESC LIMIT ?",
         (user_id, limit),
     )
 
 
 async def get_param_tune_run(run_id: str, user_id: str) -> dict | None:
-    """Get full param tune run including results_json."""
+    """Get full param tune run including results_json. Includes suite_name via JOIN."""
     return await _db.fetch_one(
-        "SELECT * FROM param_tune_runs WHERE id = ? AND user_id = ?",
+        "SELECT r.*, ts.name AS suite_name "
+        "FROM param_tune_runs r "
+        "LEFT JOIN tool_suites ts ON ts.id = r.suite_id "
+        "WHERE r.id = ? AND r.user_id = ?",
         (run_id, user_id),
     )
 
@@ -1705,21 +2644,41 @@ async def delete_param_tune_run(run_id: str, user_id: str) -> bool:
 # --- Prompt Tuner CRUD ---
 
 async def save_prompt_tune_run(
-    user_id: str, suite_id: str, suite_name: str, mode: str,
+    user_id: str, suite_id: str, mode: str,
     target_models_json: str, meta_model: str, base_prompt: str | None,
     config_json: str, total_prompts: int,
     experiment_id: str | None = None,
     meta_provider_key: str | None = None,
+    meta_model_id: str | None = None,
 ) -> str:
-    """Create a new prompt tune run (status=running). Returns run_id."""
+    """Create a new prompt tune run (status=running). Returns run_id.
+
+    Args:
+        meta_model: Legacy litellm model ID string (kept for backward compat, ignored if table rebuilt).
+        meta_model_id: FK to models table (preferred).
+    """
     run_id = uuid.uuid4().hex
-    await _db.execute(
-        "INSERT INTO prompt_tune_runs (id, user_id, suite_id, suite_name, mode, "
-        "target_models_json, meta_model, base_prompt, config_json, total_prompts, experiment_id, meta_provider_key) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (run_id, user_id, suite_id, suite_name, mode,
-         target_models_json, meta_model, base_prompt, config_json, total_prompts, experiment_id, meta_provider_key),
-    )
+    # Use the new schema (without meta_model/meta_provider_key columns) if available,
+    # fall back to old schema for databases not yet migrated.
+    try:
+        await _db.execute(
+            "INSERT INTO prompt_tune_runs (id, user_id, suite_id, mode, "
+            "target_models_json, base_prompt, config_json, total_prompts, experiment_id, meta_model_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (run_id, user_id, suite_id, mode,
+             target_models_json, base_prompt, config_json, total_prompts, experiment_id, meta_model_id),
+        )
+    except Exception:
+        # Pre-migration 600 schema still has meta_model and meta_provider_key columns
+        await _db.execute(
+            "INSERT INTO prompt_tune_runs (id, user_id, suite_id, mode, "
+            "target_models_json, meta_model, base_prompt, config_json, total_prompts, "
+            "experiment_id, meta_provider_key, meta_model_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (run_id, user_id, suite_id, mode,
+             target_models_json, meta_model, base_prompt, config_json, total_prompts,
+             experiment_id, meta_provider_key, meta_model_id),
+        )
     return run_id
 
 
@@ -1729,25 +2688,30 @@ async def update_prompt_tune_run(
     best_prompt: str | None = None,
     best_score: float | None = None,
     best_prompt_origin_json: str | None = None,
+    best_prompt_version_id: str | None = None,
     completed_prompts: int | None = None,
     status: str | None = None,
     duration_s: float | None = None,
 ) -> bool:
-    """Update a prompt tune run. Only non-None fields are updated."""
+    """Update a prompt tune run. Only non-None fields are updated.
+
+    Note: best_prompt is accepted for backward compat but silently ignored
+    after migration 600 drops the column. Use best_prompt_version_id instead.
+    """
     updates = []
     values = []
     if generations_json is not None:
         updates.append("generations_json = ?")
         values.append(generations_json)
-    if best_prompt is not None:
-        updates.append("best_prompt = ?")
-        values.append(best_prompt)
     if best_score is not None:
         updates.append("best_score = ?")
         values.append(best_score)
     if best_prompt_origin_json is not None:
         updates.append("best_prompt_origin_json = ?")
         values.append(best_prompt_origin_json)
+    if best_prompt_version_id is not None:
+        updates.append("best_prompt_version_id = ?")
+        values.append(best_prompt_version_id)
     if completed_prompts is not None:
         updates.append("completed_prompts = ?")
         values.append(completed_prompts)
@@ -1757,30 +2721,58 @@ async def update_prompt_tune_run(
     if duration_s is not None:
         updates.append("duration_s = ?")
         values.append(duration_s)
+    # best_prompt: try to write if column still exists (pre-migration 600)
+    if best_prompt is not None:
+        updates.append("best_prompt = ?")
+        values.append(best_prompt)
     if not updates:
         return False
     values.extend([run_id, user_id])
-    count = await _db.execute_returning_rowcount(
-        f"UPDATE prompt_tune_runs SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
-        values,
-    )
+    try:
+        count = await _db.execute_returning_rowcount(
+            f"UPDATE prompt_tune_runs SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
+            values,
+        )
+    except Exception:
+        # Column best_prompt may have been dropped — retry without it
+        if best_prompt is not None:
+            try:
+                idx = updates.index("best_prompt = ?")
+                updates.pop(idx)
+                values.pop(idx)
+            except ValueError:
+                raise
+            if not updates:
+                return False
+            count = await _db.execute_returning_rowcount(
+                f"UPDATE prompt_tune_runs SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
+                values,
+            )
+        else:
+            raise
     return count > 0
 
 
 async def get_prompt_tune_runs(user_id: str, limit: int = 50) -> list[dict]:
     """List user's prompt tune runs (exclude large JSON for list view)."""
     return await _db.fetch_all(
-        "SELECT id, suite_id, suite_name, mode, target_models_json, meta_model, "
-        "best_score, best_prompt, status, total_prompts, completed_prompts, duration_s, timestamp "
-        "FROM prompt_tune_runs WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+        "SELECT r.id, r.suite_id, ts.name AS suite_name, r.mode, r.target_models_json, "
+        "r.meta_model_id, r.best_prompt_version_id, "
+        "r.best_score, r.status, r.total_prompts, r.completed_prompts, r.duration_s, r.timestamp "
+        "FROM prompt_tune_runs r "
+        "LEFT JOIN tool_suites ts ON ts.id = r.suite_id "
+        "WHERE r.user_id = ? ORDER BY r.timestamp DESC LIMIT ?",
         (user_id, limit),
     )
 
 
 async def get_prompt_tune_run(run_id: str, user_id: str) -> dict | None:
-    """Get full prompt tune run including generations_json."""
+    """Get full prompt tune run including generations_json. Includes suite_name via JOIN."""
     return await _db.fetch_one(
-        "SELECT * FROM prompt_tune_runs WHERE id = ? AND user_id = ?",
+        "SELECT r.*, ts.name AS suite_name "
+        "FROM prompt_tune_runs r "
+        "LEFT JOIN tool_suites ts ON ts.id = r.suite_id "
+        "WHERE r.id = ? AND r.user_id = ?",
         (run_id, user_id),
     )
 
@@ -1807,16 +2799,34 @@ async def save_judge_report(
     parent_report_id: str | None = None,
     version: int = 1,
     instructions_json: str | None = None,
+    judge_model_id: str | None = None,
 ) -> str:
-    """Create a new judge report (status=running). Returns report id."""
-    return await _db.execute_returning_id(
-        "INSERT INTO judge_reports (user_id, eval_run_id, eval_run_id_b, judge_model, mode, "
-        "experiment_id, parent_report_id, version, instructions_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (user_id, eval_run_id, eval_run_id_b, judge_model, mode,
-         experiment_id, parent_report_id, version, instructions_json),
-        id_query="SELECT id FROM judge_reports WHERE rowid = ?",
-    )
+    """Create a new judge report (status=running). Returns report id.
+
+    Args:
+        judge_model: Legacy litellm model ID string (kept for backward compat).
+        judge_model_id: FK to models table (preferred, used after migration 600).
+    """
+    try:
+        # Post-migration 600: judge_model column is dropped, use judge_model_id
+        return await _db.execute_returning_id(
+            "INSERT INTO judge_reports (user_id, eval_run_id, eval_run_id_b, judge_model_id, mode, "
+            "experiment_id, parent_report_id, version, instructions_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, eval_run_id, eval_run_id_b, judge_model_id, mode,
+             experiment_id, parent_report_id, version, instructions_json),
+            id_query="SELECT id FROM judge_reports WHERE rowid = ?",
+        )
+    except Exception:
+        # Pre-migration 600: judge_model column still exists
+        return await _db.execute_returning_id(
+            "INSERT INTO judge_reports (user_id, eval_run_id, eval_run_id_b, judge_model, mode, "
+            "experiment_id, parent_report_id, version, instructions_json, judge_model_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, eval_run_id, eval_run_id_b, judge_model, mode,
+             experiment_id, parent_report_id, version, instructions_json, judge_model_id),
+            id_query="SELECT id FROM judge_reports WHERE rowid = ?",
+        )
 
 
 async def update_judge_report(report_id: str, **fields) -> None:
@@ -1833,10 +2843,13 @@ async def update_judge_report(report_id: str, **fields) -> None:
 async def get_judge_reports(user_id: str, limit: int = 50) -> list[dict]:
     """List user's judge reports (exclude full verdicts_json for list view)."""
     return await _db.fetch_all(
-        "SELECT id, eval_run_id, eval_run_id_b, judge_model, mode, "
-        "overall_grade, overall_score, status, timestamp, "
-        "parent_report_id, version, instructions_json "
-        "FROM judge_reports WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+        "SELECT jr.id, jr.eval_run_id, jr.eval_run_id_b, jr.judge_model_id, "
+        "m.litellm_id AS judge_model, m.display_name AS judge_model_display, "
+        "jr.mode, jr.overall_grade, jr.overall_score, jr.status, jr.timestamp, "
+        "jr.parent_report_id, jr.version, jr.instructions_json "
+        "FROM judge_reports jr "
+        "LEFT JOIN models m ON jr.judge_model_id = m.id "
+        "WHERE jr.user_id = ? ORDER BY jr.timestamp DESC LIMIT ?",
         (user_id, limit),
     )
 
@@ -1844,7 +2857,10 @@ async def get_judge_reports(user_id: str, limit: int = 50) -> list[dict]:
 async def get_judge_report(report_id: str, user_id: str) -> dict | None:
     """Get full judge report including verdicts_json and report_json."""
     return await _db.fetch_one(
-        "SELECT * FROM judge_reports WHERE id = ? AND user_id = ?",
+        "SELECT jr.*, m.litellm_id AS judge_model, m.display_name AS judge_model_display "
+        "FROM judge_reports jr "
+        "LEFT JOIN models m ON jr.judge_model_id = m.id "
+        "WHERE jr.id = ? AND jr.user_id = ?",
         (report_id, user_id),
     )
 
@@ -1852,9 +2868,11 @@ async def get_judge_report(report_id: str, user_id: str) -> dict | None:
 async def get_judge_report_for_eval(eval_run_id: str, user_id: str) -> dict | None:
     """Get the most recent completed judge report for a tool eval run."""
     return await _db.fetch_one(
-        "SELECT * FROM judge_reports "
-        "WHERE eval_run_id = ? AND user_id = ? AND status = 'completed' "
-        "ORDER BY timestamp DESC LIMIT 1",
+        "SELECT jr.*, m.litellm_id AS judge_model, m.display_name AS judge_model_display "
+        "FROM judge_reports jr "
+        "LEFT JOIN models m ON jr.judge_model_id = m.id "
+        "WHERE jr.eval_run_id = ? AND jr.user_id = ? AND jr.status = 'completed' "
+        "ORDER BY jr.timestamp DESC LIMIT 1",
         (eval_run_id, user_id),
     )
 
@@ -1889,11 +2907,14 @@ async def get_judge_report_versions(report_id: str, user_id: str) -> list[dict]:
 
     # Step 3: Get all reports in the chain (root + children pointing to root)
     return await _db.fetch_all(
-        "SELECT id, eval_run_id, judge_model, mode, overall_grade, overall_score, "
-        "status, timestamp, parent_report_id, version, instructions_json "
-        "FROM judge_reports "
-        "WHERE user_id = ? AND (id = ? OR parent_report_id = ?) "
-        "ORDER BY version ASC",
+        "SELECT jr.id, jr.eval_run_id, jr.judge_model_id, "
+        "m.litellm_id AS judge_model, m.display_name AS judge_model_display, "
+        "jr.mode, jr.overall_grade, jr.overall_score, "
+        "jr.status, jr.timestamp, jr.parent_report_id, jr.version, jr.instructions_json "
+        "FROM judge_reports jr "
+        "LEFT JOIN models m ON jr.judge_model_id = m.id "
+        "WHERE jr.user_id = ? AND (jr.id = ? OR jr.parent_report_id = ?) "
+        "ORDER BY jr.version ASC",
         (user_id, root_id, root_id),
     )
 
@@ -2033,9 +3054,11 @@ async def get_experiment_timeline(
 
         # Prompt tune runs
         cursor = await conn.execute(
-            "SELECT id, timestamp, best_score, best_prompt, status "
-            "FROM prompt_tune_runs "
-            "WHERE experiment_id = ? AND user_id = ?",
+            "SELECT ptr.id, ptr.timestamp, ptr.best_score, ptr.best_prompt_version_id, "
+            "pv.prompt_text AS best_prompt, ptr.status "
+            "FROM prompt_tune_runs ptr "
+            "LEFT JOIN prompt_versions pv ON ptr.best_prompt_version_id = pv.id "
+            "WHERE ptr.experiment_id = ? AND ptr.user_id = ?",
             (exp_id, user_id),
         )
         for row in await cursor.fetchall():
@@ -2188,13 +3211,14 @@ async def cleanup_audit_log(retention_days: int = 90):
 async def create_schedule(
     user_id: str, name: str, prompt: str, models_json: str,
     max_tokens: int, temperature: float, interval_hours: int, next_run: str,
+    prompt_version_id: str | None = None,
 ) -> str:
     """Create a scheduled benchmark. Returns schedule ID."""
     schedule_id = uuid.uuid4().hex
     await _db.execute(
-        "INSERT INTO schedules (id, user_id, name, prompt, models_json, max_tokens, temperature, interval_hours, next_run) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (schedule_id, user_id, name, prompt, models_json, max_tokens, temperature, interval_hours, next_run),
+        "INSERT INTO schedules (id, user_id, name, prompt, models_json, max_tokens, temperature, interval_hours, next_run, prompt_version_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (schedule_id, user_id, name, prompt, models_json, max_tokens, temperature, interval_hours, next_run, prompt_version_id),
     )
     return schedule_id
 
@@ -2217,7 +3241,7 @@ async def get_schedule(schedule_id: str, user_id: str) -> dict | None:
 
 async def update_schedule(schedule_id: str, user_id: str, **kwargs) -> bool:
     """Update schedule fields. Returns True if found and updated."""
-    allowed = {"name", "prompt", "models_json", "max_tokens", "temperature", "interval_hours", "enabled", "next_run"}
+    allowed = {"name", "prompt", "models_json", "max_tokens", "temperature", "interval_hours", "enabled", "next_run", "prompt_version_id"}
     fields = []
     params = []
     for key, value in kwargs.items():
@@ -2415,71 +3439,138 @@ async def upsert_leaderboard_entry(
     sample_count: int,
     throughput_tps: float | None = None,
     ttft_ms: float | None = None,
+    model_db_id: str | None = None,
 ) -> None:
     """Insert or update a leaderboard entry, aggregating with existing data.
 
     Uses INSERT ... ON CONFLICT DO UPDATE with SQL-level weighted averaging
     to avoid the read-then-write race condition (CRIT-1).
+
+    After migration 600, the table uses model_db_id as the unique key instead
+    of (model_name, provider). Falls back to the old schema if needed.
     """
     async with aiosqlite.connect(_db._path()) as conn:
         await conn.execute("PRAGMA busy_timeout=5000")
         await conn.execute("PRAGMA foreign_keys=ON")
-        await conn.execute("""
-            INSERT INTO public_leaderboard
-                (id, model_name, provider, tool_accuracy_pct, param_accuracy_pct,
-                 irrel_accuracy_pct, throughput_tps, ttft_ms, sample_count, last_updated)
-            VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            ON CONFLICT(model_name, provider) DO UPDATE SET
-                tool_accuracy_pct = round(
-                    (public_leaderboard.tool_accuracy_pct * public_leaderboard.sample_count
-                     + excluded.tool_accuracy_pct * excluded.sample_count)
-                    / (public_leaderboard.sample_count + excluded.sample_count), 2),
-                param_accuracy_pct = round(
-                    (public_leaderboard.param_accuracy_pct * public_leaderboard.sample_count
-                     + excluded.param_accuracy_pct * excluded.sample_count)
-                    / (public_leaderboard.sample_count + excluded.sample_count), 2),
-                irrel_accuracy_pct = CASE
-                    WHEN excluded.irrel_accuracy_pct IS NOT NULL AND public_leaderboard.irrel_accuracy_pct IS NOT NULL
-                    THEN round(
-                        (public_leaderboard.irrel_accuracy_pct * public_leaderboard.sample_count
-                         + excluded.irrel_accuracy_pct * excluded.sample_count)
-                        / (public_leaderboard.sample_count + excluded.sample_count), 2)
-                    WHEN excluded.irrel_accuracy_pct IS NOT NULL
-                    THEN excluded.irrel_accuracy_pct
-                    ELSE public_leaderboard.irrel_accuracy_pct
-                END,
-                throughput_tps = CASE
-                    WHEN excluded.throughput_tps IS NOT NULL AND public_leaderboard.throughput_tps IS NOT NULL
-                    THEN (public_leaderboard.throughput_tps * public_leaderboard.sample_count
-                          + excluded.throughput_tps * excluded.sample_count)
-                         / (public_leaderboard.sample_count + excluded.sample_count)
-                    WHEN excluded.throughput_tps IS NOT NULL
-                    THEN excluded.throughput_tps
-                    ELSE public_leaderboard.throughput_tps
-                END,
-                ttft_ms = CASE
-                    WHEN excluded.ttft_ms IS NOT NULL AND public_leaderboard.ttft_ms IS NOT NULL
-                    THEN (public_leaderboard.ttft_ms * public_leaderboard.sample_count
-                          + excluded.ttft_ms * excluded.sample_count)
-                         / (public_leaderboard.sample_count + excluded.sample_count)
-                    WHEN excluded.ttft_ms IS NOT NULL
-                    THEN excluded.ttft_ms
-                    ELSE public_leaderboard.ttft_ms
-                END,
-                sample_count = public_leaderboard.sample_count + excluded.sample_count,
-                last_updated = datetime('now')
-        """, (model_name, provider, round(tool_accuracy_pct, 2), round(param_accuracy_pct, 2),
-              irrel_accuracy_pct, throughput_tps, ttft_ms, sample_count))
+        try:
+            # Post-migration 600: model_db_id is the unique key
+            await conn.execute("""
+                INSERT INTO public_leaderboard
+                    (id, model_db_id, tool_accuracy_pct, param_accuracy_pct,
+                     irrel_accuracy_pct, throughput_tps, ttft_ms, sample_count, last_updated)
+                VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(model_db_id) DO UPDATE SET
+                    tool_accuracy_pct = round(
+                        (public_leaderboard.tool_accuracy_pct * public_leaderboard.sample_count
+                         + excluded.tool_accuracy_pct * excluded.sample_count)
+                        / (public_leaderboard.sample_count + excluded.sample_count), 2),
+                    param_accuracy_pct = round(
+                        (public_leaderboard.param_accuracy_pct * public_leaderboard.sample_count
+                         + excluded.param_accuracy_pct * excluded.sample_count)
+                        / (public_leaderboard.sample_count + excluded.sample_count), 2),
+                    irrel_accuracy_pct = CASE
+                        WHEN excluded.irrel_accuracy_pct IS NOT NULL AND public_leaderboard.irrel_accuracy_pct IS NOT NULL
+                        THEN round(
+                            (public_leaderboard.irrel_accuracy_pct * public_leaderboard.sample_count
+                             + excluded.irrel_accuracy_pct * excluded.sample_count)
+                            / (public_leaderboard.sample_count + excluded.sample_count), 2)
+                        WHEN excluded.irrel_accuracy_pct IS NOT NULL
+                        THEN excluded.irrel_accuracy_pct
+                        ELSE public_leaderboard.irrel_accuracy_pct
+                    END,
+                    throughput_tps = CASE
+                        WHEN excluded.throughput_tps IS NOT NULL AND public_leaderboard.throughput_tps IS NOT NULL
+                        THEN (public_leaderboard.throughput_tps * public_leaderboard.sample_count
+                              + excluded.throughput_tps * excluded.sample_count)
+                             / (public_leaderboard.sample_count + excluded.sample_count)
+                        WHEN excluded.throughput_tps IS NOT NULL
+                        THEN excluded.throughput_tps
+                        ELSE public_leaderboard.throughput_tps
+                    END,
+                    ttft_ms = CASE
+                        WHEN excluded.ttft_ms IS NOT NULL AND public_leaderboard.ttft_ms IS NOT NULL
+                        THEN (public_leaderboard.ttft_ms * public_leaderboard.sample_count
+                              + excluded.ttft_ms * excluded.sample_count)
+                             / (public_leaderboard.sample_count + excluded.sample_count)
+                        WHEN excluded.ttft_ms IS NOT NULL
+                        THEN excluded.ttft_ms
+                        ELSE public_leaderboard.ttft_ms
+                    END,
+                    sample_count = public_leaderboard.sample_count + excluded.sample_count,
+                    last_updated = datetime('now')
+            """, (model_db_id, round(tool_accuracy_pct, 2), round(param_accuracy_pct, 2),
+                  irrel_accuracy_pct, throughput_tps, ttft_ms, sample_count))
+        except Exception:
+            # Pre-migration 600: model_name + provider is the unique key
+            await conn.execute("""
+                INSERT INTO public_leaderboard
+                    (id, model_name, provider, tool_accuracy_pct, param_accuracy_pct,
+                     irrel_accuracy_pct, throughput_tps, ttft_ms, sample_count, last_updated)
+                VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(model_name, provider) DO UPDATE SET
+                    tool_accuracy_pct = round(
+                        (public_leaderboard.tool_accuracy_pct * public_leaderboard.sample_count
+                         + excluded.tool_accuracy_pct * excluded.sample_count)
+                        / (public_leaderboard.sample_count + excluded.sample_count), 2),
+                    param_accuracy_pct = round(
+                        (public_leaderboard.param_accuracy_pct * public_leaderboard.sample_count
+                         + excluded.param_accuracy_pct * excluded.sample_count)
+                        / (public_leaderboard.sample_count + excluded.sample_count), 2),
+                    irrel_accuracy_pct = CASE
+                        WHEN excluded.irrel_accuracy_pct IS NOT NULL AND public_leaderboard.irrel_accuracy_pct IS NOT NULL
+                        THEN round(
+                            (public_leaderboard.irrel_accuracy_pct * public_leaderboard.sample_count
+                             + excluded.irrel_accuracy_pct * excluded.sample_count)
+                            / (public_leaderboard.sample_count + excluded.sample_count), 2)
+                        WHEN excluded.irrel_accuracy_pct IS NOT NULL
+                        THEN excluded.irrel_accuracy_pct
+                        ELSE public_leaderboard.irrel_accuracy_pct
+                    END,
+                    throughput_tps = CASE
+                        WHEN excluded.throughput_tps IS NOT NULL AND public_leaderboard.throughput_tps IS NOT NULL
+                        THEN (public_leaderboard.throughput_tps * public_leaderboard.sample_count
+                              + excluded.throughput_tps * excluded.sample_count)
+                             / (public_leaderboard.sample_count + excluded.sample_count)
+                        WHEN excluded.throughput_tps IS NOT NULL
+                        THEN excluded.throughput_tps
+                        ELSE public_leaderboard.throughput_tps
+                    END,
+                    ttft_ms = CASE
+                        WHEN excluded.ttft_ms IS NOT NULL AND public_leaderboard.ttft_ms IS NOT NULL
+                        THEN (public_leaderboard.ttft_ms * public_leaderboard.sample_count
+                              + excluded.ttft_ms * excluded.sample_count)
+                             / (public_leaderboard.sample_count + excluded.sample_count)
+                        WHEN excluded.ttft_ms IS NOT NULL
+                        THEN excluded.ttft_ms
+                        ELSE public_leaderboard.ttft_ms
+                    END,
+                    sample_count = public_leaderboard.sample_count + excluded.sample_count,
+                    last_updated = datetime('now')
+            """, (model_name, provider, round(tool_accuracy_pct, 2), round(param_accuracy_pct, 2),
+                  irrel_accuracy_pct, throughput_tps, ttft_ms, sample_count))
         await conn.commit()
 
 
 async def get_leaderboard() -> list[dict]:
     """Return public leaderboard entries sorted by tool accuracy descending."""
-    return await _db.fetch_all(
-        "SELECT model_name, provider, tool_accuracy_pct, param_accuracy_pct, "
-        "irrel_accuracy_pct, throughput_tps, ttft_ms, sample_count, last_updated "
-        "FROM public_leaderboard ORDER BY tool_accuracy_pct DESC, param_accuracy_pct DESC"
-    )
+    try:
+        # Post-migration 600: resolve model_name/provider from FK
+        return await _db.fetch_all(
+            "SELECT m.display_name AS model_name, p.name AS provider, "
+            "lb.tool_accuracy_pct, lb.param_accuracy_pct, "
+            "lb.irrel_accuracy_pct, lb.throughput_tps, lb.ttft_ms, lb.sample_count, lb.last_updated "
+            "FROM public_leaderboard lb "
+            "JOIN models m ON lb.model_db_id = m.id "
+            "JOIN providers p ON m.provider_id = p.id "
+            "ORDER BY lb.tool_accuracy_pct DESC, lb.param_accuracy_pct DESC"
+        )
+    except Exception:
+        # Pre-migration 600: model_name and provider are direct columns
+        return await _db.fetch_all(
+            "SELECT model_name, provider, tool_accuracy_pct, param_accuracy_pct, "
+            "irrel_accuracy_pct, throughput_tps, ttft_ms, sample_count, last_updated "
+            "FROM public_leaderboard ORDER BY tool_accuracy_pct DESC, param_accuracy_pct DESC"
+        )
 
 
 async def get_user_leaderboard_opt_in(user_id: str) -> bool:
@@ -2499,7 +3590,7 @@ async def set_user_leaderboard_opt_in(user_id: str, opt_in: bool) -> None:
 
 
 async def save_param_tune_run_with_mode(
-    user_id: str, suite_id: str, suite_name: str, models_json: str,
+    user_id: str, suite_id: str, models_json: str,
     search_space_json: str, total_combos: int,
     optimization_mode: str = "grid",
     experiment_id: str | None = None,
@@ -2507,10 +3598,10 @@ async def save_param_tune_run_with_mode(
     """Create a new param tune run with optimization mode. Returns run_id."""
     run_id = uuid.uuid4().hex
     await _db.execute(
-        "INSERT INTO param_tune_runs (id, user_id, suite_id, suite_name, models_json, "
+        "INSERT INTO param_tune_runs (id, user_id, suite_id, models_json, "
         "search_space_json, total_combos, optimization_mode, experiment_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (run_id, user_id, suite_id, suite_name, models_json, search_space_json,
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, user_id, suite_id, models_json, search_space_json,
          total_combos, optimization_mode, experiment_id),
     )
     return run_id
@@ -2551,25 +3642,55 @@ async def get_profiles(user_id: str, model_id: str | None = None) -> list[dict]:
     """List profiles for a user, optionally filtered by model_id.
 
     Returns list of dicts ordered by model_id, is_default DESC, name.
+    Joins prompt_versions so that linked version text overrides inline system_prompt.
     """
+    base_sql = (
+        "SELECT mp.id, mp.user_id, mp.model_id, mp.name, mp.description, mp.is_default, "
+        "mp.params_json, "
+        "COALESCE(pv.prompt_text, mp.system_prompt) as system_prompt, "
+        "mp.prompt_version_id, "
+        "pv.label as prompt_version_label, "
+        "mp.origin_type, mp.origin_ref, mp.created_at, mp.updated_at "
+        "FROM model_profiles mp "
+        "LEFT JOIN prompt_versions pv ON mp.prompt_version_id = pv.id"
+    )
     if model_id:
         return await _db.fetch_all(
-            "SELECT * FROM model_profiles WHERE user_id = ? AND model_id = ? "
-            "ORDER BY model_id, is_default DESC, name",
+            base_sql + " WHERE mp.user_id = ? AND mp.model_id = ? "
+            "ORDER BY mp.model_id, mp.is_default DESC, mp.name",
             (user_id, model_id),
         )
     return await _db.fetch_all(
-        "SELECT * FROM model_profiles WHERE user_id = ? "
-        "ORDER BY model_id, is_default DESC, name",
+        base_sql + " WHERE mp.user_id = ? "
+        "ORDER BY mp.model_id, mp.is_default DESC, mp.name",
         (user_id,),
     )
 
 
 async def get_profile(profile_id: str, user_id: str) -> dict | None:
-    """Get a single profile by ID with ownership check."""
+    """Get a single profile by ID with ownership check.
+
+    Joins prompt_versions so that linked version text overrides inline system_prompt.
+    """
     return await _db.fetch_one(
-        "SELECT * FROM model_profiles WHERE id = ? AND user_id = ?",
+        "SELECT mp.id, mp.user_id, mp.model_id, mp.name, mp.description, mp.is_default, "
+        "mp.params_json, "
+        "COALESCE(pv.prompt_text, mp.system_prompt) as system_prompt, "
+        "mp.prompt_version_id, "
+        "pv.label as prompt_version_label, "
+        "mp.origin_type, mp.origin_ref, mp.created_at, mp.updated_at "
+        "FROM model_profiles mp "
+        "LEFT JOIN prompt_versions pv ON mp.prompt_version_id = pv.id "
+        "WHERE mp.id = ? AND mp.user_id = ?",
         (profile_id, user_id),
+    )
+
+
+async def get_default_profile(user_id: str, model_id: str) -> dict | None:
+    """Get the default profile for a specific model. Returns None if no default exists."""
+    return await _db.fetch_one(
+        "SELECT * FROM model_profiles WHERE user_id = ? AND model_id = ? AND is_default = 1",
+        (user_id, model_id),
     )
 
 
@@ -2583,17 +3704,22 @@ async def create_profile(
     is_default: bool = False,
     origin_type: str = "manual",
     origin_ref: str | None = None,
+    prompt_version_id: str | None = None,
 ) -> str:
     """Create a new model profile.
 
     Enforces max 20 profiles per model per user.
     If is_default=True, clears existing default for this user+model first.
+    If prompt_version_id is set, system_prompt is cleared (version takes precedence).
     Returns profile_id.
     Raises ValueError if the per-model limit is exceeded.
 
     Count check and INSERT happen on a single connection to prevent
     TOCTOU race conditions (MED-1).
     """
+    # Mutual exclusion: version link overrides inline prompt
+    if prompt_version_id:
+        system_prompt = None
     profile_id = uuid.uuid4().hex
 
     async with aiosqlite.connect(_db._path()) as conn:
@@ -2622,14 +3748,15 @@ async def create_profile(
         await conn.execute(
             "INSERT INTO model_profiles "
             "(id, user_id, model_id, name, description, is_default, params_json, "
-            "system_prompt, origin_type, origin_ref) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "system_prompt, prompt_version_id, origin_type, origin_ref) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 profile_id, user_id, model_id, name,
                 description or "",
                 1 if is_default else 0,
                 params_json or "{}",
                 system_prompt,
+                prompt_version_id,
                 origin_type,
                 origin_ref,
             ),
@@ -2642,13 +3769,21 @@ async def create_profile(
 async def update_profile(profile_id: str, user_id: str, **kwargs) -> bool:
     """Partial update of a model profile.
 
-    Accepted kwargs: name, description, params_json, system_prompt, is_default.
+    Accepted kwargs: name, description, params_json, system_prompt, is_default,
+    prompt_version_id.
+    Mutual exclusion: setting prompt_version_id clears system_prompt and vice versa.
     If is_default=True, clears existing default for the same user+model first.
     Always updates updated_at timestamp.
     Returns True if the profile was found and updated.
     """
-    allowed = {"name", "description", "params_json", "system_prompt", "is_default"}
-    updates = {k: v for k, v in kwargs.items() if k in allowed and (v is not None or k == "is_default")}
+    allowed = {"name", "description", "params_json", "system_prompt", "is_default", "prompt_version_id"}
+    updates = {k: v for k, v in kwargs.items() if k in allowed and (v is not None or k in ("is_default", "system_prompt", "prompt_version_id"))}
+
+    # Mutual exclusion: version link and inline prompt cannot coexist
+    if "prompt_version_id" in updates and updates["prompt_version_id"] is not None:
+        updates["system_prompt"] = None
+    elif "system_prompt" in updates and updates["system_prompt"] is not None:
+        updates["prompt_version_id"] = None
     if not updates:
         return False
 
@@ -2746,9 +3881,16 @@ async def create_prompt_version(
 
 
 async def get_prompt_versions(user_id: str, limit: int = 100) -> list[dict]:
-    """List user's prompt versions, newest first."""
+    """List user's prompt versions, newest first.
+
+    Includes profile_count: number of model_profiles linked to each version.
+    """
     return await _db.fetch_all(
-        "SELECT * FROM prompt_versions WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+        "SELECT pv.*, "
+        "(SELECT COUNT(*) FROM model_profiles mp "
+        "WHERE mp.prompt_version_id = pv.id) as profile_count "
+        "FROM prompt_versions pv WHERE pv.user_id = ? "
+        "ORDER BY pv.created_at DESC LIMIT ?",
         (user_id, limit),
     )
 
@@ -2814,3 +3956,189 @@ async def set_default_profile(profile_id: str, user_id: str) -> bool:
         )
         await conn.commit()
         return cursor.rowcount > 0
+
+
+# --- Provider CRUD ---
+
+async def get_providers(user_id: str) -> list[dict]:
+    """Get all providers for a user, ordered by sort_order then name."""
+    return await _db.fetch_all(
+        "SELECT * FROM providers WHERE user_id = ? ORDER BY sort_order, name",
+        (user_id,),
+    )
+
+
+async def get_provider(provider_id: str) -> dict | None:
+    """Get a single provider by its ID."""
+    return await _db.fetch_one("SELECT * FROM providers WHERE id = ?", (provider_id,))
+
+
+async def get_provider_by_key(user_id: str, key: str) -> dict | None:
+    """Get a provider by user_id and key."""
+    return await _db.fetch_one(
+        "SELECT * FROM providers WHERE user_id = ? AND key = ?", (user_id, key)
+    )
+
+
+async def create_provider(user_id: str, key: str, name: str, api_base: str | None = None,
+                           api_key_env: str | None = None, model_prefix: str | None = None) -> str:
+    """Create a new provider. Returns the provider ID."""
+    provider_id = secrets.token_hex(16)
+    await _db.execute(
+        "INSERT INTO providers (id, user_id, key, name, api_base, api_key_env, model_prefix) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (provider_id, user_id, key, name, api_base, api_key_env, model_prefix),
+    )
+    return provider_id
+
+
+async def update_provider(provider_id: str, **kwargs) -> bool:
+    """Update a provider. Only allowed fields are updated. Returns True if updated."""
+    allowed = {"key", "name", "api_base", "api_key_env", "model_prefix", "is_active", "sort_order"}
+    updates = {k: v for k, v in kwargs.items() if k in allowed}
+    if not updates:
+        return False
+    set_parts = []
+    values = []
+    for k, v in updates.items():
+        set_parts.append(f"{k} = ?")
+        values.append(v)
+    set_parts.append("updated_at = datetime('now')")
+    set_clause = ", ".join(set_parts)
+    result = await _db.execute_returning_rowcount(
+        f"UPDATE providers SET {set_clause} WHERE id = ?", tuple(values) + (provider_id,)
+    )
+    return result > 0
+
+
+async def delete_provider(provider_id: str) -> bool:
+    """Delete a provider and all its models (cascade). Returns True if deleted."""
+    result = await _db.execute_returning_rowcount(
+        "DELETE FROM providers WHERE id = ?", (provider_id,)
+    )
+    return result > 0
+
+
+# --- Model CRUD ---
+
+async def get_models_for_provider(provider_id: str) -> list[dict]:
+    """Get all active models for a provider."""
+    return await _db.fetch_all(
+        "SELECT * FROM models WHERE provider_id = ? AND is_active = 1 ORDER BY display_name",
+        (provider_id,),
+    )
+
+
+async def get_all_models_for_user(user_id: str) -> list[dict]:
+    """Get all active models across all active providers for a user."""
+    return await _db.fetch_all(
+        "SELECT m.*, p.key AS provider_key, p.name AS provider_name, p.api_base, "
+        "p.api_key_env, p.model_prefix "
+        "FROM models m JOIN providers p ON m.provider_id = p.id "
+        "WHERE p.user_id = ? AND p.is_active = 1 AND m.is_active = 1 "
+        "ORDER BY p.sort_order, p.name, m.display_name",
+        (user_id,),
+    )
+
+
+async def get_model(model_id: str) -> dict | None:
+    """Get a single model by its ID, including provider info."""
+    return await _db.fetch_one(
+        "SELECT m.*, p.user_id, p.key AS provider_key, p.name AS provider_name, p.api_base, "
+        "p.api_key_env, p.model_prefix "
+        "FROM models m JOIN providers p ON m.provider_id = p.id WHERE m.id = ?",
+        (model_id,),
+    )
+
+
+async def get_model_by_litellm_id(user_id: str, litellm_id: str) -> dict | None:
+    """Get a model by user_id and litellm_id."""
+    return await _db.fetch_one(
+        "SELECT m.*, p.key AS provider_key, p.name AS provider_name "
+        "FROM models m JOIN providers p ON m.provider_id = p.id "
+        "WHERE p.user_id = ? AND m.litellm_id = ?",
+        (user_id, litellm_id),
+    )
+
+
+async def create_model(provider_id: str, litellm_id: str, display_name: str,
+                        context_window: int = 128000, max_output_tokens: int | None = None,
+                        skip_params: str | None = None) -> str:
+    """Create a new model under a provider. Returns the model ID."""
+    model_id = secrets.token_hex(16)
+    await _db.execute(
+        "INSERT INTO models (id, provider_id, litellm_id, display_name, context_window, "
+        "max_output_tokens, skip_params) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (model_id, provider_id, litellm_id, display_name, context_window,
+         max_output_tokens, skip_params),
+    )
+    return model_id
+
+
+async def update_model(model_id: str, **kwargs) -> bool:
+    """Update a model. Only allowed fields are updated. Returns True if updated."""
+    allowed = {"litellm_id", "display_name", "context_window", "max_output_tokens",
+               "skip_params", "is_active"}
+    updates = {k: v for k, v in kwargs.items() if k in allowed}
+    if not updates:
+        return False
+    set_parts = []
+    values = []
+    for k, v in updates.items():
+        set_parts.append(f"{k} = ?")
+        values.append(v)
+    set_parts.append("updated_at = datetime('now')")
+    set_clause = ", ".join(set_parts)
+    result = await _db.execute_returning_rowcount(
+        f"UPDATE models SET {set_clause} WHERE id = ?", tuple(values) + (model_id,)
+    )
+    return result > 0
+
+
+async def delete_model(model_id: str) -> bool:
+    """Delete a model. Returns True if deleted."""
+    result = await _db.execute_returning_rowcount(
+        "DELETE FROM models WHERE id = ?", (model_id,)
+    )
+    return result > 0
+
+
+async def seed_providers_for_new_user(user_id: str):
+    """Seed default providers/models for a newly registered user from config.yaml."""
+    import yaml
+
+    config_path = Path(__file__).parent / "config.yaml"
+    if not config_path.exists():
+        return
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    async with aiosqlite.connect(_db._path()) as conn:
+        await conn.execute("PRAGMA foreign_keys=ON")
+        sort_order = 0
+        for prov_key, prov_cfg in config.get("providers", {}).items():
+            provider_id = secrets.token_hex(16)
+            await conn.execute(
+                "INSERT OR IGNORE INTO providers "
+                "(id, user_id, key, name, api_base, api_key_env, model_prefix, sort_order) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (provider_id, user_id, prov_key,
+                 prov_cfg.get("display_name", prov_key),
+                 prov_cfg.get("api_base"),
+                 prov_cfg.get("api_key_env"),
+                 prov_cfg.get("model_id_prefix"),
+                 sort_order),
+            )
+            sort_order += 1
+            for model in prov_cfg.get("models", []):
+                await conn.execute(
+                    "INSERT OR IGNORE INTO models "
+                    "(id, provider_id, litellm_id, display_name, context_window, "
+                    "max_output_tokens, skip_params) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (secrets.token_hex(16), provider_id, model["id"],
+                     model.get("display_name", model["id"]),
+                     model.get("context_window", 128000),
+                     model.get("max_output_tokens"),
+                     json.dumps(model.get("skip_params", []))),
+                )
+        await conn.commit()

@@ -259,6 +259,7 @@ class ProfileCreate(BaseModel):
     description: Optional[str] = Field(None, max_length=2000)
     params_json: Optional[dict] = Field(default_factory=dict)
     system_prompt: Optional[str] = Field(None, max_length=50_000)
+    prompt_version_id: Optional[str] = None
     is_default: bool = False
     origin_type: Literal["manual", "param_tuner", "prompt_tuner", "import"] = "manual"
     origin_ref: Optional[str] = None
@@ -269,6 +270,7 @@ class ProfileUpdate(BaseModel):
     description: Optional[str] = Field(None, max_length=2000)
     params_json: Optional[dict] = None
     system_prompt: Optional[str] = Field(None, max_length=50_000)
+    prompt_version_id: Optional[str] = None
     is_default: Optional[bool] = None
 
 
@@ -279,6 +281,7 @@ class ProfileFromTuner(BaseModel):
     source_id: str = Field(..., min_length=1)
     params_json: Optional[dict] = None
     system_prompt: Optional[str] = Field(None, max_length=50_000)
+    prompt_version_id: Optional[str] = None
     set_as_default: bool = False
 
 
@@ -306,3 +309,74 @@ class TestCaseCreateV2(BaseModel):
     multi_turn_config: Optional[dict] = None
     scoring_config_json: Optional[dict] = None
     should_call_tool: bool = True
+
+
+# ─── Provider / Model (Phase 1 normalization) ───
+
+class NormalizedProviderCreate(BaseModel):
+    """Create a normalized provider (v2 DB-backed)."""
+    key: str = Field(..., pattern=r"^[a-zA-Z0-9_\-]+$", max_length=64)
+    name: str = Field(..., min_length=1, max_length=256)
+    api_base: Optional[str] = None
+    api_key_env: Optional[str] = None
+    model_prefix: Optional[str] = Field(None, max_length=64)
+
+
+class NormalizedProviderUpdate(BaseModel):
+    """Update a normalized provider."""
+    key: Optional[str] = Field(None, pattern=r"^[a-zA-Z0-9_\-]+$", max_length=64)
+    name: Optional[str] = Field(None, min_length=1, max_length=256)
+    api_base: Optional[str] = None
+    api_key_env: Optional[str] = None
+    model_prefix: Optional[str] = Field(None, max_length=64)
+    is_active: Optional[bool] = None
+    sort_order: Optional[int] = Field(None, ge=0)
+
+
+class NormalizedProviderResponse(BaseModel):
+    """Response for a normalized provider."""
+    id: str
+    key: str
+    name: str
+    api_base: Optional[str] = None
+    api_key_env: Optional[str] = None
+    model_prefix: Optional[str] = None
+    is_active: bool = True
+    sort_order: int = 0
+    created_at: str
+    updated_at: str
+
+
+class NormalizedModelCreate(BaseModel):
+    """Create a model under a normalized provider."""
+    litellm_id: str = Field(..., min_length=1, max_length=256)
+    display_name: str = Field(..., min_length=1, max_length=256)
+    context_window: int = Field(default=128000, ge=1, le=10_000_000)
+    max_output_tokens: Optional[int] = Field(None, ge=1, le=1_000_000)
+    skip_params: Optional[List[str]] = None
+
+
+class NormalizedModelUpdate(BaseModel):
+    """Update a model."""
+    litellm_id: Optional[str] = Field(None, min_length=1, max_length=256)
+    display_name: Optional[str] = Field(None, min_length=1, max_length=256)
+    context_window: Optional[int] = Field(None, ge=1, le=10_000_000)
+    max_output_tokens: Optional[int] = Field(None, ge=1, le=1_000_000)
+    skip_params: Optional[List[str]] = None
+    is_active: Optional[bool] = None
+
+
+class NormalizedModelResponse(BaseModel):
+    """Response for a model."""
+    id: str
+    provider_id: str
+    provider_key: Optional[str] = None
+    provider_name: Optional[str] = None
+    litellm_id: str
+    display_name: str
+    context_window: int
+    max_output_tokens: Optional[int] = None
+    skip_params: Optional[List[str]] = None
+    is_active: bool = True
+    created_at: str
+    updated_at: str

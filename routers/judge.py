@@ -557,7 +557,8 @@ async def rerun_judge(request: Request, user: dict = Depends(auth.get_current_us
     next_version = max_version + 1
 
     # Determine judge model (use parent's if not overridden)
-    judge_model_id = validated.judge_model or parent["judge_model"]
+    # After migration 600, judge_model TEXT is dropped; use JOIN-resolved field or FK
+    judge_model_id = validated.judge_model or parent.get("judge_model") or parent.get("judge_model_id", "")
     judge_provider_key = validated.judge_provider_key
     custom_instructions = validated.custom_instructions or ""
     concurrency = validated.concurrency

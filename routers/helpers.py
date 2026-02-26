@@ -118,17 +118,147 @@ DEFAULT_CONFIG = {
 
 
 async def _get_user_config(user_id: str) -> dict:
-    """Load user's config from DB, falling back to DEFAULT_CONFIG for new users."""
-    config = await db.get_user_config(user_id)
-    if config is None:
-        await db.save_user_config(user_id, DEFAULT_CONFIG)
-        return dict(DEFAULT_CONFIG)
+    """Build config dict from normalized providers/models tables + user_configs settings.
+
+    The ``providers`` key is always read from the providers/models tables (source of truth).
+    All other settings (defaults, prompt_templates, judge_settings, *_defaults) are read
+    from the legacy user_configs table so existing features remain backward-compatible.
+    """
+    # 1. Non-provider settings from user_configs (defaults, prompt_templates, judge_settings, etc.)
+    settings = await db.get_user_config(user_id)
+    if settings is None:
+        # New user: seed defaults and providers
+        settings = {k: v for k, v in DEFAULT_CONFIG.items() if k != "providers"}
+        await db.save_user_config(user_id, settings)
+        # Seed providers/models tables if empty
+        providers = await db.get_providers(user_id)
+        if not providers:
+            await db.seed_providers_for_new_user(user_id)
+
+    config = dict(settings)
+
+    # 2. Build providers section from normalized tables (always authoritative)
+    providers = await db.get_providers(user_id)
+    if not providers:
+        # Fallback: seed from config.yaml if tables are empty
+        await db.seed_providers_for_new_user(user_id)
+        providers = await db.get_providers(user_id)
+
+    config["providers"] = {}
+    for p in providers:
+        if not p.get("is_active", 1):
+            continue
+        models = await db.get_models_for_provider(p["id"])
+        config["providers"][p["key"]] = {
+            "display_name": p["name"],
+            **({"api_base": p["api_base"]} if p.get("api_base") else {}),
+            **({"api_key_env": p["api_key_env"]} if p.get("api_key_env") else {}),
+            **({"model_id_prefix": p["model_prefix"]} if p.get("model_prefix") else {}),
+            "models": [
+                {
+                    "id": m["litellm_id"],
+                    "display_name": m["display_name"],
+                    "context_window": m.get("context_window", 128000),
+                    **({"max_output_tokens": m["max_output_tokens"]} if m.get("max_output_tokens") else {}),
+                    **({"skip_params": json.loads(m["skip_params"])} if m.get("skip_params") and m["skip_params"] != "[]" else {}),
+                }
+                for m in models
+            ],
+        }
+
     return config
 
 
 async def _save_user_config(user_id: str, config: dict):
-    """Save user's config to DB."""
-    await db.save_user_config(user_id, config)
+    """Save config: provider/model changes go to normalized tables, everything else to user_configs.
+
+    The ``providers`` key is written to the providers/models tables.
+    All other keys (defaults, prompt_templates, judge_settings, *_defaults) are saved
+    to the user_configs table as before.
+    """
+    # 1. Persist providers/models to normalized tables if present
+    incoming_providers = config.get("providers")
+    if incoming_providers is not None:
+        existing_providers = await db.get_providers(user_id)
+        existing_by_key = {p["key"]: p for p in existing_providers}
+        seen_keys = set()
+
+        for prov_key, prov_cfg in incoming_providers.items():
+            seen_keys.add(prov_key)
+            existing = existing_by_key.get(prov_key)
+
+            if existing:
+                # Update existing provider
+                await db.update_provider(
+                    existing["id"],
+                    name=prov_cfg.get("display_name", prov_key),
+                    api_base=prov_cfg.get("api_base"),
+                    api_key_env=prov_cfg.get("api_key_env"),
+                    model_prefix=prov_cfg.get("model_id_prefix"),
+                )
+                # Sync models
+                existing_models = await db.get_models_for_provider(existing["id"])
+                existing_models_by_id = {m["litellm_id"]: m for m in existing_models}
+                incoming_model_ids = set()
+
+                for model in prov_cfg.get("models", []):
+                    model_litellm_id = model["id"]
+                    incoming_model_ids.add(model_litellm_id)
+                    skip_params_str = json.dumps(model.get("skip_params", []))
+
+                    if model_litellm_id in existing_models_by_id:
+                        # Update existing model
+                        em = existing_models_by_id[model_litellm_id]
+                        await db.update_model(
+                            em["id"],
+                            display_name=model.get("display_name", model_litellm_id),
+                            context_window=model.get("context_window", 128000),
+                            max_output_tokens=model.get("max_output_tokens"),
+                            skip_params=skip_params_str,
+                        )
+                    else:
+                        # Add new model
+                        await db.create_model(
+                            provider_id=existing["id"],
+                            litellm_id=model_litellm_id,
+                            display_name=model.get("display_name", model_litellm_id),
+                            context_window=model.get("context_window", 128000),
+                            max_output_tokens=model.get("max_output_tokens"),
+                            skip_params=skip_params_str,
+                        )
+
+                # Soft-delete models removed from config
+                for litellm_id, em in existing_models_by_id.items():
+                    if litellm_id not in incoming_model_ids:
+                        await db.delete_model(em["id"])
+            else:
+                # Create new provider
+                provider_id = await db.create_provider(
+                    user_id=user_id,
+                    key=prov_key,
+                    name=prov_cfg.get("display_name", prov_key),
+                    api_base=prov_cfg.get("api_base"),
+                    api_key_env=prov_cfg.get("api_key_env"),
+                    model_prefix=prov_cfg.get("model_id_prefix"),
+                )
+                for model in prov_cfg.get("models", []):
+                    await db.create_model(
+                        provider_id=provider_id,
+                        litellm_id=model["id"],
+                        display_name=model.get("display_name", model["id"]),
+                        context_window=model.get("context_window", 128000),
+                        max_output_tokens=model.get("max_output_tokens"),
+                        skip_params=json.dumps(model.get("skip_params", [])),
+                    )
+
+        # Delete providers removed from config
+        for prov_key, existing in existing_by_key.items():
+            if prov_key not in seen_keys:
+                await db.delete_provider(existing["id"])
+
+    # 2. Save non-provider settings to user_configs
+    settings = {k: v for k, v in config.items() if k != "providers"}
+    await db.save_user_config(user_id, settings)
 
 
 # ---------------------------------------------------------------------------

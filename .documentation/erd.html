@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Benchmark Studio - Fully Normalized ERD</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+  header{background:linear-gradient(135deg,#1e293b,#0f172a);border-bottom:1px solid #334155;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+  header h1{font-size:17px;font-weight:600;background:linear-gradient(135deg,#38bdf8,#818cf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+  header .stats{font-size:11px;color:#94a3b8;margin-top:2px}
+  header .stats span{font-weight:600}
+  .s-new{color:#34d399} .s-mod{color:#fbbf24} .s-del{color:#f87171} .s-same{color:#94a3b8}
+  .controls{display:flex;gap:5px;align-items:center}
+  .controls button{background:#1e293b;border:1px solid #334155;color:#cbd5e1;padding:4px 10px;border-radius:5px;cursor:pointer;font-size:11px;transition:all .15s}
+  .controls button:hover{background:#334155;color:#f1f5f9}
+  .controls button.active{background:#3b82f6;border-color:#3b82f6;color:#fff}
+  .search-box{background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:4px 10px;border-radius:5px;font-size:11px;width:150px;outline:none}
+  .search-box:focus{border-color:#3b82f6}
+  .search-box::placeholder{color:#475569}
+
+  .bar{display:flex;gap:12px;padding:7px 20px;background:#1e293b;border-bottom:1px solid #334155;flex-wrap:wrap;font-size:11px;align-items:center}
+  .bar .pill{padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700}
+  .pill-n{background:#10b98130;color:#34d399;border:1px solid #10b98150}
+  .pill-m{background:#f59e0b30;color:#fbbf24;border:1px solid #f59e0b50}
+  .pill-d{background:#ef444430;color:#f87171;border:1px solid #ef444450}
+  .pill-s{background:#47556930;color:#94a3b8;border:1px solid #47556950}
+  .legend-item{display:flex;align-items:center;gap:4px;color:#94a3b8}
+  .legend-dot{width:8px;height:8px;border-radius:50%}
+
+  .canvas-wrap{position:relative;overflow:auto;height:calc(100vh - 120px);cursor:grab}
+  .canvas-wrap:active{cursor:grabbing}
+  .canvas{position:relative;min-width:2800px;min-height:2400px;padding:30px;transform-origin:0 0}
+
+  .lines-layer{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:1}
+  .lines-layer line,.lines-layer path{stroke:#475569;stroke-width:1.4;opacity:.4;transition:opacity .2s,stroke .2s;fill:none}
+  .lines-layer line.hl,.lines-layer path.hl{stroke:#38bdf8;stroke-width:2.5;opacity:1}
+  .lines-layer line.nr,.lines-layer path.nr{stroke:#10b981;stroke-width:1.8;opacity:.7;stroke-dasharray:6 3}
+  .lines-layer line.nr.hl,.lines-layer path.nr.hl{stroke:#34d399;stroke-width:2.8;opacity:1}
+  .lines-layer circle{fill:#475569;transition:fill .2s}
+  .lines-layer circle.hl{fill:#38bdf8}
+  .lines-layer circle.nr{fill:#10b981}
+
+  .tc{position:absolute;background:#1e293b;border:1px solid #334155;border-radius:8px;min-width:230px;box-shadow:0 3px 12px rgba(0,0,0,.3);z-index:10;transition:box-shadow .2s,border-color .2s,opacity .2s;overflow:hidden}
+  .tc:hover,.tc.hl{border-color:#3b82f6;box-shadow:0 0 16px rgba(59,130,246,.2)}
+  .tc.dim{opacity:.18}
+  .tc.sn{border-color:#10b981;box-shadow:0 0 20px rgba(16,185,129,.25),inset 0 0 20px rgba(16,185,129,.04)}
+  .tc.sm{border-color:#f59e0b;box-shadow:0 0 12px rgba(245,158,11,.15)}
+  .tc.sd{border-color:#ef4444;box-shadow:0 0 12px rgba(239,68,68,.15);opacity:.6}
+
+  .th{padding:7px 10px;font-weight:600;font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
+  .th .ic{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+  .th .cnt{margin-left:auto;font-size:9px;color:#64748b;font-weight:400}
+  .th .sb{font-size:7px;padding:1px 5px;border-radius:3px;font-weight:700;text-transform:uppercase;letter-spacing:.7px}
+  .sb-n{background:#10b98130;color:#34d399} .sb-m{background:#f59e0b30;color:#fbbf24} .sb-d{background:#ef444430;color:#f87171}
+
+  .tc-c{border-top:1px solid #334155;max-height:280px;overflow-y:auto}
+  .cr{padding:3px 10px;font-size:10px;display:flex;align-items:center;gap:4px;border-bottom:1px solid rgba(51,65,85,.3);font-family:'SF Mono','Fira Code',monospace}
+  .cr:last-child{border-bottom:none}
+  .cr:hover{background:rgba(56,189,248,.04)}
+  .cr.cn{background:rgba(16,185,129,.07)} .cr.cc{background:rgba(245,158,11,.07)} .cr.cd{background:rgba(239,68,68,.07);text-decoration:line-through;opacity:.45}
+  .cn-n{color:#e2e8f0;min-width:130px} .cn-t{color:#64748b;font-size:9px}
+  .cb{font-size:7px;padding:1px 4px;border-radius:3px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;margin-left:auto;flex-shrink:0}
+  .b-pk{background:#facc1520;color:#fbbf24;border:1px solid #fbbf2440}
+  .b-fk{background:#38bdf820;color:#38bdf8;border:1px solid #38bdf840}
+  .b-uq{background:#a78bfa20;color:#a78bfa;border:1px solid #a78bfa40}
+  .b-ck{background:#34d39920;color:#34d399;border:1px solid #34d39940}
+  .b-new{background:#10b98118;color:#34d399;border:1px solid #10b98138}
+  .b-chg{background:#f59e0b18;color:#fbbf24;border:1px solid #f59e0b38}
+  .b-del{background:#ef444418;color:#f87171;border:1px solid #ef444438}
+
+  .cat-core .th{background:linear-gradient(135deg,#10b98120,#10b98108)} .cat-core .ic{background:#10b981}
+  .cat-auth .th{background:linear-gradient(135deg,#7c3aed18,#7c3aed08)} .cat-auth .ic{background:#8b5cf6}
+  .cat-bench .th{background:linear-gradient(135deg,#2563eb18,#2563eb08)} .cat-bench .ic{background:#3b82f6}
+  .cat-eval .th{background:linear-gradient(135deg,#05966918,#05966908)} .cat-eval .ic{background:#10b981}
+  .cat-tune .th{background:linear-gradient(135deg,#d9770618,#d9770608)} .cat-tune .ic{background:#f59e0b}
+  .cat-plat .th{background:linear-gradient(135deg,#dc262618,#dc262608)} .cat-plat .ic{background:#ef4444}
+  .cat-pub .th{background:linear-gradient(135deg,#0891b218,#0891b208)} .cat-pub .ic{background:#06b6d4}
+  .cat-result .th{background:linear-gradient(135deg,#e879f918,#e879f908)} .cat-result .ic{background:#e879f9}
+
+  .zi{position:fixed;bottom:12px;right:12px;background:#1e293b;border:1px solid #334155;padding:4px 10px;border-radius:5px;font-size:10px;color:#94a3b8;z-index:200}
+  .tt{position:fixed;background:#1e293b;border:1px solid #475569;padding:7px 11px;border-radius:6px;font-size:10px;color:#cbd5e1;max-width:300px;z-index:300;pointer-events:none;display:none;box-shadow:0 4px 16px rgba(0,0,0,.4);line-height:1.5}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>LLM Benchmark Studio &mdash; Fully Normalized ERD</h1>
+    <div class="stats">
+      <span class="s-new">+3 new tables</span> &middot;
+      <span class="s-mod">11 modified</span> &middot;
+      <span class="s-del">1 dropped</span> &middot;
+      <span class="s-same">8 unchanged</span> &middot;
+      <span style="color:#38bdf8">22</span> total &middot;
+      <span style="color:#38bdf8">42</span> FKs
+    </div>
+  </div>
+  <div class="controls">
+    <input type="text" class="search-box" placeholder="Search..." id="search">
+    <button onclick="fil('all')" class="active" id="btn-all">All</button>
+    <button onclick="fil('new')" id="btn-new">New</button>
+    <button onclick="fil('modified')" id="btn-modified">Mod</button>
+    <button onclick="fil('dropped')" id="btn-dropped">Drop</button>
+    <button onclick="zI()">+</button>
+    <button onclick="zO()">&minus;</button>
+    <button onclick="zR()">Reset</button>
+    <button id="tglL" class="active" onclick="tgl()">Lines</button>
+  </div>
+</header>
+<div class="bar">
+  <span class="pill pill-n">+3 NEW</span> providers, models, run_results
+  <span class="pill pill-m">11 MOD</span> string&rarr;FK + suite_name dropped
+  <span class="pill pill-d">1 DROP</span> user_configs (replaced by providers/models DB)
+  <span class="pill pill-s">8 SAME</span>
+  <span style="margin-left:auto;display:flex;gap:8px">
+    <div class="legend-item"><div class="legend-dot" style="background:#10b981;box-shadow:0 0 4px #10b981"></div>Core (new)</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#e879f9"></div>Results (new)</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#8b5cf6"></div>Auth</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#3b82f6"></div>Bench</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#059669"></div>Eval</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div>Tune</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div>Platform</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#06b6d4"></div>Public</div>
+  </span>
+</div>
+<div class="canvas-wrap" id="cw">
+  <div class="canvas" id="cv"><svg class="lines-layer" id="sl"></svg></div>
+</div>
+<div class="zi" id="zi">100%</div>
+<div class="tt" id="tt"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+//  FULLY NORMALIZED SCHEMA
+//  N1: Provider → Model (first-class entities)
+//  N2: Drop suite_name (derivable from suite_id FK)
+//  N3: Prompts → prompt_versions FK
+//  N4: run_results table (normalized results)
+//  N5: Configs → model_profiles FK
+//  BONUS: Drop user_configs (replaced by DB-driven providers/models)
+// ═══════════════════════════════════════════════════════════
+
+const T=[
+// ═══ NEW CORE: providers + models ═══
+{name:"providers",cat:"core",s:"new",x:460,y:30,
+ note:"N1 NEW: Replaces config.yaml providers. Global system catalog. config.yaml becomes seed-only.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"key",t:"TEXT",uq:1,nn:1},
+  {n:"name",t:"TEXT",nn:1},{n:"api_base",t:"TEXT"},
+  {n:"api_key_env",t:"TEXT"},{n:"model_prefix",t:"TEXT"},
+  {n:"is_active",t:"INT",nn:1},
+  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
+]},
+{name:"models",cat:"core",s:"new",x:460,y:290,
+ note:"N1 NEW: Replaces config.yaml models. Each belongs to one provider. Source of truth for model IDs.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"provider_id",t:"TEXT",fk:"providers",nn:1},
+  {n:"litellm_id",t:"TEXT",nn:1},{n:"display_name",t:"TEXT",nn:1},
+  {n:"context_window",t:"INT"},{n:"skip_temperature",t:"INT"},
+  {n:"is_active",t:"INT",nn:1},
+  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
+]},
+
+// ═══ NEW: run_results (N4 — normalized results) ═══
+{name:"run_results",cat:"result",s:"new",x:1480,y:830,
+ note:"N4 NEW: Normalized per-model results. Replaces results_json blobs. Enables cross-run analytics via SQL.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},
+  {n:"run_id",t:"TEXT",nn:1},
+  {n:"run_type",t:"TEXT",nn:1,ck:"benchmark|tool_eval|param_tune|prompt_tune"},
+  {n:"model_id",t:"TEXT",fk:"models",nn:1},
+  {n:"profile_id",t:"TEXT",fk:"model_profiles"},
+  {n:"tool_accuracy_pct",t:"REAL"},{n:"param_accuracy_pct",t:"REAL"},
+  {n:"throughput_tps",t:"REAL"},{n:"ttft_ms",t:"REAL"},
+  {n:"tokens_generated",t:"INT"},{n:"latency_p99_ms",t:"REAL"},
+  {n:"score",t:"REAL"},{n:"raw_response_json",t:"TEXT"},
+  {n:"created_at",t:"TEXT",nn:1}
+]},
+
+// ═══ AUTH ═══
+{name:"users",cat:"auth",s:"unchanged",x:50,y:30,
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"email",t:"TEXT",uq:1,nn:1},
+  {n:"password_hash",t:"TEXT",nn:1},{n:"role",t:"TEXT",nn:1,ck:"admin|user"},
+  {n:"onboarding_completed",t:"INT"},{n:"google_id",t:"TEXT",uq:1},
+  {n:"avatar_url",t:"TEXT"},{n:"leaderboard_opt_in",t:"INT"},
+  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
+]},
+{name:"refresh_tokens",cat:"auth",s:"unchanged",x:50,y:370,
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"token_hash",t:"TEXT",uq:1,nn:1},{n:"expires_at",t:"TEXT",nn:1},
+  {n:"created_at",t:"TEXT",nn:1}
+]},
+{name:"password_reset_tokens",cat:"auth",s:"unchanged",x:50,y:540,
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"token_hash",t:"TEXT",uq:1,nn:1},{n:"expires_at",t:"TEXT",nn:1},
+  {n:"used",t:"INT",nn:1},{n:"created_at",t:"TEXT",nn:1}
+]},
+{name:"user_api_keys",cat:"auth",s:"modified",x:230,y:370,
+ note:"N1 MOD: provider_key (string) → provider_id FK. Proper User ↔ Provider bridge table.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"provider_id",t:"TEXT",fk:"providers",nn:1,ch:"new"},
+  {n:"provider_key",t:"TEXT",ch:"removed"},
+  {n:"key_name",t:"TEXT",nn:1},{n:"encrypted_value",t:"TEXT",nn:1},
+  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
+]},
+{name:"rate_limits",cat:"auth",s:"unchanged",x:50,y:720,
+ cols:[
+  {n:"id",t:"INT",pk:1},{n:"user_id",t:"TEXT",fk:"users",uq:1,nn:1},
+  {n:"benchmarks_per_hour",t:"INT",nn:1},{n:"max_concurrent",t:"INT",nn:1},
+  {n:"max_runs_per_benchmark",t:"INT",nn:1},
+  {n:"updated_at",t:"TEXT",nn:1},{n:"updated_by",t:"TEXT",fk:"users"}
+]},
+
+// ═══ DROPPED ═══
+{name:"user_configs",cat:"auth",s:"dropped",x:230,y:550,
+ note:"DROPPED: config_yaml stored per-user provider/model overrides. Now providers+models tables serve this. User preferences move to a settings key-value or stay in model_profiles.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1,ch:"removed"},{n:"user_id",t:"TEXT",fk:"users",ch:"removed"},
+  {n:"config_yaml",t:"TEXT",ch:"removed"},{n:"updated_at",t:"TEXT",ch:"removed"}
+]},
+
+// ═══ PLATFORM ═══
+{name:"audit_log",cat:"plat",s:"unchanged",x:230,y:720,
+ cols:[
+  {n:"id",t:"INT",pk:1},{n:"timestamp",t:"TEXT",nn:1},
+  {n:"user_id",t:"TEXT",fk:"users"},{n:"username",t:"TEXT",nn:1},
+  {n:"action",t:"TEXT",nn:1},{n:"resource_type",t:"TEXT"},
+  {n:"resource_id",t:"TEXT"},{n:"detail",t:"TEXT"},
+  {n:"ip_address",t:"TEXT"},{n:"user_agent",t:"TEXT"}
+]},
+{name:"jobs",cat:"plat",s:"unchanged",x:230,y:1010,
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"job_type",t:"TEXT",nn:1,ck:"8 types"},
+  {n:"status",t:"TEXT",nn:1,ck:"7 statuses"},
+  {n:"progress_pct",t:"INT",ck:"0-100"},{n:"progress_detail",t:"TEXT"},
+  {n:"params_json",t:"TEXT",nn:1},{n:"result_ref",t:"TEXT"},
+  {n:"result_type",t:"TEXT"},{n:"error_msg",t:"TEXT"},
+  {n:"timeout_seconds",t:"INT",nn:1},
+  {n:"created_at",t:"TEXT",nn:1},{n:"started_at",t:"TEXT"},
+  {n:"completed_at",t:"TEXT"},{n:"timeout_at",t:"TEXT"}
+]},
+
+// ═══ BENCHMARKS ═══
+{name:"benchmark_runs",cat:"bench",s:"modified",x:50,y:1010,
+ note:"N4 MOD: results_json kept as snapshot but per-model metrics now also written to run_results. prompt stays inline (point-in-time snapshot).",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"timestamp",t:"TEXT",nn:1},{n:"prompt",t:"TEXT"},
+  {n:"context_tiers",t:"TEXT"},
+  {n:"results_json",t:"TEXT",nn:1},
+  {n:"metadata",t:"TEXT"},{n:"max_tokens",t:"INT"},
+  {n:"temperature",t:"REAL"},{n:"warmup",t:"INT"},
+  {n:"config_json",t:"TEXT"}
+]},
+{name:"schedules",cat:"bench",s:"modified",x:50,y:1330,
+ note:"N1+N3 MOD: models_json stores model table IDs. prompt_version_id FK replaces raw prompt text for managed prompts.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"name",t:"TEXT",nn:1},
+  {n:"prompt_version_id",t:"TEXT",fk:"prompt_versions",ch:"new"},
+  {n:"prompt",t:"TEXT",ch:"removed"},
+  {n:"models_json",t:"TEXT",nn:1,ch:"changed"},
+  {n:"max_tokens",t:"INT"},{n:"temperature",t:"REAL"},
+  {n:"interval_hours",t:"INT",nn:1,ck:">0"},
+  {n:"enabled",t:"INT"},{n:"last_run",t:"TEXT"},
+  {n:"next_run",t:"TEXT",nn:1},{n:"created",t:"TEXT",nn:1}
+]},
+
+// ═══ TOOL EVAL ═══
+{name:"tool_suites",cat:"eval",s:"unchanged",x:830,y:30,
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"name",t:"TEXT",nn:1},{n:"description",t:"TEXT"},
+  {n:"tools_json",t:"TEXT",nn:1},{n:"system_prompt",t:"TEXT"},
+  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
+]},
+{name:"tool_test_cases",cat:"eval",s:"unchanged",x:830,y:290,
+ note:"Unchanged: prompt stays inline — it's the test input, a point-in-time snapshot.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
+  {n:"prompt",t:"TEXT",nn:1},{n:"expected_tool",t:"TEXT"},
+  {n:"expected_params",t:"TEXT"},
+  {n:"param_scoring",t:"TEXT",nn:1,ck:"exact|fuzzy|..."},
+  {n:"should_call_tool",t:"INT",nn:1},{n:"category",t:"TEXT"},
+  {n:"multi_turn_config",t:"TEXT"},{n:"scoring_config_json",t:"TEXT"},
+  {n:"created_at",t:"TEXT",nn:1}
+]},
+{name:"experiments",cat:"eval",s:"unchanged",x:1120,y:30,
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"name",t:"TEXT",nn:1},{n:"description",t:"TEXT"},
+  {n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
+  {n:"suite_snapshot_json",t:"TEXT"},
+  {n:"baseline_eval_id",t:"TEXT"},{n:"baseline_score",t:"REAL"},
+  {n:"best_config_json",t:"TEXT"},{n:"best_score",t:"REAL"},
+  {n:"best_source",t:"TEXT"},{n:"best_source_id",t:"TEXT"},
+  {n:"status",t:"TEXT",nn:1,ck:"active|archived"},
+  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
+]},
+{name:"tool_eval_runs",cat:"eval",s:"modified",x:1120,y:430,
+ note:"N2+N4+N5 MOD: suite_name dropped (join suite_id). models_json stores model IDs. results_json kept as snapshot; per-model scores also in run_results. profile_id links to model_profiles used.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
+  {n:"suite_name",t:"TEXT",ch:"removed"},
+  {n:"models_json",t:"TEXT",nn:1,ch:"changed"},
+  {n:"results_json",t:"TEXT",nn:1},
+  {n:"summary_json",t:"TEXT",nn:1},
+  {n:"temperature",t:"REAL"},{n:"config_json",t:"TEXT"},
+  {n:"experiment_id",t:"TEXT",fk:"experiments"},
+  {n:"profiles_json",t:"TEXT",ch:"removed"},
+  {n:"judge_explanations_json",t:"TEXT"},
+  {n:"timestamp",t:"TEXT",nn:1}
+]},
+
+// ═══ MODEL CHILDREN ═══
+{name:"model_profiles",cat:"eval",s:"modified",x:460,y:560,
+ note:"N1+N5 MOD: model_id string → FK to models. Now Model 1:N Profiles. Referenced by run_results.profile_id for traceability.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"model_id",t:"TEXT",fk:"models",nn:1,ch:"changed"},
+  {n:"name",t:"TEXT",nn:1},{n:"description",t:"TEXT"},
+  {n:"is_default",t:"INT",nn:1},{n:"params_json",t:"TEXT",nn:1},
+  {n:"system_prompt",t:"TEXT"},
+  {n:"prompt_version_id",t:"TEXT",fk:"prompt_versions"},
+  {n:"origin_type",t:"TEXT",nn:1,ck:"manual|param_tuner|..."},
+  {n:"origin_ref",t:"TEXT"},
+  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
+]},
+{name:"prompt_versions",cat:"eval",s:"modified",x:460,y:870,
+ note:"N1+N3 MOD: Added model_id FK (nullable — universal prompts have no model). Now Model 1:N Prompts. Referenced by schedules, model_profiles, prompt_tune_runs.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"model_id",t:"TEXT",fk:"models",ch:"new"},
+  {n:"prompt_text",t:"TEXT",nn:1},{n:"label",t:"TEXT",nn:1},
+  {n:"source",t:"TEXT",nn:1,ck:"manual|prompt_tuner|auto_optimize"},
+  {n:"parent_version_id",t:"TEXT",fk:"prompt_versions"},
+  {n:"origin_run_id",t:"TEXT"},
+  {n:"created_at",t:"TEXT",nn:1}
+]},
+
+// ═══ TUNING & JUDGE ═══
+{name:"param_tune_runs",cat:"tune",s:"modified",x:1480,y:30,
+ note:"N1+N2+N4+N5 MOD: suite_name dropped. models_json stores model IDs. best_config_json → best_profile_id FK. Per-combo results also in run_results.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
+  {n:"suite_name",t:"TEXT",ch:"removed"},
+  {n:"models_json",t:"TEXT",nn:1,ch:"changed"},
+  {n:"search_space_json",t:"TEXT",nn:1},
+  {n:"results_json",t:"TEXT",nn:1},
+  {n:"best_profile_id",t:"TEXT",fk:"model_profiles",ch:"new"},
+  {n:"best_config_json",t:"TEXT",ch:"removed"},
+  {n:"best_score",t:"REAL"},
+  {n:"total_combos",t:"INT",nn:1},{n:"completed_combos",t:"INT"},
+  {n:"status",t:"TEXT",nn:1,ck:"running|completed|..."},
+  {n:"optimization_mode",t:"TEXT",nn:1,ck:"grid|random|bayesian"},
+  {n:"duration_s",t:"REAL"},
+  {n:"experiment_id",t:"TEXT",fk:"experiments"},
+  {n:"judge_scores_json",t:"TEXT"},
+  {n:"timestamp",t:"TEXT",nn:1}
+]},
+{name:"prompt_tune_runs",cat:"tune",s:"modified",x:1480,y:470,
+ note:"N1+N2+N3 MOD: suite_name dropped. meta_model→meta_model_id FK. meta_provider_key dropped (derivable). best_prompt→best_prompt_version_id FK. target_models_json stores model IDs.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
+  {n:"suite_name",t:"TEXT",ch:"removed"},
+  {n:"mode",t:"TEXT",nn:1,ck:"quick|evolutionary"},
+  {n:"target_models_json",t:"TEXT",nn:1,ch:"changed"},
+  {n:"meta_model_id",t:"TEXT",fk:"models",nn:1,ch:"new"},
+  {n:"meta_model",t:"TEXT",ch:"removed"},
+  {n:"meta_provider_key",t:"TEXT",ch:"removed"},
+  {n:"base_prompt",t:"TEXT"},
+  {n:"config_json",t:"TEXT",nn:1},
+  {n:"generations_json",t:"TEXT",nn:1},
+  {n:"best_prompt_version_id",t:"TEXT",fk:"prompt_versions",ch:"new"},
+  {n:"best_prompt",t:"TEXT",ch:"removed"},
+  {n:"best_score",t:"REAL"},
+  {n:"best_prompt_origin_json",t:"TEXT"},
+  {n:"status",t:"TEXT",nn:1,ck:"running|completed|..."},
+  {n:"total_prompts",t:"INT"},{n:"completed_prompts",t:"INT"},
+  {n:"duration_s",t:"REAL"},
+  {n:"experiment_id",t:"TEXT",fk:"experiments"},
+  {n:"timestamp",t:"TEXT",nn:1}
+]},
+{name:"judge_reports",cat:"tune",s:"modified",x:1480,y:1080,
+ note:"N1 MOD: judge_model string → judge_model_id FK to models.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"eval_run_id",t:"TEXT",fk:"tool_eval_runs"},
+  {n:"eval_run_id_b",t:"TEXT",fk:"tool_eval_runs"},
+  {n:"judge_model_id",t:"TEXT",fk:"models",nn:1,ch:"new"},
+  {n:"judge_model",t:"TEXT",ch:"removed"},
+  {n:"mode",t:"TEXT",nn:1,ck:"post_eval|live_inline|comparative"},
+  {n:"verdicts_json",t:"TEXT",nn:1},{n:"report_json",t:"TEXT"},
+  {n:"overall_grade",t:"TEXT"},{n:"overall_score",t:"REAL"},
+  {n:"status",t:"TEXT",nn:1,ck:"running|completed|..."},
+  {n:"experiment_id",t:"TEXT",fk:"experiments"},
+  {n:"parent_report_id",t:"TEXT"},
+  {n:"version",t:"INT",nn:1},{n:"instructions_json",t:"TEXT"},
+  {n:"timestamp",t:"TEXT",nn:1}
+]},
+
+// ═══ PUBLIC ═══
+{name:"public_leaderboard",cat:"pub",s:"modified",x:830,y:1080,
+ note:"N1 MOD: model_name+provider strings → model_id FK. Provider derivable via join. Leaner, no drift.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},
+  {n:"model_id",t:"TEXT",fk:"models",nn:1,ch:"new"},
+  {n:"model_name",t:"TEXT",ch:"removed"},
+  {n:"provider",t:"TEXT",ch:"removed"},
+  {n:"tool_accuracy_pct",t:"REAL"},{n:"param_accuracy_pct",t:"REAL"},
+  {n:"irrel_accuracy_pct",t:"REAL"},{n:"throughput_tps",t:"REAL"},
+  {n:"ttft_ms",t:"REAL"},{n:"sample_count",t:"INT",nn:1},
+  {n:"last_updated",t:"TEXT",nn:1}
+]}
+];
+
+// ═══════ RELATIONSHIPS ═══════
+// [from, from_col, to, to_col, isNew]
+const R=[
+  // N1: provider/model core chain
+  ["models","provider_id","providers","id",true],
+  ["user_api_keys","provider_id","providers","id",true],
+  ["model_profiles","model_id","models","id",true],
+  ["prompt_versions","model_id","models","id",true],
+  ["prompt_tune_runs","meta_model_id","models","id",true],
+  ["judge_reports","judge_model_id","models","id",true],
+  ["public_leaderboard","model_id","models","id",true],
+  // N3: prompt_versions FKs
+  ["schedules","prompt_version_id","prompt_versions","id",true],
+  ["prompt_tune_runs","best_prompt_version_id","prompt_versions","id",true],
+  // N4: run_results
+  ["run_results","model_id","models","id",true],
+  ["run_results","profile_id","model_profiles","id",true],
+  // N5: config → profile FK
+  ["param_tune_runs","best_profile_id","model_profiles","id",true],
+
+  // Existing FKs
+  ["refresh_tokens","user_id","users","id",false],
+  ["password_reset_tokens","user_id","users","id",false],
+  ["user_api_keys","user_id","users","id",false],
+  ["rate_limits","user_id","users","id",false],
+  ["rate_limits","updated_by","users","id",false],
+  ["audit_log","user_id","users","id",false],
+  ["benchmark_runs","user_id","users","id",false],
+  ["schedules","user_id","users","id",false],
+  ["tool_suites","user_id","users","id",false],
+  ["tool_test_cases","suite_id","tool_suites","id",false],
+  ["experiments","user_id","users","id",false],
+  ["experiments","suite_id","tool_suites","id",false],
+  ["tool_eval_runs","user_id","users","id",false],
+  ["tool_eval_runs","suite_id","tool_suites","id",false],
+  ["tool_eval_runs","experiment_id","experiments","id",false],
+  ["param_tune_runs","user_id","users","id",false],
+  ["param_tune_runs","suite_id","tool_suites","id",false],
+  ["param_tune_runs","experiment_id","experiments","id",false],
+  ["prompt_tune_runs","user_id","users","id",false],
+  ["prompt_tune_runs","suite_id","tool_suites","id",false],
+  ["prompt_tune_runs","experiment_id","experiments","id",false],
+  ["judge_reports","user_id","users","id",false],
+  ["judge_reports","eval_run_id","tool_eval_runs","id",false],
+  ["judge_reports","eval_run_id_b","tool_eval_runs","id",false],
+  ["judge_reports","experiment_id","experiments","id",false],
+  ["jobs","user_id","users","id",false],
+  ["prompt_versions","user_id","users","id",false],
+  ["prompt_versions","parent_version_id","prompt_versions","id",false],
+  ["model_profiles","user_id","users","id",false],
+  ["model_profiles","prompt_version_id","prompt_versions","id",false],
+];
+
+// ═══════ RENDER ═══════
+const cv=document.getElementById("cv"),sl=document.getElementById("sl"),cw=document.getElementById("cw"),tt=document.getElementById("tt");
+let zm=1,sL=true;const te={};
+
+function render(){T.forEach(t=>{
+  const c=document.createElement("div");
+  c.className="tc cat-"+t.cat;
+  if(t.s==="new")c.classList.add("sn");
+  if(t.s==="modified")c.classList.add("sm");
+  if(t.s==="dropped")c.classList.add("sd");
+  c.id="t-"+t.name;c.style.left=t.x+"px";c.style.top=t.y+"px";
+  c.dataset.s=t.s;if(t.note)c.dataset.note=t.note;
+
+  const h=document.createElement("div");h.className="th";
+  let sb="";
+  if(t.s==="new")sb='<span class="sb sb-n">NEW</span>';
+  else if(t.s==="modified")sb='<span class="sb sb-m">MOD</span>';
+  else if(t.s==="dropped")sb='<span class="sb sb-d">DROP</span>';
+  const ac=t.cols.filter(c=>c.ch!=="removed").length;
+  h.innerHTML='<div class="ic"></div>'+t.name+sb+'<span class="cnt">'+ac+' cols</span>';
+  h.onclick=()=>hl(t.name);c.appendChild(h);
+
+  if(t.note){
+    c.onmouseenter=e=>{tt.textContent=t.note;tt.style.display="block";tt.style.left=e.clientX+10+"px";tt.style.top=e.clientY+10+"px"};
+    c.onmousemove=e=>{tt.style.left=e.clientX+10+"px";tt.style.top=e.clientY+10+"px"};
+    c.onmouseleave=()=>{tt.style.display="none"};
+  }
+
+  const cd=document.createElement("div");cd.className="tc-c";
+  t.cols.forEach(col=>{
+    const r=document.createElement("div");r.className="cr";
+    if(col.ch==="new")r.classList.add("cn");
+    else if(col.ch==="changed")r.classList.add("cc");
+    else if(col.ch==="removed")r.classList.add("cd");
+    let b="";
+    if(col.pk)b+='<span class="cb b-pk">PK</span>';
+    if(col.fk&&col.ch!=="removed")b+='<span class="cb b-fk">FK</span>';
+    if(col.uq)b+='<span class="cb b-uq">UQ</span>';
+    if(col.ck)b+='<span class="cb b-ck">CK</span>';
+    if(col.ch==="new")b+='<span class="cb b-new">NEW</span>';
+    else if(col.ch==="changed")b+='<span class="cb b-chg">CHG</span>';
+    else if(col.ch==="removed")b+='<span class="cb b-del">DEL</span>';
+    r.innerHTML='<span class="cn-n">'+col.n+'</span><span class="cn-t">'+col.t+'</span>'+b;
+    cd.appendChild(r);
+  });
+  c.appendChild(cd);cv.appendChild(c);te[t.name]=c;
+})}
+
+function ga(el,side){
+  const r=el.getBoundingClientRect(),cr=cv.getBoundingClientRect();
+  const x=(r.left-cr.left)/zm,y=(r.top-cr.top)/zm,w=r.width/zm,h=r.height/zm;
+  if(side==="l")return{x,y:y+h/2};if(side==="r")return{x:x+w,y:y+h/2};
+  if(side==="t")return{x:x+w/2,y};return{x:x+w/2,y:y+h};
+}
+
+function dl(){
+  sl.innerHTML="";if(!sL)return;
+  const d=document.createElementNS("http://www.w3.org/2000/svg","defs");
+  ["aw","awn"].forEach(id=>{
+    const m=document.createElementNS("http://www.w3.org/2000/svg","marker");
+    m.setAttribute("id",id);m.setAttribute("markerWidth","8");m.setAttribute("markerHeight","6");
+    m.setAttribute("refX","8");m.setAttribute("refY","3");m.setAttribute("orient","auto");
+    const p=document.createElementNS("http://www.w3.org/2000/svg","polygon");
+    p.setAttribute("points","0 0, 8 3, 0 6");p.setAttribute("fill",id==="awn"?"#10b981":"#475569");
+    m.appendChild(p);d.appendChild(m);
+  });sl.appendChild(d);
+
+  R.forEach(([f,,t,,nw])=>{
+    const fe=te[f],toe=te[t];if(!fe||!toe)return;
+    if(fe.style.display==="none"||toe.style.display==="none")return;
+    const cr=cv.getBoundingClientRect();
+    const fx=(fe.getBoundingClientRect().left+fe.getBoundingClientRect().width/2-cr.left)/zm;
+    const fy=(fe.getBoundingClientRect().top+fe.getBoundingClientRect().height/2-cr.top)/zm;
+    const tx=(toe.getBoundingClientRect().left+toe.getBoundingClientRect().width/2-cr.left)/zm;
+    const ty=(toe.getBoundingClientRect().top+toe.getBoundingClientRect().height/2-cr.top)/zm;
+    const dx=tx-fx,dy=ty-fy;
+
+    if(f===t){
+      const a=ga(fe,"r");
+      const p=document.createElementNS("http://www.w3.org/2000/svg","path");
+      p.setAttribute("d",`M ${a.x} ${a.y} C ${a.x+45} ${a.y-25}, ${a.x+45} ${a.y+25}, ${a.x} ${a.y+4}`);
+      if(nw)p.classList.add("nr");p.dataset.f=f;p.dataset.t=t;sl.appendChild(p);return;
+    }
+    let fs,ts;
+    if(Math.abs(dx)>Math.abs(dy)){fs=dx>0?"r":"l";ts=dx>0?"l":"r";}
+    else{fs=dy>0?"b":"t";ts=dy>0?"t":"b";}
+    const a=ga(fe,fs),b=ga(toe,ts);
+    const ln=document.createElementNS("http://www.w3.org/2000/svg","line");
+    ln.setAttribute("x1",a.x);ln.setAttribute("y1",a.y);
+    ln.setAttribute("x2",b.x);ln.setAttribute("y2",b.y);
+    ln.setAttribute("marker-end",nw?"url(#awn)":"url(#aw)");
+    if(nw)ln.classList.add("nr");ln.dataset.f=f;ln.dataset.t=t;sl.appendChild(ln);
+    const dot=document.createElementNS("http://www.w3.org/2000/svg","circle");
+    dot.setAttribute("cx",a.x);dot.setAttribute("cy",a.y);dot.setAttribute("r","3");
+    if(nw)dot.classList.add("nr");dot.dataset.f=f;dot.dataset.t=t;sl.appendChild(dot);
+  });
+}
+
+let ah=null;
+function hl(n){
+  if(ah===n){ch();return;}ah=n;
+  const cn=new Set([n]);
+  R.forEach(([f,,t])=>{if(f===n)cn.add(t);if(t===n)cn.add(f);});
+  Object.entries(te).forEach(([k,el])=>{el.classList.toggle("hl",k===n);el.classList.toggle("dim",!cn.has(k));});
+  sl.querySelectorAll("line,path").forEach(l=>{const m=l.dataset.f===n||l.dataset.t===n;l.classList.toggle("hl",m);l.style.opacity=m?1:.06;});
+  sl.querySelectorAll("circle").forEach(c=>{const m=c.dataset.f===n||c.dataset.t===n;c.classList.toggle("hl",m);c.style.opacity=m?1:.06;});
+}
+function ch(){
+  ah=null;Object.values(te).forEach(e=>e.classList.remove("hl","dim"));
+  sl.querySelectorAll("line,path").forEach(l=>{l.classList.remove("hl");l.style.opacity="";});
+  sl.querySelectorAll("circle").forEach(c=>{c.classList.remove("hl");c.style.opacity="";});
+}
+cv.onclick=e=>{if(e.target===cv||e.target===sl)ch();};
+
+function fil(s){
+  document.querySelectorAll(".controls button").forEach(b=>b.classList.remove("active"));
+  (document.getElementById("btn-"+s)||{}).classList?.add("active");
+  Object.entries(te).forEach(([,el])=>{el.style.display=(s==="all"||el.dataset.s===s)?"":"none";});
+  requestAnimationFrame(dl);
+}
+document.getElementById("search").oninput=e=>{
+  const q=e.target.value.toLowerCase().trim();
+  if(!q){ch();Object.values(te).forEach(el=>el.style.display="");requestAnimationFrame(dl);return;}
+  Object.entries(te).forEach(([n,el])=>{
+    const tb=T.find(t=>t.name===n);
+    const m=n.includes(q)||tb?.cols.some(c=>c.n.includes(q))||tb?.note?.toLowerCase().includes(q);
+    el.style.display=m?"":"none";
+  });requestAnimationFrame(dl);
+};
+
+function sz(z){zm=Math.max(.2,Math.min(2,z));cv.style.transform=`scale(${zm})`;document.getElementById("zi").textContent=Math.round(zm*100)+"%";requestAnimationFrame(dl);}
+function zI(){sz(zm+.1)} function zO(){sz(zm-.1)} function zR(){sz(1)}
+function tgl(){sL=!sL;document.getElementById("tglL").classList.toggle("active",sL);dl();}
+cw.onwheel=e=>{e.preventDefault();sz(zm+(e.deltaY>0?-.05:.05));};
+
+render();requestAnimationFrame(dl);
+window.onresize=()=>requestAnimationFrame(dl);
+</script>
+</body>
+</html>

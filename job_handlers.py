@@ -304,6 +304,24 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
             detail={"models": model_ids, "result_count": len(all_results)},
         )
 
+        # Dual-write to run_results (Phase 4 normalization)
+        try:
+            for result in all_results:
+                model_id = result.get("model_id", "")
+                await db.save_run_result(
+                    run_id=run_id,
+                    run_type="benchmark",
+                    user_id=user_id,
+                    model_litellm_id=model_id,
+                    provider_key=result.get("provider", ""),
+                    throughput_tps=result.get("tokens_per_second"),
+                    ttft_ms=result.get("ttft_ms"),
+                    tokens_generated=result.get("output_tokens"),
+                    cost=result.get("cost"),
+                )
+        except Exception as e:
+            logger.warning("Failed to dual-write benchmark run_results: %s", e)
+
         return run_id
 
     logger.info("Benchmark produced no results: job_id=%s user_id=%s", job_id, user_id)
@@ -631,7 +649,6 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
     eval_id = await db.save_tool_eval_run(
         user_id=user_id,
         suite_id=suite["id"],
-        suite_name=suite["name"],
         models_json=json.dumps(model_ids),
         results_json=json.dumps(all_results),
         summary_json=json.dumps(summaries),
@@ -643,6 +660,22 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
 
     # Store result_ref so frontend can discover eval_id on reconnect
     await db.set_job_result_ref(job_id, eval_id)
+
+    # Dual-write to run_results (Phase 4 normalization)
+    try:
+        for s in summaries:
+            await db.save_run_result(
+                run_id=eval_id,
+                run_type="tool_eval",
+                user_id=user_id,
+                model_litellm_id=s.get("model_id", ""),
+                provider_key=s.get("provider", ""),
+                tool_accuracy_pct=s.get("tool_accuracy_pct"),
+                param_accuracy_pct=s.get("param_accuracy_pct"),
+                score=s.get("overall_pct"),
+            )
+    except Exception as e:
+        logger.warning("Failed to dual-write tool_eval run_results: %s", e)
 
     # --- Experiment integration (M2) ---
     if experiment_id:
@@ -675,12 +708,15 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
             await asyncio.sleep(2)
             logger.info("Post-eval judge starting: model=%s api_base=%s concurrency=%d cases=%d",
                         judge_target.model_id, judge_target.api_base, judge_concurrency, len(all_results))
+            _judge_db_model = await db.get_model_by_litellm_id(user_id, judge_target.model_id)
+            _judge_db_model_id = _judge_db_model["id"] if _judge_db_model else None
             judge_report_id = await db.save_judge_report(
                 user_id=user_id,
                 judge_model=judge_target.model_id,
                 mode="post_eval",
                 eval_run_id=eval_id,
                 experiment_id=experiment_id,
+                judge_model_id=_judge_db_model_id,
             )
             await _ws_send({
                 "type": "judge_start",
@@ -769,12 +805,15 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
     # --- Live inline judge: save report ---
     elif judge_enabled and judge_mode == "live_inline" and judge_verdicts:
         try:
+            _judge_db_model_li = await db.get_model_by_litellm_id(user_id, judge_target.model_id)
+            _judge_db_model_id_li = _judge_db_model_li["id"] if _judge_db_model_li else None
             judge_report_id = await db.save_judge_report(
                 user_id=user_id,
                 judge_model=judge_target.model_id,
                 mode="live_inline",
                 eval_run_id=eval_id,
                 experiment_id=experiment_id,
+                judge_model_id=_judge_db_model_id_li,
             )
             model_results_j: dict[str, list[dict]] = {}
             for v in judge_verdicts:
@@ -877,16 +916,8 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
         else:
             try:
                 # Load user's judge settings for default model
-                d = db.DatabaseManager()
-                user_settings = await d.fetch_one(
-                    "SELECT config_yaml FROM user_configs WHERE user_id = ?", (user_id,)
-                )
-                judge_settings = {}
-                if user_settings:
-                    import yaml
-                    cfg = yaml.safe_load(user_settings.get("config_yaml", ""))
-                    if isinstance(cfg, dict):
-                        judge_settings = cfg.get("judge_settings", {})
+                user_cfg = await _get_user_config(user_id)
+                judge_settings = user_cfg.get("judge_settings", {})
 
                 default_judge_model = judge_settings.get("default_judge_model")
                 if default_judge_model:
@@ -919,16 +950,8 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
 
             if avg_score < LOW_ACCURACY_THRESHOLD:
                 # Load judge settings to find a judge model
-                import yaml as _yaml
-                _dm = db.DatabaseManager()
-                _us = await _dm.fetch_one(
-                    "SELECT config_yaml FROM user_configs WHERE user_id = ?", (user_id,)
-                )
-                _judge_settings = {}
-                if _us:
-                    _cfg = _yaml.safe_load(_us.get("config_yaml", "") or "")
-                    if isinstance(_cfg, dict):
-                        _judge_settings = _cfg.get("judge_settings", {})
+                _user_cfg = await _get_user_config(user_id)
+                _judge_settings = _user_cfg.get("judge_settings", {})
 
                 _auto_judge_after_eval = _judge_settings.get("auto_judge_after_eval", False)
                 _default_judge_model = _judge_settings.get("default_judge_model")
@@ -1157,7 +1180,6 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
     tune_id = await db.save_param_tune_run_with_mode(
         user_id=user_id,
         suite_id=suite["id"],
-        suite_name=suite["name"],
         models_json=json.dumps(model_ids),
         search_space_json=json.dumps(per_model_search_spaces if per_model_combos else search_space),
         total_combos=total_combos,
@@ -1338,6 +1360,20 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
     best_config = _find_best_config(all_results)
     best_score = _find_best_score(all_results)
 
+    # Phase 5: Look up best_profile_id if best result has a model with a matching profile
+    best_profile_id = None
+    if all_results and best_config:
+        try:
+            best_result = max(all_results, key=lambda r: r.get("overall_score", 0))
+            best_model_id = best_result.get("model_id")
+            if best_model_id:
+                # Check if there's a default profile for this model
+                profile = await db.get_default_profile(user_id, best_model_id)
+                if profile:
+                    best_profile_id = profile["id"]
+        except Exception as e:
+            logger.debug("Could not resolve best_profile_id: %s", e)
+
     await db.update_param_tune_run(
         tune_id, user_id,
         results_json=json.dumps(all_results),
@@ -1346,6 +1382,7 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
         completed_combos=completed,
         status="completed",
         duration_s=round(duration, 2),
+        best_profile_id=best_profile_id,
     )
 
     # Send completion event to frontend
@@ -1405,7 +1442,6 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
                 promoted_eval_id = await db.save_tool_eval_run(
                     user_id=user_id,
                     suite_id=suite["id"],
-                    suite_name=suite["name"],
                     models_json=json.dumps([best["model_id"]]),
                     results_json=json.dumps(promoted_results),
                     summary_json=json.dumps(promoted_summary),
@@ -1519,11 +1555,14 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
     test_cases_summary = _build_test_cases_summary(cases)
     total_eval_calls = total_prompts * len(cases) * len(eval_targets)
 
+    # Resolve DB model ID for the meta model FK
+    _meta_db_model = await db.get_model_by_litellm_id(user_id, meta_model_id)
+    _meta_db_model_id = _meta_db_model["id"] if _meta_db_model else None
+
     # Pre-create DB record
     tune_id = await db.save_prompt_tune_run(
         user_id=user_id,
         suite_id=suite["id"],
-        suite_name=suite["name"],
         mode=mode,
         target_models_json=json.dumps(target_model_ids),
         meta_model=meta_model_id,
@@ -1532,6 +1571,7 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
         total_prompts=total_prompts,
         experiment_id=experiment_id,
         meta_provider_key=meta_provider_key,
+        meta_model_id=_meta_db_model_id,
     )
 
     # Store result_ref early so the frontend can discover tune_id on reconnect
@@ -1786,12 +1826,29 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
         )
         return None
 
+    # --- Auto-save best prompt to prompt version registry ---
+    best_pv_id = None
+    if best_prompt:
+        try:
+            label = f"Prompt Tune ({suite['name']}) — score {best_score:.0%}"
+            best_pv_id = await db.create_prompt_version(
+                user_id=user_id,
+                prompt_text=best_prompt,
+                label=label,
+                source="prompt_tuner",
+                origin_run_id=tune_id,
+            )
+            logger.info("Auto-saved best prompt as version %s: tune_id=%s", best_pv_id, tune_id)
+        except Exception:
+            logger.exception("Failed to auto-save prompt version: tune_id=%s", tune_id)
+
     await db.update_prompt_tune_run(
         tune_id, user_id,
         generations_json=json.dumps(all_generations),
         best_prompt=best_prompt,
         best_score=best_score,
         best_prompt_origin_json=_origin_json,
+        best_prompt_version_id=best_pv_id,
         completed_prompts=completed_prompts,
         status="completed",
         duration_s=round(duration, 2),
@@ -1811,21 +1868,6 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
         "Prompt tune completed: job_id=%s tune_id=%s user_id=%s prompts=%d best_score=%.4f",
         job_id, tune_id, user_id, completed_prompts, best_score,
     )
-
-    # --- Auto-save best prompt to prompt version registry ---
-    if best_prompt:
-        try:
-            label = f"Prompt Tune ({suite['name']}) — score {best_score:.0%}"
-            await db.create_prompt_version(
-                user_id=user_id,
-                prompt_text=best_prompt,
-                label=label,
-                source="prompt_tuner",
-                origin_run_id=tune_id,
-            )
-            logger.info("Auto-saved best prompt as version: tune_id=%s", tune_id)
-        except Exception:
-            logger.exception("Failed to auto-save prompt version: tune_id=%s", tune_id)
 
     # --- Auto-promote best prompt (if in experiment) ---
     if experiment_id and best_prompt:
@@ -1910,7 +1952,12 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
             elif tune_type == "prompt_tuner":
                 tune_run = await db.get_prompt_tune_run(tune_run_id, user_id)
                 if tune_run:
+                    # Resolve best_prompt from prompt_versions (post-migration 600) or fallback to column
                     best_prompt = tune_run.get("best_prompt", "")
+                    if not best_prompt and tune_run.get("best_prompt_version_id"):
+                        _bpv = await db.get_prompt_version(tune_run["best_prompt_version_id"], user_id)
+                        if _bpv:
+                            best_prompt = _bpv.get("prompt_text", "")
                     tuner_analysis_context = (
                         "## Tuner Analysis Context\n"
                         "The prompt tuner found this winning system prompt:\n"
@@ -1955,6 +2002,10 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
         if ws_manager:
             await ws_manager.send_to_user(user_id, payload)
 
+    # Resolve DB model ID for judge FK
+    _judge_db = await db.get_model_by_litellm_id(user_id, judge_model_id)
+    _judge_db_id = _judge_db["id"] if _judge_db else None
+
     # Create judge report in DB (with versioning fields if present)
     report_id = await db.save_judge_report(
         user_id=user_id,
@@ -1965,6 +2016,7 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
         parent_report_id=parent_report_id,
         version=version,
         instructions_json=instructions_json,
+        judge_model_id=_judge_db_id,
     )
 
     # Store result_ref early
@@ -2143,6 +2195,10 @@ async def judge_compare_handler(job_id: str, params: dict, cancel_event, progres
     if not common_tcs:
         return None
 
+    # Resolve DB model ID for judge FK
+    _judge_db_cmp = await db.get_model_by_litellm_id(user_id, judge_model_id)
+    _judge_db_id_cmp = _judge_db_cmp["id"] if _judge_db_cmp else None
+
     # Create report in DB
     report_id = await db.save_judge_report(
         user_id=user_id,
@@ -2151,6 +2207,7 @@ async def judge_compare_handler(job_id: str, params: dict, cancel_event, progres
         eval_run_id=eval_run_id_a,
         eval_run_id_b=eval_run_id_b,
         experiment_id=experiment_id,
+        judge_model_id=_judge_db_id_cmp,
     )
 
     # Store result_ref early

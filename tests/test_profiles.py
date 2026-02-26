@@ -537,6 +537,20 @@ class TestProfileFieldInRequests:
 
     async def test_tool_eval_request_accepts_profiles_dict(self, app_client, auth_headers):
         """ToolEvalRequest with profiles field passes schema validation."""
+        # Ensure openai provider + gpt-4o model exist in the user's config
+        # (normalized tables may not have gpt-4o if seeded from config.yaml)
+        await app_client.post("/api/config/provider", headers=auth_headers, json={
+            "provider_key": "openai",
+            "display_name": "OpenAI",
+            "api_key_env": "OPENAI_API_KEY",
+        })
+        await app_client.post("/api/config/model", headers=auth_headers, json={
+            "provider_key": "openai",
+            "id": "gpt-4o",
+            "display_name": "GPT-4o",
+            "context_window": 128000,
+        })
+
         # Create a suite first
         suite_resp = await app_client.post("/api/tool-eval/import", headers=auth_headers, json={
             "name": "Profiles Eval Test Suite",

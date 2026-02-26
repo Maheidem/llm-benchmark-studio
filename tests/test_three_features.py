@@ -570,7 +570,7 @@ class TestJudgeOnFailureDB:
         run_id = await db.save_tool_eval_run(
             user_id=user["id"],
             suite_id=suite_id,
-            suite_name="Judge Column Test Suite",
+
             models_json='["gpt-4o"]',
             results_json='[]',
             summary_json='{}',
@@ -588,7 +588,7 @@ class TestJudgeOnFailureDB:
         run_id = await db.save_tool_eval_run(
             user_id=user["id"],
             suite_id=suite_id,
-            suite_name="Judge Explain Test Suite",
+
             models_json='["gpt-4o"]',
             results_json='[]',
             summary_json='{}',
@@ -634,7 +634,7 @@ class TestJudgeOnFailureAPI:
         run_id = await db.save_tool_eval_run(
             user_id=user["id"],
             suite_id=suite_id,
-            suite_name="Judge API Test Suite",
+
             models_json='["gpt-4o"]',
             results_json='[]',
             summary_json='{"total_cases": 1, "correct": 0, "accuracy": 0.0}',
@@ -667,7 +667,7 @@ class TestJudgeOnFailureAPI:
         run_id = await db_module.save_tool_eval_run(
             user_id=user["id"],
             suite_id=suite_id,
-            suite_name="Judge API Data Suite",
+
             models_json='["gpt-4o"]',
             results_json='[]',
             summary_json='{"total_cases": 1, "correct": 0, "accuracy": 0.0}',
@@ -1024,7 +1024,7 @@ class TestGetJudgeReportForEval:
         eval_id = await db.save_tool_eval_run(
             user_id=user["id"],
             suite_id=suite_id,
-            suite_name="Judge Report Suite",
+
             models_json='["gpt-4o"]',
             results_json='[]',
             summary_json='{"total_cases": 2, "correct": 0, "accuracy": 0.0}',
@@ -1078,7 +1078,7 @@ class TestGetJudgeReportForEval:
         eval_id = await db.save_tool_eval_run(
             user_id=user["id"],
             suite_id=suite_id,
-            suite_name="No Judge Suite",
+
             models_json='["gpt-4o"]',
             results_json='[]',
             summary_json='{"total_cases": 1, "correct": 1, "accuracy": 1.0}',
@@ -1112,7 +1112,7 @@ class TestGetJudgeReportForEval:
         other_eval_id = await db.save_tool_eval_run(
             user_id=other_user_id,
             suite_id=other_suite_id,
-            suite_name="Other Suite",
+
             models_json='["gpt-4o"]',
             results_json='[]',
             summary_json='{"total_cases": 1, "correct": 0, "accuracy": 0.0}',
@@ -1141,7 +1141,7 @@ class TestGetJudgeReportForEval:
         eval_id = await db.save_tool_eval_run(
             user_id=user["id"],
             suite_id=suite_id,
-            suite_name="Running Judge Suite",
+
             models_json='["gpt-4o"]',
             results_json='[]',
             summary_json='{"total_cases": 1, "correct": 0, "accuracy": 0.0}',

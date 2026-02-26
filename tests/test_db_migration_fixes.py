@@ -51,25 +51,29 @@ class TestCrit1LeaderboardUpsertConcurrent:
 
     async def test_leaderboard_upsert_concurrent_sample_count(self, app_client):
         """Two concurrent upserts for the same model should accumulate sample_count correctly."""
-        model = f"test-model-crit1-{uuid.uuid4().hex[:8]}"
-        provider = "test-provider"
+        # Create a test user, provider, and model for the model_db_id FK
+        user_id = await _create_isolated_user("crit1-sc")
+        provider_id = await db.create_provider(user_id, "test-prov-sc", "Test Provider SC")
+        model_db_id = await db.create_model(provider_id, f"test-model-crit1-{uuid.uuid4().hex[:8]}", "Test Model SC")
 
         await asyncio.gather(
             db.upsert_leaderboard_entry(
-                model_name=model, provider=provider,
+                model_name="unused", provider="unused",
                 tool_accuracy_pct=80.0, param_accuracy_pct=60.0,
                 irrel_accuracy_pct=None, sample_count=10,
+                model_db_id=model_db_id,
             ),
             db.upsert_leaderboard_entry(
-                model_name=model, provider=provider,
+                model_name="unused", provider="unused",
                 tool_accuracy_pct=40.0, param_accuracy_pct=20.0,
                 irrel_accuracy_pct=None, sample_count=10,
+                model_db_id=model_db_id,
             ),
         )
 
         row = await db._db.fetch_one(
-            "SELECT * FROM public_leaderboard WHERE model_name=? AND provider=?",
-            (model, provider),
+            "SELECT * FROM public_leaderboard WHERE model_db_id=?",
+            (model_db_id,),
         )
         assert row is not None
         assert row["sample_count"] == 20, (
@@ -78,25 +82,29 @@ class TestCrit1LeaderboardUpsertConcurrent:
 
     async def test_leaderboard_upsert_concurrent_weighted_average(self, app_client):
         """Concurrent upserts must produce SQL-level weighted averages, not last-write-wins."""
-        model = f"test-model-crit1-avg-{uuid.uuid4().hex[:8]}"
-        provider = "test-provider-avg"
+        # Create a test user, provider, and model for the model_db_id FK
+        user_id = await _create_isolated_user("crit1-avg")
+        provider_id = await db.create_provider(user_id, "test-prov-avg", "Test Provider Avg")
+        model_db_id = await db.create_model(provider_id, f"test-model-crit1-avg-{uuid.uuid4().hex[:8]}", "Test Model Avg")
 
         # First insert: 100% accuracy, 10 samples
         await db.upsert_leaderboard_entry(
-            model_name=model, provider=provider,
+            model_name="unused", provider="unused",
             tool_accuracy_pct=100.0, param_accuracy_pct=100.0,
             irrel_accuracy_pct=None, sample_count=10,
+            model_db_id=model_db_id,
         )
         # Second upsert: 0% accuracy, 10 samples -> weighted average = 50%
         await db.upsert_leaderboard_entry(
-            model_name=model, provider=provider,
+            model_name="unused", provider="unused",
             tool_accuracy_pct=0.0, param_accuracy_pct=0.0,
             irrel_accuracy_pct=None, sample_count=10,
+            model_db_id=model_db_id,
         )
 
         row = await db._db.fetch_one(
-            "SELECT * FROM public_leaderboard WHERE model_name=? AND provider=?",
-            (model, provider),
+            "SELECT * FROM public_leaderboard WHERE model_db_id=?",
+            (model_db_id,),
         )
         assert row is not None
         # Weighted average of (100*10 + 0*10) / 20 = 50.0
@@ -487,10 +495,10 @@ class TestMed9CheckConstraints:
                 await conn.execute("PRAGMA foreign_keys=ON")
                 await conn.execute(
                     "INSERT INTO param_tune_runs "
-                    "(id, user_id, suite_id, suite_name, models_json, search_space_json, "
+                    "(id, user_id, suite_id, models_json, search_space_json, "
                     "total_combos, optimization_mode) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (run_id, user_id, suite_id, "test", '[]', '{}', 1, "bogus"),
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (run_id, user_id, suite_id, '[]', '{}', 1, "bogus"),
                 )
                 await conn.commit()
 

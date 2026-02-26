@@ -390,7 +390,7 @@ class TestParamTuneRunsCrud:
         run_id = await db.save_param_tune_run(
             user_id=test_user["id"],
             suite_id=suite_id,
-            suite_name="Suite",
+
             models_json='["gpt-4o"]',
             search_space_json='{"temperature": {"min": 0, "max": 1, "step": 0.5}}',
             total_combos=3,
@@ -408,7 +408,7 @@ class TestParamTuneRunsCrud:
         run_id = await db.save_param_tune_run(
             user_id=test_user["id"],
             suite_id=suite_id,
-            suite_name="Suite",
+
             models_json='["gpt-4o"]',
             search_space_json='{}',
             total_combos=2,
@@ -435,7 +435,7 @@ class TestParamTuneRunsCrud:
         run_id = await db.save_param_tune_run(
             user_id=test_user["id"],
             suite_id=suite_id,
-            suite_name="Suite",
+
             models_json='["gpt-4o"]',
             search_space_json='{}',
             total_combos=1,
@@ -453,7 +453,7 @@ class TestParamTuneRunsCrud:
             await db.save_param_tune_run(
                 user_id=test_user["id"],
                 suite_id=suite_id,
-                suite_name="Suite",
+    
                 models_json='["gpt-4o"]',
                 search_space_json='{}',
                 total_combos=1,
@@ -578,7 +578,7 @@ class TestCleanup:
         run_id = await db.save_param_tune_run(
             user_id=test_user["id"],
             suite_id=suite_id,
-            suite_name="Suite",
+
             models_json='["gpt-4o"]',
             search_space_json='{}',
             total_combos=1,

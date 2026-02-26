@@ -24,6 +24,7 @@ from routers.profiles import router as profiles_router
 from routers.oauth import router as oauth_router
 from routers.prompt_versions import router as prompt_versions_router
 from routers.leaderboard import router as leaderboard_router
+from routers.providers import router as providers_router
 
 all_routers = [
     auth_router,
@@ -50,4 +51,5 @@ all_routers = [
     oauth_router,
     prompt_versions_router,
     leaderboard_router,
+    providers_router,
 ]
