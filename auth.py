@@ -217,7 +217,10 @@ async def register_handler(request: Request) -> JSONResponse:
 
     # Build response with HttpOnly cookie for refresh token
     response = JSONResponse({
-        "user": {"id": user["id"], "email": user["email"], "role": user["role"]},
+        "user": {
+            "id": user["id"], "email": user["email"], "role": user["role"],
+            "onboarding_completed": user.get("onboarding_completed", 0),
+        },
         "access_token": access,
     })
     response.set_cookie(
@@ -289,7 +292,10 @@ async def login_handler(request: Request) -> JSONResponse:
     )
 
     response = JSONResponse({
-        "user": {"id": user["id"], "email": user["email"], "role": user["role"]},
+        "user": {
+            "id": user["id"], "email": user["email"], "role": user["role"],
+            "onboarding_completed": user.get("onboarding_completed", 0),
+        },
         "access_token": access,
     })
     response.set_cookie(

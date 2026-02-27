@@ -43,6 +43,7 @@ import { ref, computed, onMounted } from 'vue'
 import { apiFetch } from '../../utils/api.js'
 import { useToast } from '../../composables/useToast.js'
 import { useModal } from '../../composables/useModal.js'
+import { useConfigStore } from '../../stores/config.js'
 import ProviderCard from '../../components/settings/ProviderCard.vue'
 import AddProviderForm from '../../components/settings/AddProviderForm.vue'
 import DiscoveredModelsDialog from '../../components/settings/DiscoveredModelsDialog.vue'
@@ -80,6 +81,9 @@ async function loadConfig() {
   try {
     const res = await apiFetch('/api/config')
     config.value = await res.json()
+    // Sync Pinia config store so other tabs (Profiles) see updated models
+    const configStore = useConfigStore()
+    configStore.config = config.value
     error.value = ''
   } catch (e) {
     error.value = 'Failed to load config.'
