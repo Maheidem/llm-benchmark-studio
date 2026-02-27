@@ -6,6 +6,7 @@ fields in the param_tune job handler.
 Run: uv run pytest tests/test_bayesian_param_search.py -v
 """
 
+import asyncio
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -264,7 +265,8 @@ class TestOptimizationModeAPI:
                 "search_space": {"temperature": {"min": 0.5, "max": 0.7, "step": 0.2}},
                 "optimization_mode": "grid",
             })
-        assert resp.status_code == 200
+            assert resp.status_code == 200
+            await asyncio.sleep(2)  # Let background job finish while mock is active
 
     async def test_random_mode_accepted(self, app_client, auth_headers, clear_active_jobs):
         """optimization_mode='random' with n_trials is accepted."""
@@ -292,7 +294,8 @@ class TestOptimizationModeAPI:
                 "optimization_mode": "random",
                 "n_trials": 5,
             })
-        assert resp.status_code == 200
+            assert resp.status_code == 200
+            await asyncio.sleep(2)  # Let background job finish while mock is active
 
     async def test_bayesian_mode_accepted(self, app_client, auth_headers, clear_active_jobs):
         """optimization_mode='bayesian' with n_trials is accepted."""
@@ -320,14 +323,13 @@ class TestOptimizationModeAPI:
                 "optimization_mode": "bayesian",
                 "n_trials": 5,
             })
-        assert resp.status_code == 200
+            assert resp.status_code == 200
+            await asyncio.sleep(2)  # Let background job finish while mock is active
 
     async def test_optimization_mode_stored_in_run(
         self, app_client, auth_headers, clear_active_jobs
     ):
         """optimization_mode is stored on the param_tune_run record."""
-        import asyncio
-        await asyncio.sleep(0.5)  # Let background jobs from prior tests settle (CI flaky fix)
         await self._setup_zai_config(app_client, auth_headers)
         suite_id = await self._create_suite(app_client, auth_headers, "Mode Storage Suite")
 
@@ -352,7 +354,8 @@ class TestOptimizationModeAPI:
                 "optimization_mode": "random",
                 "n_trials": 5,
             })
-        assert resp.status_code == 200
+            assert resp.status_code == 200
+            await asyncio.sleep(2)  # Let background job finish while mock is active
 
         # Check that run history includes optimization_mode
         history_resp = await app_client.get("/api/tool-eval/param-tune/history", headers=auth_headers)
