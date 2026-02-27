@@ -305,6 +305,45 @@ Per-user concurrency limiting with FIFO queue for overflow.
 - WebSocket events follow pattern: `{"type": "job_type", "status": "...", "data": {...}}`
 - Frontend builds to `static/` directory, served by FastAPI in production
 
+## No Silent Failures (MANDATORY)
+
+**Every failure the user can trigger MUST produce visible feedback. No exceptions.**
+
+### Backend Rules
+
+1. **Every `return None` in a job handler** must be preceded by a `job_failed` WS event:
+   ```python
+   await _ws_send({"type": "job_failed", "job_id": job_id, "error": "Human-readable message"})
+   return None
+   ```
+2. **Every `except` that catches a user-facing feature failure** must send a WS notification:
+   ```python
+   except Exception as e:
+       logger.warning("Feature X failed: %s", e)
+       await _ws_send({"type": "eval_warning", "job_id": job_id, "detail": f"Feature X failed: {e}"})
+   ```
+3. **Never use `logger.debug()` for user-facing failures** -- debug logs are invisible to users. Use `logger.warning()` minimum, plus a WS event.
+4. **Conditional skips must notify** -- if a feature is skipped due to missing config, threshold, or precondition, send a WS event explaining why.
+
+### Frontend Rules
+
+1. **Never use `catch { /* ignore */ }` on user-facing operations** -- always show a toast:
+   ```javascript
+   try { await store.loadSuites() } catch { showToast('Failed to load suites', 'error') }
+   ```
+2. **Legitimate ignores** (sessionStorage, non-critical preferences) must have a comment explaining WHY it's safe.
+3. **Handle all WS event types the backend sends** -- `eval_warning`, `judge_failed`, `auto_judge_skipped` must produce toasts.
+4. **Views using `notifStore.onMessage()`** must unsubscribe in `onUnmounted()` to prevent duplicate WS handlers.
+
+### WS Event Types for Warnings
+
+| Event Type | When | Frontend Action |
+|-----------|------|----------------|
+| `job_failed` | Handler early exit, precondition failure | Error banner + stop progress |
+| `eval_warning` | Non-fatal issue during eval (save failure, parse fallback, etc.) | Warning toast |
+| `judge_failed` | Judge analysis failed | Error toast |
+| `auto_judge_skipped` | Auto-judge skipped (threshold, no model, submission error) | Info/error toast |
+
 ## Quality Gate (MANDATORY)
 
 **Every feature follows the journey-first workflow. No exceptions.**
