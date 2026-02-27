@@ -1043,15 +1043,16 @@ async def _process_bfcl_import(entries: list[dict], suite_name: str, user_id: st
                     "category": category,
                 })
         else:
-            # One test case per parsed call (handles parallel BFCL entries)
-            for expected_tool_val, expected_params_val in parsed_calls:
-                cases.append({
-                    "prompt": prompt,
-                    "expected_tool": expected_tool_val,
-                    "expected_params": expected_params_val,
-                    "param_scoring": "exact",
-                    "category": category,
-                })
+            # Use first parsed call per BFCL entry (our eval scores one tool call per response,
+            # so expanding parallel calls into separate cases just creates duplicates)
+            expected_tool_val, expected_params_val = parsed_calls[0]
+            cases.append({
+                "prompt": prompt,
+                "expected_tool": expected_tool_val,
+                "expected_params": expected_params_val,
+                "param_scoring": "exact",
+                "category": category,
+            })
 
     suite_id = await db.create_suite_with_cases(
         user_id, suite_name, "", tools, cases

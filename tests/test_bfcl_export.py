@@ -629,8 +629,8 @@ class TestRawBFCLImport:
         assert len(cases) == 1
         assert cases[0]["expected_tool"] == "binomial_probability"
 
-    async def test_ground_truth_parallel_creates_multiple_cases(self, app_client, auth_headers):
-        """Raw BFCL parallel entry with 2 ground_truth calls creates 2 test cases."""
+    async def test_ground_truth_parallel_uses_first_call(self, app_client, auth_headers):
+        """Raw BFCL parallel entry with 2 ground_truth calls creates 1 test case (first call only)."""
         resp = await app_client.post(
             "/api/tool-eval/import/bfcl",
             headers=auth_headers,
@@ -638,19 +638,17 @@ class TestRawBFCLImport:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["test_cases_created"] == 2
+        assert data["test_cases_created"] == 1
 
         detail = await app_client.get(
             f"/api/tool-suites/{data['suite_id']}", headers=auth_headers
         )
         cases = detail.json().get("test_cases", [])
-        assert len(cases) == 2
-        params = []
-        for c in cases:
-            ep = c["expected_params"]
-            params.append(json.loads(ep) if isinstance(ep, str) else ep)
-        cities = {p["city"] for p in params}
-        assert cities == {"Paris", "Tokyo"}
+        assert len(cases) == 1
+        ep = cases[0]["expected_params"]
+        params = json.loads(ep) if isinstance(ep, str) else ep
+        # First call in RAW_BFCL_PARALLEL is Paris
+        assert params["city"] == "Paris"
 
     async def test_irrelevance_detection(self, app_client, auth_headers):
         """Entry with no answer/ground_truth creates irrelevance test case."""
