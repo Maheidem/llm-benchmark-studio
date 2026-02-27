@@ -583,6 +583,11 @@ async function startEval() {
     auto_judge_threshold: autoJudge.value ? autoJudgeThreshold.value / 100 : null,
   }
 
+  // Provider params from shared context (set by param tuner or manual config)
+  if (context.providerParams && Object.keys(context.providerParams).length > 0) {
+    body.provider_params = context.providerParams
+  }
+
   // System prompts
   const spDict = {}
   for (const [k, v] of Object.entries(systemPrompts.value)) {
