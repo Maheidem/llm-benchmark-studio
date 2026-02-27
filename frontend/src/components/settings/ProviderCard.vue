@@ -55,6 +55,17 @@
           <input v-model="editForm.api_key_env" placeholder="e.g. OPENAI_API_KEY" class="settings-input">
         </div>
       </div>
+      <div v-if="showDirectLocalOption" class="mb-2">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" v-model="editForm.direct_local" class="accent-[#BFFF00]">
+          <span class="text-[11px] text-zinc-400 font-body">
+            Direct Local Access — Benchmark from browser (skip server hop)
+          </span>
+        </label>
+        <p class="text-[10px] text-zinc-600 mt-1 ml-5 font-body">
+          Requires CORS enabled in LM Studio: Developer &gt; Local Server &gt; Enable CORS
+        </p>
+      </div>
       <div class="flex items-center gap-3">
         <button @click="saveProvider" class="lime-btn">Save Provider</button>
         <span v-if="saveStatus" class="text-[11px] font-body" :style="`color:${saveStatus.ok ? 'var(--lime)' : 'var(--coral)'}`">{{ saveStatus.msg }}</span>
@@ -122,6 +133,7 @@ import { apiFetch } from '../../utils/api.js'
 import { useToast } from '../../composables/useToast.js'
 import { getColor } from '../../utils/constants.js'
 import ModelCardSettings from './ModelCardSettings.vue'
+import { useDirectBenchmark } from '../../composables/useDirectBenchmark.js'
 
 const props = defineProps({
   provider: { type: Object, required: true },
@@ -141,6 +153,11 @@ const prefix = computed(() => {
   return detectPrefix(models.value)
 })
 
+const { supportsDirectLocalAccess, isLocalProvider } = useDirectBenchmark()
+const showDirectLocalOption = computed(() => {
+  return supportsDirectLocalAccess() && isLocalProvider(props.provider)
+})
+
 function detectPrefix(models) {
   if (!models || models.length === 0) return ''
   const ids = models.map(m => m.model_id || m.id || '')
@@ -157,6 +174,7 @@ const editForm = reactive({
   model_id_prefix: props.provider.model_id_prefix || '',
   api_base: props.provider.api_base || '',
   api_key_env: props.provider.api_key_env || '',
+  direct_local: props.provider.direct_local || false,
 })
 const saveStatus = ref(null)
 
@@ -165,6 +183,7 @@ watch(() => props.provider, (p) => {
   editForm.model_id_prefix = p.model_id_prefix || ''
   editForm.api_base = p.api_base || ''
   editForm.api_key_env = p.api_key_env || ''
+  editForm.direct_local = p.direct_local || false
 }, { deep: true })
 
 async function saveProvider() {
@@ -178,6 +197,7 @@ async function saveProvider() {
         api_base: editForm.api_base,
         api_key_env: editForm.api_key_env,
         model_id_prefix: editForm.model_id_prefix,
+        direct_local: editForm.direct_local,
       }),
     })
     if (res.ok) {

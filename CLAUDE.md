@@ -50,7 +50,7 @@ docker compose down
 ```
 ├── app.py                  # FastAPI app, lifespan, middleware, logging
 ├── benchmark.py            # Core engine: Target, RunResult, run_single(), build_targets()
-├── db.py                   # DatabaseManager, SQLite+aiosqlite, 18+ tables, WAL mode
+├── db.py                   # DatabaseManager, SQLite+aiosqlite, 31 tables, WAL mode
 ├── auth.py                 # JWT + bcrypt auth, refresh tokens, RBAC (user/admin)
 ├── keyvault.py             # Fernet-encrypted API key storage per user
 ├── job_registry.py         # JobRegistry singleton: background jobs, queuing, concurrency
@@ -74,7 +74,7 @@ docker compose down
 
 ### Backend Stack
 - **FastAPI + Uvicorn** with modular routers (24 modules in `routers/`)
-- **SQLite + aiosqlite** (WAL mode), 18+ tables, `DatabaseManager` context manager
+- **SQLite + aiosqlite** (WAL mode), 31 tables (fully normalized), `DatabaseManager` context manager
 - **JobRegistry** -- singleton managing background jobs with per-user concurrency limits, asyncio tasks, SQLite persistence, WebSocket status broadcasts. 8 job types: benchmark, tool_eval, param_tune, prompt_tune, judge, judge_compare, scheduled_benchmark, prompt_auto_optimize
 - **WebSocket ConnectionManager** -- real-time push for job status, multi-tab support, auto-reconnect
 - **Auth** -- JWT access tokens + refresh tokens, bcrypt passwords, `ADMIN_EMAIL` env var for auto-promotion, rate limiting
@@ -110,13 +110,17 @@ Provider groups execute in parallel via `asyncio.create_task()`. Models within a
 | Infra | `websocket`, `discovery`, `export_import`, `mcp` | `/ws`, `/api/discovery/*` |
 | Helpers | `helpers` | Shared utilities for routers |
 
-## Database (18+ tables)
+## Database (31 tables)
+
+Schema version baseline: 700 (all prior migration code deleted).
 
 Core: `users`, `refresh_tokens`, `user_api_keys`, `user_configs`, `rate_limits`, `audit_log`, `password_reset_tokens`
-Benchmarks: `benchmark_runs`, `experiments`, `model_profiles`
-Tool Eval: `tool_suites`, `tool_test_cases`, `tool_eval_runs`
-Tuning: `param_tune_runs`, `prompt_tune_runs`, `prompt_versions`
-Platform: `schedules`, `judge_reports`, `jobs`
+Providers: `providers`, `models`
+Benchmarks: `benchmark_runs`, `benchmark_results`, `experiments`, `model_profiles`
+Tool Eval: `tool_suites`, `tool_test_cases`, `tool_definitions`, `tool_eval_runs`, `case_results`
+Tuning: `param_tune_runs`, `param_tune_combos`, `prompt_tune_runs`, `prompt_tune_generations`, `prompt_tune_candidates`, `prompt_versions`
+Judging: `judge_reports`, `judge_verdicts`
+Platform: `schedules`, `jobs`
 
 ## Configuration
 
@@ -163,6 +167,17 @@ All LLM calls use `litellm.completion(stream=True)` with 120s timeout, 0 retries
 | Lock Pattern | `asyncio.Lock` on `_user_slots`, `_connections` | Protects shared state in job_registry and ws_manager |
 | Parallel Provider Execution | `asyncio.create_task()` per provider group | Providers parallel, models within provider sequential |
 
+## Normalization Mandate
+
+**Super-normalize everything.** DB I/O is irrelevant compared to LLM call latency -- normalize aggressively. Full design: `.documentation/erd-v2-normalization.md`
+
+- **Tool Eval Run is THE atomic execution unit.** Orchestrators (param_tune, prompt_tune, auto_optimize) own N eval runs -- they are not siblings.
+- **No JSON blobs for structured data** -- every result is in atomic, queryable columns in child tables.
+- **JSON is ONLY justified for:** provider-specific params (schema varies per provider), JSON Schema definitions, simple string arrays, LLM-generated narratives.
+- **Data volume is a retention policy problem**, not an architecture problem.
+- **CRUD pattern:** parent row INSERT first, child row INSERTs one at a time (batch helpers exist: `save_case_results_batch()`, `create_tool_definitions_batch()`), parent UPDATE for aggregates. Summary data computed via SQL aggregates on read (e.g., `get_case_results_summary()`).
+- **API response shapes:** eval runs return `results` + `summary`, judge reports return `verdicts` array, param tune returns `combos` array, prompt tune returns `generations` with nested `candidates`, benchmark runs return `results` array, suite detail returns `tool_definitions` array.
+
 ## Software Patterns
 
 ### Layered Architecture
@@ -191,6 +206,8 @@ app.py (entrypoint, middleware) -> routers/ (HTTP, validation) -> job_handlers.p
 - Row factory: `aiosqlite.Row` -> `dict(row)` conversion
 - ID generation: `DEFAULT (lower(hex(randomblob(16))))` for UUIDs
 - No connection pool -- per-call connections (sufficient for single-instance)
+- Write pattern: parent INSERT -> child INSERTs (batch helpers available) -> parent UPDATE for aggregates
+- Read pattern: summary data from SQL aggregates, detail data from JOINs on child tables
 
 ### Auth and Security
 - JWT: HS256, 24h access tokens, 7-day refresh tokens in HttpOnly cookies
@@ -267,7 +284,7 @@ Per-user concurrency limiting with FIFO queue for overflow.
 
 ### Audit and Persistence
 - `audit_log` table: user_id, action, resource_type, detail JSON, IP, user-agent (90-day retention)
-- Results stored as JSON blobs in DB for flexibility
+- Results stored in normalized child tables (`case_results`, `benchmark_results`, `judge_verdicts`, etc.) -- no JSON blobs
 - Experiment tracking groups related runs with best-score tracking
 
 ## CI/CD Pipeline

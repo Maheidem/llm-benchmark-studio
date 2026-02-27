@@ -255,22 +255,25 @@ class TestErrorTypeInEvalResult:
             })
         assert run_resp.status_code == 200
 
-        # Check via history
+        # Check via history detail (ERD v2: results in child table)
         history_resp = await app_client.get("/api/tool-eval/history", headers=auth_headers)
         assert history_resp.status_code == 200
         runs = history_resp.json().get("runs", [])
         if runs:
-            results = json.loads(runs[0].get("results_json", "[]"))
-            if results:
-                for r in results:
-                    assert "error_type" in r, (
-                        f"error_type missing from result: {r.keys()}"
-                    )
-                    # error_type must be None or one of the 8 valid types
-                    et = r["error_type"]
-                    assert et is None or et in VALID_ERROR_TYPES, (
-                        f"error_type={et!r} not in valid set"
-                    )
+            detail_resp = await app_client.get(
+                f"/api/tool-eval/history/{runs[0]['id']}", headers=auth_headers
+            )
+            assert detail_resp.status_code == 200
+            results = detail_resp.json().get("results", [])
+            for r in results:
+                assert "error_type" in r, (
+                    f"error_type missing from result: {r.keys()}"
+                )
+                # error_type must be None or one of the 8 valid types
+                et = r["error_type"]
+                assert et is None or et in VALID_ERROR_TYPES, (
+                    f"error_type={et!r} not in valid set"
+                )
 
     async def test_successful_eval_error_type_is_none(
         self, app_client, auth_headers, clear_active_jobs
@@ -317,7 +320,11 @@ class TestErrorTypeInEvalResult:
         assert history_resp.status_code == 200
         runs = history_resp.json().get("runs", [])
         if runs:
-            results = json.loads(runs[0].get("results_json", "[]"))
+            detail_resp = await app_client.get(
+                f"/api/tool-eval/history/{runs[0]['id']}", headers=auth_headers
+            )
+            assert detail_resp.status_code == 200
+            results = detail_resp.json().get("results", [])
             if results:
                 passing = [r for r in results if r.get("overall_score") == 1.0]
                 for r in passing:

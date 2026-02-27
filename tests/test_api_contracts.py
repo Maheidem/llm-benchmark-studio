@@ -487,7 +487,6 @@ class TestHistoryEndpoints:
             user_id=user["id"],
             prompt="test prompt",
             context_tiers="[0]",
-            results_json="[]",
             config_json=json.dumps({"provider_params": {"temperature": 0.5}}),
         )
         resp = await app_client.get(f"/api/history/{run_id}", headers=auth_headers)
@@ -789,16 +788,17 @@ class TestToolEvalHistory:
             user_id=user["id"],
             suite_id=suite_id,
             mode="quick",
-            target_models_json='["gpt-4o"]',
-            meta_model="gpt-4o",
             base_prompt="Test base prompt",
-            config_json="{}",
             total_prompts=3,
+            population_size=5,
+            generations=3,
+            selection_ratio=0.5,
+            eval_temperature=0.0,
+            eval_tool_choice="required",
         )
         origin = {"generation": 1, "prompt_index": 0, "style": "direct", "parent_index": None}
         await db.update_prompt_tune_run(
             tune_id, user["id"],
-            best_prompt="Improved prompt text",
             best_score=0.85,
             best_prompt_origin_json=json.dumps(origin),
             best_prompt_version_id=pv_id,
@@ -829,10 +829,7 @@ class TestToolEvalHistory:
             user_id=user["id"],
             suite_id=suite_id,
             mode="quick",
-            target_models_json='["gpt-4o"]',
-            meta_model="gpt-4o",
             base_prompt=None,
-            config_json="{}",
             total_prompts=1,
         )
         resp = await app_client.get(

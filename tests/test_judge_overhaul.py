@@ -54,21 +54,9 @@ async def _create_tool_suite(app_client, headers: dict) -> str:
 async def _save_eval_run(test_user, suite_id: str) -> str:
     """Save a minimal tool eval run directly via db, return run_id."""
     user, _ = test_user
-    results = json.dumps([{
-        "test_case_id": "tc1",
-        "prompt": "What is the weather in Paris?",
-        "expected_tool": "get_weather",
-        "expected_params": {"city": "Paris"},
-        "actual_tool": "get_weather",
-        "actual_params": {"city": "Paris"},
-        "overall_score": 1.0,
-    }])
     run_id = await db.save_tool_eval_run(
         user_id=user["id"],
         suite_id=suite_id,
-        models_json=json.dumps(["gpt-4o"]),
-        results_json=results,
-        summary_json=json.dumps({"total": 1, "passed": 1}),
         temperature=0.0,
     )
     return run_id
@@ -79,12 +67,11 @@ async def _save_judge_report(test_user, eval_run_id: str, **kwargs) -> str:
     user, _ = test_user
     return await db.save_judge_report(
         user_id=user["id"],
-        judge_model=kwargs.get("judge_model", "gpt-4o"),
         mode=kwargs.get("mode", "post_eval"),
         eval_run_id=eval_run_id,
         parent_report_id=kwargs.get("parent_report_id"),
         version=kwargs.get("version", 1),
-        instructions_json=kwargs.get("instructions_json"),
+        custom_instructions=kwargs.get("custom_instructions"),
     )
 
 
@@ -126,25 +113,21 @@ class TestJudgeVersioning:
         assert child["parent_report_id"] == root_id
         assert child["version"] == 2
 
-    async def test_save_report_with_instructions_json(self, app_client, auth_headers, test_user, _patch_db_path):
-        """instructions_json column is persisted and retrievable."""
+    async def test_save_report_with_custom_instructions(self, app_client, auth_headers, test_user, _patch_db_path):
+        """custom_instructions column is persisted and retrievable."""
         suite_id = await _create_tool_suite(app_client, auth_headers)
         eval_run_id = await _save_eval_run(test_user, suite_id)
 
-        instructions = json.dumps({
-            "custom_instructions": "Be strict",
-            "judge_model": "gpt-4o",
-            "concurrency": 4,
-        })
+        instructions = "Be strict about parameter names"
         report_id = await _save_judge_report(
             test_user, eval_run_id,
             version=1,
-            instructions_json=instructions,
+            custom_instructions=instructions,
         )
 
         user, _ = test_user
         report = await db.get_judge_report(report_id, user["id"])
-        assert report["instructions_json"] == instructions
+        assert report["custom_instructions"] == instructions
 
     async def test_get_versions_for_root_report(self, app_client, auth_headers, test_user, _patch_db_path):
         """get_judge_report_versions returns [root] when no children exist."""

@@ -175,13 +175,9 @@ const modelReports = computed(() => {
 
 const verdicts = computed(() => {
   if (!props.report) return []
+  // _verdicts is set by the store after loading; verdicts comes pre-parsed from the API
   if (props.report._verdicts) return props.report._verdicts
-  if (props.report.verdicts_json) {
-    try {
-      return typeof props.report.verdicts_json === 'string'
-        ? JSON.parse(props.report.verdicts_json) : props.report.verdicts_json
-    } catch { return [] }
-  }
+  if (Array.isArray(props.report.verdicts)) return props.report.verdicts
   return []
 })
 

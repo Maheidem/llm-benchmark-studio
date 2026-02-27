@@ -70,29 +70,14 @@ async def create_experiment(request: Request, user: dict = Depends(auth.get_curr
                 {"error": "Baseline eval run suite_id does not match experiment suite_id"},
                 status_code=400,
             )
-        summary = json.loads(eval_run.get("summary_json", "[]"))
+        summary = await db.get_case_results_summary(baseline_eval_id)
         baseline_score = _avg_overall_from_summaries(summary)
-
-    # Optional suite snapshot
-    suite_snapshot_json = None
-    if body.get("snapshot_suite"):
-        cases = await db.get_test_cases(suite_id)
-        snapshot = {
-            "suite": {
-                "id": suite["id"],
-                "name": suite["name"],
-                "tools_json": suite["tools_json"],
-            },
-            "test_cases": cases,
-        }
-        suite_snapshot_json = json.dumps(snapshot)
 
     exp_id = await db.create_experiment(
         user_id=user["id"],
         name=name,
         suite_id=suite_id,
         description=description,
-        suite_snapshot_json=suite_snapshot_json,
         baseline_eval_id=baseline_eval_id,
         baseline_score=baseline_score,
     )
@@ -199,12 +184,8 @@ async def pin_experiment_baseline(
             status_code=400,
         )
 
-    summary = json.loads(eval_run.get("summary_json", "[]"))
-    if summary:
-        scores = [s.get("overall_pct", 0) for s in summary]
-        baseline_score = round(sum(scores) / len(scores) / 100, 4)
-    else:
-        baseline_score = 0.0
+    summary = await db.get_case_results_summary(eval_run_id)
+    baseline_score = _avg_overall_from_summaries(summary)
 
     await db.update_experiment(
         experiment_id, user["id"],
@@ -238,21 +219,12 @@ async def get_experiment_timeline(
         entry = {"type": e["type"], "id": e["id"], "timestamp": e["timestamp"]}
 
         if e["type"] == "eval":
-            summary = json.loads(e.get("summary_json") or "[]")
+            summary = await db.get_case_results_summary(e["id"])
             score = _avg_overall_from_summaries(summary)
             entry["score"] = score
             entry["delta"] = round(score - baseline_score, 4) if baseline_score is not None else None
             entry["is_baseline"] = (e["id"] == baseline_eval_id)
-            if e.get("config_json"):
-                try:
-                    cfg = json.loads(e["config_json"])
-                    entry["config_summary"] = _build_config_summary(cfg)
-                    if cfg.get("promoted_from"):
-                        entry["promoted_from"] = cfg["promoted_from"]
-                except (json.JSONDecodeError, TypeError):
-                    entry["config_summary"] = "defaults"
-            else:
-                entry["config_summary"] = "defaults"
+            entry["config_summary"] = "defaults"
 
         elif e["type"] == "param_tune":
             score = e.get("best_score") or 0.0

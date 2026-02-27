@@ -76,16 +76,16 @@ class TestModelConfigUpdate:
 
 class TestToolSuiteCreate:
     def test_valid(self):
-        r = ToolSuiteCreate(name="My Suite", tools_json=[{"name": "get_weather"}])
+        r = ToolSuiteCreate(name="My Suite", tools=[{"name": "get_weather"}])
         assert r.name == "My Suite"
 
     def test_empty_name_rejected(self):
         with pytest.raises(ValidationError):
-            ToolSuiteCreate(name="", tools_json=[{"name": "t"}])
+            ToolSuiteCreate(name="", tools=[{"name": "t"}])
 
     def test_name_too_long(self):
         with pytest.raises(ValidationError):
-            ToolSuiteCreate(name="x" * 257, tools_json=[{"name": "t"}])
+            ToolSuiteCreate(name="x" * 257, tools=[{"name": "t"}])
 
 
 # ──────────── EnvVarUpdate ────────────

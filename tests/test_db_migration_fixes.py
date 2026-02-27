@@ -297,7 +297,7 @@ class TestCrit5SuiteImportAtomic:
                 user_id=user_id,
                 name=suite_name,
                 description="Should rollback",
-                tools_json='[]',
+                tools=[],
                 cases=invalid_cases,
             )
 
@@ -327,7 +327,7 @@ class TestCrit5SuiteImportAtomic:
             user_id=user_id,
             name=suite_name,
             description="Should succeed",
-            tools_json='[]',
+            tools=[],
             cases=cases,
         )
         assert suite_id is not None
@@ -434,7 +434,7 @@ class TestMed9CheckConstraints:
         user_id = await _create_isolated_user("med9-scoring")
         suite_id = await db.create_tool_suite(
             user_id=user_id, name=f"check-suite-{uuid.uuid4().hex[:8]}",
-            description="", tools_json="[]"
+            description=""
         )
 
         case_id = uuid.uuid4().hex
@@ -460,7 +460,7 @@ class TestMed9CheckConstraints:
         user_id = await _create_isolated_user("med9-valid")
         suite_id = await db.create_tool_suite(
             user_id=user_id, name=f"valid-scoring-{uuid.uuid4().hex[:8]}",
-            description="", tools_json="[]"
+            description=""
         )
 
         for scoring in ("exact", "fuzzy", "contains", "semantic"):
@@ -486,7 +486,7 @@ class TestMed9CheckConstraints:
         user_id = await _create_isolated_user("med9-optmode")
         suite_id = await db.create_tool_suite(
             user_id=user_id, name=f"check-suite-opt-{uuid.uuid4().hex[:8]}",
-            description="", tools_json="[]"
+            description=""
         )
 
         run_id = uuid.uuid4().hex
@@ -495,10 +495,10 @@ class TestMed9CheckConstraints:
                 await conn.execute("PRAGMA foreign_keys=ON")
                 await conn.execute(
                     "INSERT INTO param_tune_runs "
-                    "(id, user_id, suite_id, models_json, search_space_json, "
+                    "(id, user_id, suite_id, search_space_json, "
                     "total_combos, optimization_mode) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (run_id, user_id, suite_id, '[]', '{}', 1, "bogus"),
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (run_id, user_id, suite_id, '{}', 1, "bogus"),
                 )
                 await conn.commit()
 
@@ -546,7 +546,6 @@ class TestMed11JudgeReportInterrupted:
 
         report_id = await db.save_judge_report(
             user_id=user_id,
-            judge_model="test-judge-model",
             mode="post_eval",
         )
         assert report_id is not None

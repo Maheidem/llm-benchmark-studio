@@ -50,6 +50,7 @@ async def get_config(user: dict = Depends(auth.get_current_user)):
             "api_key_env": prov_cfg.get("api_key_env", ""),
             "api_key": "***" if prov_cfg.get("api_key") else "",
             "model_id_prefix": prov_cfg.get("model_id_prefix", ""),
+            "direct_local": bool(prov_cfg.get("direct_local", False)),
             "models": models,
         }
 
@@ -271,6 +272,8 @@ async def update_provider(request: Request, user: dict = Depends(auth.get_curren
             prov_cfg["model_id_prefix"] = body["model_id_prefix"]
         else:
             prov_cfg.pop("model_id_prefix", None)
+    if "direct_local" in body:
+        prov_cfg["direct_local"] = bool(body["direct_local"])
 
     await _save_user_config(user["id"], config)
     return {"status": "ok"}

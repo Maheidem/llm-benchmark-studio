@@ -42,8 +42,8 @@
             <span v-if="run.total_combos" class="ml-2">{{ run.completed_combos || 0 }}/{{ run.total_combos }} combos</span>
             <span v-if="run.duration_s" class="ml-2">{{ formatDuration(run.duration_s) }}</span>
           </div>
-          <div v-if="run.models_json" class="text-[10px] text-zinc-600 font-body mt-1">
-            Models: {{ formatModels(run.models_json) }}
+          <div v-if="run.target_model_display_name || run.target_model_id" class="text-[10px] text-zinc-600 font-body mt-1">
+            Model: {{ run.target_model_display_name || run.target_model_id }}
           </div>
         </div>
 
@@ -302,10 +302,7 @@ async function saveAsProfile(run) {
     return
   }
 
-  const models = run.models_json
-    ? (typeof run.models_json === 'string' ? JSON.parse(run.models_json) : run.models_json)
-    : []
-  const modelId = Array.isArray(models) && models.length > 0 ? models[0] : null
+  const modelId = run.target_model_id || null
 
   const result = await inputModal('Save as Profile', 'Profile name', { confirmLabel: 'Save' })
   if (!result?.value?.trim()) return
@@ -368,14 +365,6 @@ function formatDate(ts) {
 function formatDuration(s) {
   if (s < 60) return `${Math.round(s)}s`
   return `${Math.round(s / 60)}m`
-}
-
-function formatModels(json) {
-  try {
-    const models = typeof json === 'string' ? JSON.parse(json) : json
-    if (Array.isArray(models)) return models.map(m => m.split('/').pop()).join(', ')
-  } catch { /* ignore */ }
-  return ''
 }
 
 function statusStyle(status) {

@@ -123,7 +123,7 @@ test.describe('@smoke Auth — Registration & Landing Page', () => {
   test('Step 7: OnboardingWizard shows for fresh user', async () => {
     // The onboarding wizard renders as a fixed full-screen overlay
     // It should appear automatically after registration + redirect
-    const wizardHeading = page.getByRole('heading', { name: 'Welcome to Benchmark Studio!' });
+    const wizardHeading = page.locator('h1, h2, h3').filter({ hasText: 'Welcome to Benchmark Studio!' });
     await expect(wizardHeading).toBeVisible({ timeout: TIMEOUT.nav });
 
     // Step 1 of 3 should be visible

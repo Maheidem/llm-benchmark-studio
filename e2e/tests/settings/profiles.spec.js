@@ -61,6 +61,10 @@ test.describe('@regression Settings — Model Profiles', () => {
   // ─── CREATE PROFILE ───────────────────────────────────────────────
 
   test('Step 3: Create a new profile', async () => {
+    // Reload to ensure config store has fetched models after ProviderSetup
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+
     // Click "+ New Profile" button
     const newBtn = page.getByRole('button', { name: /New Profile|\+ New/i });
     await newBtn.click();

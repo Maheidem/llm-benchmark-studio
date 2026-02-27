@@ -64,6 +64,9 @@ test.describe('@regression Analytics — Full Page', () => {
     // Should default to Leaderboard tab
     await expect(page.getByRole('link', { name: 'Leaderboard' })).toBeVisible();
 
+    // Wait for analytics page to fully load before checking toggle buttons
+    await page.waitForLoadState('networkidle');
+
     // Type toggle buttons should be present
     const benchmarkBtn = page.locator('button').filter({ hasText: 'Benchmark' });
     const toolEvalBtn = page.locator('button').filter({ hasText: 'Tool Eval' });

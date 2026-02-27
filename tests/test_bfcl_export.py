@@ -8,6 +8,7 @@ Run: uv run pytest tests/test_bfcl_export.py -v
 
 import json
 import pytest
+from routers.helpers import _parse_ground_truth_call, _normalize_bfcl_schema_types
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
@@ -441,3 +442,302 @@ class TestBFCLImport:
         )
         assert detail_resp.status_code == 200
         assert len(detail_resp.json().get("test_cases", [])) == 3
+
+
+# ===========================================================================
+# Helper unit tests
+# ===========================================================================
+
+class TestParseGroundTruthCall:
+    """Unit tests for _parse_ground_truth_call()."""
+
+    def test_simple_kwargs(self):
+        result = _parse_ground_truth_call("func(n=20, k=5)")
+        assert result == {"func": {"n": 20, "k": 5}}
+
+    def test_float_params(self):
+        result = _parse_ground_truth_call("binomial(n=20, k=5, p=0.6)")
+        assert result == {"binomial": {"n": 20, "k": 5, "p": 0.6}}
+
+    def test_string_params(self):
+        result = _parse_ground_truth_call("get_weather(city='Paris')")
+        assert result == {"get_weather": {"city": "Paris"}}
+
+    def test_empty_params(self):
+        result = _parse_ground_truth_call("no_args()")
+        assert result == {"no_args": {}}
+
+    def test_list_param(self):
+        result = _parse_ground_truth_call("func(items=[1, 2, 3])")
+        assert result == {"func": {"items": [1, 2, 3]}}
+
+    def test_math_expression_fallback(self):
+        """BFCL data contains expressions like 1/6 that need eval fallback."""
+        result = _parse_ground_truth_call("func(p=1/6)")
+        assert result is not None
+        assert "func" in result
+        assert abs(result["func"]["p"] - 1 / 6) < 1e-10
+
+    def test_invalid_returns_none(self):
+        result = _parse_ground_truth_call("not a function call")
+        assert result is None
+
+    def test_malformed_returns_none(self):
+        result = _parse_ground_truth_call("")
+        assert result is None
+
+
+class TestNormalizeBfclSchemaTypes:
+    """Unit tests for _normalize_bfcl_schema_types()."""
+
+    def test_dict_to_object(self):
+        schema = {"type": "dict", "properties": {}}
+        _normalize_bfcl_schema_types(schema)
+        assert schema["type"] == "object"
+
+    def test_float_to_number(self):
+        schema = {"type": "float"}
+        _normalize_bfcl_schema_types(schema)
+        assert schema["type"] == "number"
+
+    def test_tuple_to_array(self):
+        schema = {"type": "tuple"}
+        _normalize_bfcl_schema_types(schema)
+        assert schema["type"] == "array"
+
+    def test_long_to_integer(self):
+        schema = {"type": "long"}
+        _normalize_bfcl_schema_types(schema)
+        assert schema["type"] == "integer"
+
+    def test_standard_type_unchanged(self):
+        schema = {"type": "string"}
+        _normalize_bfcl_schema_types(schema)
+        assert schema["type"] == "string"
+
+    def test_nested_properties(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "data": {"type": "dict", "properties": {"val": {"type": "float"}}},
+            },
+        }
+        _normalize_bfcl_schema_types(schema)
+        assert schema["properties"]["data"]["type"] == "object"
+        assert schema["properties"]["data"]["properties"]["val"]["type"] == "number"
+
+    def test_array_items(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "items": {"type": "array", "items": [{"type": "float"}]},
+            },
+        }
+        _normalize_bfcl_schema_types(schema)
+        assert schema["properties"]["items"]["items"][0]["type"] == "number"
+
+
+# ===========================================================================
+# Raw BFCL format import tests (HuggingFace dataset files)
+# ===========================================================================
+
+# Simulates a raw BFCL exec_simple entry with ground_truth call strings
+RAW_BFCL_SIMPLE = [
+    {
+        "id": "exec_simple_0",
+        "question": [[{"role": "user", "content": "Calculate binomial probability"}]],
+        "function": [
+            {
+                "name": "binomial_probability",
+                "description": "Calculate binomial probability",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "n": {"type": "integer", "description": "trials"},
+                        "k": {"type": "integer", "description": "successes"},
+                        "p": {"type": "float", "description": "probability"},
+                    },
+                    "required": ["n", "k", "p"],
+                },
+            }
+        ],
+        "ground_truth": ["binomial_probability(n=20, k=5, p=0.6)"],
+    }
+]
+
+# Simulates a raw BFCL exec_parallel entry with multiple ground_truth calls
+RAW_BFCL_PARALLEL = [
+    {
+        "id": "exec_parallel_0",
+        "question": [[{"role": "user", "content": "Get weather in Paris and Tokyo"}]],
+        "function": [
+            {
+                "name": "get_weather",
+                "description": "Get weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            }
+        ],
+        "ground_truth": [
+            "get_weather(city='Paris')",
+            "get_weather(city='Tokyo')",
+        ],
+    }
+]
+
+# Simulates a raw BFCL irrelevance entry (no answer, no ground_truth)
+RAW_BFCL_IRRELEVANCE = [
+    {
+        "id": "irrelevance_0",
+        "question": [[{"role": "user", "content": "What is the meaning of life?"}]],
+        "function": [
+            {
+                "name": "get_weather",
+                "description": "Get weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            }
+        ],
+    }
+]
+
+
+class TestRawBFCLImport:
+    """Tests for importing raw BFCL dataset files from HuggingFace."""
+
+    async def test_ground_truth_simple_import(self, app_client, auth_headers):
+        """Raw BFCL entry with ground_truth call string imports successfully."""
+        resp = await app_client.post(
+            "/api/tool-eval/import/bfcl",
+            headers=auth_headers,
+            json=RAW_BFCL_SIMPLE,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["test_cases_created"] == 1
+
+        detail = await app_client.get(
+            f"/api/tool-suites/{data['suite_id']}", headers=auth_headers
+        )
+        cases = detail.json().get("test_cases", [])
+        assert len(cases) == 1
+        assert cases[0]["expected_tool"] == "binomial_probability"
+
+    async def test_ground_truth_parallel_creates_multiple_cases(self, app_client, auth_headers):
+        """Raw BFCL parallel entry with 2 ground_truth calls creates 2 test cases."""
+        resp = await app_client.post(
+            "/api/tool-eval/import/bfcl",
+            headers=auth_headers,
+            json=RAW_BFCL_PARALLEL,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["test_cases_created"] == 2
+
+        detail = await app_client.get(
+            f"/api/tool-suites/{data['suite_id']}", headers=auth_headers
+        )
+        cases = detail.json().get("test_cases", [])
+        assert len(cases) == 2
+        params = []
+        for c in cases:
+            ep = c["expected_params"]
+            params.append(json.loads(ep) if isinstance(ep, str) else ep)
+        cities = {p["city"] for p in params}
+        assert cities == {"Paris", "Tokyo"}
+
+    async def test_irrelevance_detection(self, app_client, auth_headers):
+        """Entry with no answer/ground_truth creates irrelevance test case."""
+        resp = await app_client.post(
+            "/api/tool-eval/import/bfcl",
+            headers=auth_headers,
+            json=RAW_BFCL_IRRELEVANCE,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["test_cases_created"] == 1
+
+        detail = await app_client.get(
+            f"/api/tool-suites/{data['suite_id']}", headers=auth_headers
+        )
+        cases = detail.json().get("test_cases", [])
+        assert len(cases) == 1
+        assert cases[0]["expected_tool"] is None
+        assert cases[0].get("category") == "irrelevance"
+
+    async def test_schema_type_normalization(self, app_client, auth_headers):
+        """Non-standard types (float, dict) are normalized in imported tools."""
+        resp = await app_client.post(
+            "/api/tool-eval/import/bfcl",
+            headers=auth_headers,
+            json=RAW_BFCL_SIMPLE,  # has "float" type
+        )
+        assert resp.status_code == 200
+        suite_id = resp.json()["suite_id"]
+
+        detail = await app_client.get(
+            f"/api/tool-suites/{suite_id}", headers=auth_headers
+        )
+        tools = detail.json().get("tools", [])
+        # The "p" parameter should be "number" not "float"
+        p_param = tools[0]["function"]["parameters"]["properties"]["p"]
+        assert p_param["type"] == "number"
+
+    async def test_jsonl_body_format(self, app_client, auth_headers):
+        """JSONL (newline-delimited JSON) body is accepted."""
+        lines = [json.dumps(entry) for entry in RAW_BFCL_SIMPLE]
+        jsonl_body = "\n".join(lines)
+        resp = await app_client.post(
+            "/api/tool-eval/import/bfcl",
+            headers={**auth_headers, "Content-Type": "application/json"},
+            content=jsonl_body.encode("utf-8"),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["test_cases_created"] >= 1
+
+    async def test_mixed_answer_and_ground_truth(self, app_client, auth_headers):
+        """Entries with answer format are still handled alongside ground_truth entries."""
+        mixed = [
+            # Standard answer format
+            {
+                "question": [[{"role": "user", "content": "Weather in London?"}]],
+                "function": [{"name": "get_weather", "description": "Get weather",
+                              "parameters": {"type": "object",
+                                             "properties": {"city": {"type": "string"}},
+                                             "required": ["city"]}}],
+                "answer": [{"get_weather": {"city": "London"}}],
+            },
+            # Raw ground_truth format
+            {
+                "question": [[{"role": "user", "content": "Weather in Berlin?"}]],
+                "function": [{"name": "get_weather", "description": "Get weather",
+                              "parameters": {"type": "object",
+                                             "properties": {"city": {"type": "string"}},
+                                             "required": ["city"]}}],
+                "ground_truth": ["get_weather(city='Berlin')"],
+            },
+        ]
+        resp = await app_client.post(
+            "/api/tool-eval/import/bfcl",
+            headers=auth_headers,
+            json=mixed,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["test_cases_created"] == 2
+
+    async def test_backward_compat_existing_format(self, app_client, auth_headers):
+        """Original BFCL_SAMPLE (structured answer) still works unchanged."""
+        resp = await app_client.post(
+            "/api/tool-eval/import/bfcl",
+            headers=auth_headers,
+            json=BFCL_SAMPLE,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["test_cases_created"] == 1

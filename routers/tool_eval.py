@@ -28,6 +28,8 @@ from routers.helpers import (
     _serialize_expected_tool,
     _tool_matches,
     _capture_raw_response,
+    _parse_ground_truth_call,
+    _normalize_bfcl_schema_types,
     score_tool_selection,
     score_params,
     compute_overall_score,
@@ -43,6 +45,31 @@ router = APIRouter(tags=["tool_eval"])
 
 # Module-level ws_manager -- set by app.py after import
 ws_manager = None
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _tool_defs_to_openai_format(tool_defs: list[dict]) -> list[dict]:
+    """Convert tool_definitions rows to OpenAI tool format for LiteLLM calls."""
+    tools = []
+    for td in tool_defs:
+        params = td.get("parameters_schema", "{}")
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except (json.JSONDecodeError, TypeError):
+                params = {}
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": td["name"],
+                "description": td.get("description", ""),
+                "parameters": params,
+            },
+        })
+    return tools
 
 
 # ---------------------------------------------------------------------------
@@ -593,7 +620,7 @@ async def create_tool_suite(request: Request, user: dict = Depends(auth.get_curr
         validated = ToolSuiteCreate(
             name=body.get("name", ""),
             description=body.get("description"),
-            tools_json=body.get("tools", []),
+            tools=body.get("tools", []),
             system_prompt=body.get("system_prompt"),
         )
     except (ValidationError, Exception) as e:
@@ -601,12 +628,14 @@ async def create_tool_suite(request: Request, user: dict = Depends(auth.get_curr
 
     name = validated.name.strip()
     description = validated.description or ""
-    tools = validated.tools_json
+    tools = validated.tools
     if tools:
         err = _validate_tools(tools)
         if err:
             return JSONResponse({"error": err}, status_code=400)
-    suite_id = await db.create_tool_suite(user["id"], name, description, json.dumps(tools))
+    suite_id = await db.create_tool_suite(user["id"], name, description, validated.system_prompt)
+    if tools:
+        await db.create_tool_definitions_batch(suite_id, tools)
     return {"status": "ok", "suite_id": suite_id}
 
 
@@ -668,7 +697,7 @@ async def import_tool_suite(request: Request, user: dict = Depends(auth.get_curr
             "category": category,
         })
     suite_id = await db.create_suite_with_cases(
-        user["id"], name, description, json.dumps(tools), cases
+        user["id"], name, description, tools, cases
     )
     return {"status": "ok", "suite_id": suite_id, "test_cases_created": len(cases)}
 
@@ -679,8 +708,9 @@ async def get_tool_suite(suite_id: str, user: dict = Depends(auth.get_current_us
     suite = await db.get_tool_suite(suite_id, user["id"])
     if not suite:
         return JSONResponse({"error": "Suite not found"}, status_code=404)
-    suite["tools"] = json.loads(suite["tools_json"])
-    del suite["tools_json"]
+    # Fetch tool definitions from normalized table
+    tool_defs = await db.get_tool_definitions(suite_id)
+    suite["tools"] = _tool_defs_to_openai_format(tool_defs)
     cases = await db.get_test_cases(suite_id)
     for c in cases:
         c["expected_tool"] = _parse_expected_tool(c["expected_tool"])
@@ -722,7 +752,7 @@ async def update_tool_suite(suite_id: str, request: Request, user: dict = Depend
         validated = ToolSuiteUpdate(
             name=body.get("name"),
             description=body.get("description"),
-            tools_json=body.get("tools"),
+            tools=body.get("tools"),
             system_prompt=body.get("system_prompt"),
         )
     except (ValidationError, Exception) as e:
@@ -730,15 +760,17 @@ async def update_tool_suite(suite_id: str, request: Request, user: dict = Depend
 
     name = validated.name
     description = validated.description
-    tools = validated.tools_json
-    tools_json = None
+    tools = validated.tools
     if tools is not None:
         if tools:
             err = _validate_tools(tools)
             if err:
                 return JSONResponse({"error": err}, status_code=400)
-        tools_json = json.dumps(tools)
-    updated = await db.update_tool_suite(suite_id, user["id"], name=name, description=description, tools_json=tools_json)
+        # Replace tool definitions: delete old, insert new
+        await db.delete_tool_definitions_for_suite(suite_id)
+        if tools:
+            await db.create_tool_definitions_batch(suite_id, tools)
+    updated = await db.update_tool_suite(suite_id, user["id"], name=name, description=description, system_prompt=validated.system_prompt)
     if not updated:
         return JSONResponse({"error": "Suite not found"}, status_code=404)
     return {"status": "ok"}
@@ -778,7 +810,8 @@ async def export_tool_suite(suite_id: str, user: dict = Depends(auth.get_current
     suite = await db.get_tool_suite(suite_id, user["id"])
     if not suite:
         return JSONResponse({"error": "Suite not found"}, status_code=404)
-    tools = json.loads(suite["tools_json"]) if suite.get("tools_json") else []
+    tool_defs = await db.get_tool_definitions(suite_id)
+    tools = _tool_defs_to_openai_format(tool_defs)
     cases = await db.get_test_cases(suite_id)
     test_cases = []
     for c in cases:
@@ -839,7 +872,8 @@ async def export_tool_suite_bfcl(suite_id: str, user: dict = Depends(auth.get_cu
     if not suite:
         return JSONResponse({"error": "Suite not found"}, status_code=404)
 
-    tools = json.loads(suite["tools_json"]) if suite.get("tools_json") else []
+    tool_defs = await db.get_tool_definitions(suite_id)
+    tools = _tool_defs_to_openai_format(tool_defs)
     cases = await db.get_test_cases(suite_id)
 
     # Build BFCL function definitions from our tools format
@@ -892,7 +926,12 @@ async def import_bfcl_suite(request: Request, user: dict = Depends(auth.get_curr
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+        # Fallback: try JSONL (one JSON object per line)
+        try:
+            raw = (await request.body()).decode("utf-8")
+            body = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
     # Support both single entry and array
     if isinstance(body, dict):
@@ -920,12 +959,14 @@ async def import_bfcl_suite(request: Request, user: dict = Depends(auth.get_curr
     # Convert BFCL function format to our tools format
     tools = []
     for fn in seen_funcs.values():
+        params = fn.get("parameters", {"type": "object", "properties": {}})
+        _normalize_bfcl_schema_types(params)
         tools.append({
             "type": "function",
             "function": {
                 "name": fn.get("name", ""),
                 "description": fn.get("description", ""),
-                "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+                "parameters": params,
             }
         })
 
@@ -954,27 +995,67 @@ async def import_bfcl_suite(request: Request, user: dict = Depends(auth.get_curr
 
         # Parse answer to extract expected tool + params
         answer = entry.get("answer", [])
-        expected_tool_val = None
-        expected_params_val = None
-        if answer and isinstance(answer, list) and isinstance(answer[0], dict):
+        category = entry.get("test_category")
+        parsed_calls = []
+
+        # Path 1: structured answer dicts (existing BFCL export format)
+        if answer and isinstance(answer, list) and len(answer) > 0 and isinstance(answer[0], dict):
             for tool_call in answer:
                 for tool_name, params in tool_call.items():
-                    expected_tool_val = _serialize_expected_tool(tool_name)
-                    expected_params_val = json.dumps(params) if params else None
-                    break
-                break
+                    parsed_calls.append((
+                        _serialize_expected_tool(tool_name),
+                        json.dumps(params) if params else None,
+                    ))
 
-        category = entry.get("test_category")
-        cases.append({
-            "prompt": prompt,
-            "expected_tool": expected_tool_val,
-            "expected_params": expected_params_val,
-            "param_scoring": "exact",
-            "category": category,
-        })
+        # Path 2: ground_truth call strings (raw HuggingFace format)
+        elif not parsed_calls:
+            gt = entry.get("ground_truth")
+            if gt:
+                gt_list = gt if isinstance(gt, list) else [gt]
+                for call_str in gt_list:
+                    if not isinstance(call_str, str):
+                        continue
+                    parsed = _parse_ground_truth_call(call_str)
+                    if parsed:
+                        for tool_name, params in parsed.items():
+                            parsed_calls.append((
+                                _serialize_expected_tool(tool_name),
+                                json.dumps(params) if params else None,
+                            ))
+
+        # Path 3: irrelevance — no answer and no ground_truth
+        if not parsed_calls:
+            if not answer and not entry.get("ground_truth"):
+                cases.append({
+                    "prompt": prompt,
+                    "expected_tool": None,
+                    "expected_params": None,
+                    "param_scoring": "exact",
+                    "category": category or "irrelevance",
+                    "should_call_tool": False,
+                })
+            else:
+                # Had answer/gt but couldn't parse — single case with no expected
+                cases.append({
+                    "prompt": prompt,
+                    "expected_tool": None,
+                    "expected_params": None,
+                    "param_scoring": "exact",
+                    "category": category,
+                })
+        else:
+            # One test case per parsed call (handles parallel BFCL entries)
+            for expected_tool_val, expected_params_val in parsed_calls:
+                cases.append({
+                    "prompt": prompt,
+                    "expected_tool": expected_tool_val,
+                    "expected_params": expected_params_val,
+                    "param_scoring": "exact",
+                    "category": category,
+                })
 
     suite_id = await db.create_suite_with_cases(
-        user["id"], suite_name, "", json.dumps(tools), cases
+        user["id"], suite_name, "", tools, cases
     )
     return {"status": "ok", "suite_id": suite_id, "test_cases_created": len(cases)}
 
@@ -1214,20 +1295,6 @@ async def delete_test_case(suite_id: str, case_id: str, user: dict = Depends(aut
 async def list_tool_eval_runs(user: dict = Depends(auth.get_current_user)):
     """List user's past eval runs."""
     runs = await db.get_tool_eval_runs(user["id"])
-    for run in runs:
-        if isinstance(run.get("models_json"), str):
-            run["models"] = json.loads(run["models_json"])
-            del run["models_json"]
-        if isinstance(run.get("summary_json"), str):
-            run["summary"] = json.loads(run["summary_json"])
-            del run["summary_json"]
-        # Parse config_json for frontend (M1)
-        if isinstance(run.get("config_json"), str):
-            try:
-                run["config"] = json.loads(run["config_json"])
-            except (json.JSONDecodeError, TypeError):
-                run["config"] = None
-            del run["config_json"]
     return {"runs": runs}
 
 
@@ -1237,32 +1304,9 @@ async def get_tool_eval_run(eval_id: str, user: dict = Depends(auth.get_current_
     run = await db.get_tool_eval_run(eval_id, user["id"])
     if not run:
         return JSONResponse({"error": "Eval run not found"}, status_code=404)
-    if isinstance(run.get("models_json"), str):
-        run["models"] = json.loads(run["models_json"])
-        del run["models_json"]
-    if isinstance(run.get("results_json"), str):
-        run["results"] = json.loads(run["results_json"])
-        del run["results_json"]
-    if isinstance(run.get("summary_json"), str):
-        run["summary"] = json.loads(run["summary_json"])
-        del run["summary_json"]
-    # Parse config_json for frontend (M1)
-    if isinstance(run.get("config_json"), str):
-        try:
-            run["config"] = json.loads(run["config_json"])
-        except (json.JSONDecodeError, TypeError):
-            run["config"] = None
-        del run["config_json"]
-    # Parse judge_explanations_json (Task 4 judge wiring)
-    if isinstance(run.get("judge_explanations_json"), str):
-        try:
-            run["judge_explanations"] = json.loads(run["judge_explanations_json"])
-        except (json.JSONDecodeError, TypeError):
-            run["judge_explanations"] = None
-        del run["judge_explanations_json"]
-    else:
-        run["judge_explanations"] = None
-        run.pop("judge_explanations_json", None)
+    # Fetch case results and summary from normalized tables
+    run["results"] = await db.get_case_results(eval_id)
+    run["summary"] = await db.get_case_results_summary(eval_id)
     return run
 
 

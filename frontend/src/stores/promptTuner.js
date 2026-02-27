@@ -122,14 +122,17 @@ export const usePromptTunerStore = defineStore('promptTuner', () => {
     const res = await apiFetch(`/api/tool-eval/prompt-tune/history/${id}`)
     if (!res.ok) throw new Error('Run not found')
     const data = await res.json()
-    // Parse generations
-    if (data.generations_json) {
-      try {
-        generations.value = typeof data.generations_json === 'string'
-          ? JSON.parse(data.generations_json)
-          : data.generations_json
-      } catch { generations.value = [] }
-    }
+    // Map backend field names to what PromptTimeline.vue expects
+    const rawGens = Array.isArray(data.generations) ? data.generations : []
+    generations.value = rawGens.map(g => ({
+      ...g,
+      generation: g.generation_number ?? g.generation,
+      best_index: g.best_candidate_index ?? g.best_index,
+      prompts: (g.candidates || g.prompts || []).map(c => ({
+        ...c,
+        text: c.prompt_text ?? c.text,
+      })),
+    }))
     bestPrompt.value = data.best_prompt || null
     bestScore.value = data.best_score || 0
     return data

@@ -11,6 +11,7 @@ This module centralizes:
 - Aggregation and SSE utilities
 """
 
+import ast
 import asyncio
 import json
 import logging
@@ -146,6 +147,7 @@ async def _get_user_config(user_id: str) -> dict:
             **({"api_base": p["api_base"]} if p.get("api_base") else {}),
             **({"api_key_env": p["api_key_env"]} if p.get("api_key_env") else {}),
             **({"model_id_prefix": p["model_prefix"]} if p.get("model_prefix") else {}),
+            **({"direct_local": True} if p.get("direct_local") else {}),
             "models": [
                 {
                     "id": m["litellm_id"],
@@ -187,6 +189,7 @@ async def _save_user_config(user_id: str, config: dict):
                     api_base=prov_cfg.get("api_base"),
                     api_key_env=prov_cfg.get("api_key_env"),
                     model_prefix=prov_cfg.get("model_id_prefix"),
+                    direct_local=1 if prov_cfg.get("direct_local") else 0,
                 )
                 # Sync models
                 existing_models = await db.get_models_for_provider(existing["id"])
@@ -697,6 +700,53 @@ def _serialize_expected_tool(value) -> str | None:
     return str(value)
 
 
+def _parse_ground_truth_call(call_str: str) -> dict | None:
+    """Parse a BFCL ground_truth Python call string into {func_name: {params}}.
+
+    Example: "func(n=20, k=5, p=0.6)" -> {"func": {"n": 20, "k": 5, "p": 0.6}}
+    Returns None on parse failure so the entry can be skipped gracefully.
+    """
+    try:
+        tree = ast.parse(call_str, mode="eval")
+        call = tree.body
+        if not isinstance(call, ast.Call):
+            return None
+        func_name = call.func.id if isinstance(call.func, ast.Name) else str(call.func)
+        params = {}
+        for kw in call.keywords:
+            try:
+                params[kw.arg] = ast.literal_eval(kw.value)
+            except (ValueError, SyntaxError):
+                # Fallback for math expressions like 1/6 that appear in BFCL data
+                params[kw.arg] = eval(  # noqa: S307
+                    compile(ast.Expression(body=kw.value), "<>", "eval"),
+                    {"__builtins__": {}},
+                )
+        return {func_name: params}
+    except Exception:
+        logger.debug("_parse_ground_truth_call: failed to parse %r", call_str)
+        return None
+
+
+def _normalize_bfcl_schema_types(schema: dict) -> dict:
+    """Recursively fix non-standard JSON Schema types found in raw BFCL data.
+
+    Replacements: dict->object, float->number, tuple->array, long->integer.
+    """
+    _TYPE_MAP = {"dict": "object", "float": "number", "tuple": "array", "long": "integer"}
+    if isinstance(schema, dict):
+        if "type" in schema and isinstance(schema["type"], str):
+            schema["type"] = _TYPE_MAP.get(schema["type"], schema["type"])
+        for key, val in schema.items():
+            if isinstance(val, dict):
+                _normalize_bfcl_schema_types(val)
+            elif isinstance(val, list):
+                for item in val:
+                    if isinstance(item, dict):
+                        _normalize_bfcl_schema_types(item)
+    return schema
+
+
 def _tool_matches(actual_tool: str | None, expected_tool) -> bool:
     """Check if actual tool matches expected (str or list)."""
     if actual_tool is None or expected_tool is None:
@@ -847,10 +897,13 @@ def _compute_eval_summaries(results: list[dict], targets: list[Target]) -> list[
 
 
 def _avg_overall_from_summaries(summaries: list[dict]) -> float:
-    """Compute average overall score (0.0-1.0) from eval summaries."""
+    """Compute average overall score (0.0-1.0) from eval summaries.
+
+    Supports both legacy 'overall_pct' and ERD v2 'overall_score_pct' keys.
+    """
     if not summaries:
         return 0.0
-    scores = [s.get("overall_pct", 0) for s in summaries]
+    scores = [s.get("overall_score_pct") or s.get("overall_pct", 0) for s in summaries]
     return round(sum(scores) / len(scores) / 100, 4)
 
 

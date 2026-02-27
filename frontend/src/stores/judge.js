@@ -108,13 +108,8 @@ export const useJudgeStore = defineStore('judge', () => {
     if (!res.ok) throw new Error('Report not found')
     const data = await res.json()
     currentReport.value = data
-    // Parse nested JSON fields
-    if (data.verdicts_json) {
-      try {
-        data._verdicts = typeof data.verdicts_json === 'string'
-          ? JSON.parse(data.verdicts_json) : data.verdicts_json
-      } catch { data._verdicts = [] }
-    }
+    // verdicts come pre-parsed as an array from the API
+    data._verdicts = Array.isArray(data.verdicts) ? data.verdicts : []
     if (data.report_json) {
       try {
         data._reports = typeof data.report_json === 'string'

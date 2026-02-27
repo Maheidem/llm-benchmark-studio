@@ -5,6 +5,7 @@ import { useConfigStore } from './config.js'
 import { getColor } from '../utils/constants.js'
 import { formatCtxSize } from '../utils/helpers.js'
 import { useActiveSession } from '../composables/useActiveSession.js'
+import { useDirectBenchmark } from '../composables/useDirectBenchmark.js'
 
 export const useBenchmarkStore = defineStore('benchmark', () => {
   // ── Selection state ──
@@ -27,6 +28,13 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
   const errorBanner = ref(null)
 
   const session = useActiveSession()
+
+  // ── Direct local benchmark state ──
+  const {
+    supportsDirectLocalAccess, isLocalProvider, runDirectBenchmark,
+    generateContextFiller, createAbortController, cancelDirect,
+  } = useDirectBenchmark()
+  const localRunning = ref(false)
 
   // ── Computed ──
   const selectedCount = computed(() => selectedModels.value.size)
@@ -345,7 +353,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     }
   }
 
-  // ── Start benchmark ──
+  // ── Start benchmark (hybrid: local + cloud) ──
   async function startBenchmark(overrideBody) {
     if (!overrideBody && selectedModels.value.size === 0) {
       throw new Error('Select at least one model')
@@ -370,6 +378,60 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
 
     initProviderProgress(body)
 
+    // ── Split targets: LOCAL (browser direct) vs CLOUD (server-side) ──
+    const configStore = useConfigStore()
+    const directSupported = supportsDirectLocalAccess()
+    const localTargets = []
+    const cloudTargets = []
+
+    for (const target of (body.targets || [])) {
+      const providerData = Object.values(configStore.config?.providers || {})
+        .find(p => p.provider_key === target.provider_key)
+      if (directSupported && providerData?.direct_local && isLocalProvider(providerData)) {
+        localTargets.push({
+          ...target,
+          api_base: providerData.api_base,
+          display_name: providerData.display_name,
+          model_id_prefix: providerData.model_id_prefix,
+        })
+      } else {
+        cloudTargets.push(target)
+      }
+    }
+
+    const promises = []
+
+    // Cloud targets: send to backend as before
+    if (cloudTargets.length > 0) {
+      const cloudBody = { ...body, targets: cloudTargets }
+      promises.push(_runCloudBenchmark(cloudBody))
+    }
+
+    // Local targets: run directly in browser
+    if (localTargets.length > 0) {
+      promises.push(_runLocalBenchmarks(localTargets, body))
+    }
+
+    if (promises.length === 0) {
+      isRunning.value = false
+      throw new Error('No targets to benchmark')
+    }
+
+    // Wait for all streams; only mark complete when both finish
+    const results = await Promise.allSettled(promises)
+
+    // If cloud targets exist, completion comes via WebSocket (job_completed).
+    // If only local targets, we fire complete ourselves.
+    if (cloudTargets.length === 0) {
+      handleSSE({ type: 'complete' })
+    }
+
+    // Return the cloud job data if available
+    const cloudResult = results.find(r => r.status === 'fulfilled' && r.value?.job_id)
+    return cloudResult?.value || { status: 'local_only' }
+  }
+
+  async function _runCloudBenchmark(body) {
     const res = await apiFetch('/api/benchmark', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -377,7 +439,6 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     })
 
     if (!res.ok) {
-      isRunning.value = false
       const err = await res.json().catch(() => ({}))
       throw new Error(err.error || `Server error (${res.status})`)
     }
@@ -387,9 +448,119 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     return data
   }
 
+  async function _runLocalBenchmarks(localTargets, body) {
+    localRunning.value = true
+    createAbortController()
+
+    const allResults = []
+    const tiers = body.context_tiers || [0]
+    const runCount = body.runs || 1
+    const mTokens = body.max_tokens || 512
+    const temp = body.temperature ?? 0.7
+    const userPrompt = body.prompt || 'Hello, how are you?'
+
+    try {
+      for (const target of localTargets) {
+        // Optional warmup run (discarded)
+        if (body.warmup) {
+          const messages = [
+            { role: 'system', content: 'Benchmark warmup' },
+            { role: 'user', content: 'Hello' },
+          ]
+          await runDirectBenchmark(target, messages, mTokens, temp, 0, 0, 0)
+        }
+
+        for (const tier of tiers) {
+          // Check if context tier fits in model window
+          const cs = useConfigStore()
+          const modelData = Object.values(cs.config?.providers || {})
+            .flatMap(p => (p.models || []))
+            .find(m => m.model_id === target.model_id)
+          const contextWindow = modelData?.context_window || Infinity
+          if (tier > 0 && tier > contextWindow - mTokens - 100) {
+            handleSSE({
+              type: 'skipped',
+              provider: target.provider_key || target.display_name,
+              model: target.display_name || target.model_id,
+              reason: `Context ${tier} exceeds window (${contextWindow} - ${mTokens})`,
+            })
+            continue
+          }
+
+          for (let run = 1; run <= runCount; run++) {
+            // Emit progress
+            handleSSE({
+              type: 'progress',
+              provider: target.provider_key || target.display_name,
+              model: target.display_name || target.model_id,
+              run,
+              runs: runCount,
+              context_tokens: tier,
+            })
+
+            // Build messages with context filler
+            const filler = generateContextFiller(tier)
+            const messages = [
+              { role: 'system', content: 'You are a helpful assistant.' },
+              { role: 'user', content: filler ? userPrompt + '\n\n' + filler : userPrompt },
+            ]
+
+            const result = await runDirectBenchmark(target, messages, mTokens, temp, tier, run, runCount)
+            handleSSE(result)
+            allResults.push(result)
+          }
+        }
+      }
+
+      // Persist results to backend
+      if (allResults.length > 0) {
+        const successResults = allResults.filter(r => r.success || r.error)
+        if (successResults.length > 0) {
+          try {
+            await apiFetch('/api/benchmark/direct-results', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                results: successResults.map(r => ({
+                  provider: r.provider,
+                  model_id: r.model_id,
+                  run_number: r.run,
+                  context_tokens: r.context_tokens || 0,
+                  ttft_ms: r.ttft_ms,
+                  total_time_s: r.total_time_s,
+                  output_tokens: r.output_tokens,
+                  input_tokens: r.input_tokens,
+                  tokens_per_second: r.tokens_per_second,
+                  input_tokens_per_second: r.input_tokens_per_second,
+                  cost: r.cost || 0,
+                  success: r.success,
+                  error: r.error,
+                })),
+                prompt: userPrompt,
+                max_tokens: mTokens,
+                temperature: temp,
+                context_tiers: tiers,
+                warmup: body.warmup || false,
+              }),
+            })
+          } catch (e) {
+            console.error('Failed to persist direct benchmark results:', e)
+          }
+        }
+      }
+    } finally {
+      localRunning.value = false
+    }
+  }
+
   async function cancelBenchmark() {
     if (activeJobId.value) {
       await apiFetch(`/api/jobs/${activeJobId.value}/cancel`, { method: 'POST' })
+    }
+    // Also cancel any in-progress local benchmarks
+    if (localRunning.value) {
+      cancelDirect()
+      localRunning.value = false
     }
   }
 
@@ -503,6 +674,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     providerProgress,
     skippedModels,
     errorBanner,
+    localRunning,
     // Computed
     selectedCount,
     isStressMode,

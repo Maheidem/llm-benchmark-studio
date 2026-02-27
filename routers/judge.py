@@ -366,8 +366,8 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
     if not eval_run:
         return JSONResponse({"error": "Eval run not found"}, status_code=404)
 
-    results = json.loads(eval_run.get("results_json", "[]"))
-    if not results:
+    case_results = await db.get_case_results(eval_run_id)
+    if not case_results:
         return JSONResponse({"error": "Eval run has no results"}, status_code=400)
 
     # Rate limit (raises HTTPException 429 if exceeded)
@@ -380,7 +380,7 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
     if not judge_targets:
         return JSONResponse({"error": f"Judge model '{judge_model_id}' not found in config"}, status_code=400)
 
-    progress_detail = f"Judge: {len(results)} verdicts, {judge_targets[0].display_name}"
+    progress_detail = f"Judge: {len(case_results)} verdicts, {judge_targets[0].display_name}"
 
     experiment_id = body.get("experiment_id")
     job_params = {
@@ -443,8 +443,8 @@ async def run_judge_compare(request: Request, user: dict = Depends(auth.get_curr
     if not run_b:
         return JSONResponse({"error": "Eval run B not found"}, status_code=404)
 
-    results_a = json.loads(run_a.get("results_json", "[]"))
-    results_b = json.loads(run_b.get("results_json", "[]"))
+    results_a = await db.get_case_results(eval_run_id_a)
+    results_b = await db.get_case_results(eval_run_id_b)
     if not results_a or not results_b:
         return JSONResponse({"error": "Both eval runs must have results"}, status_code=400)
 
@@ -513,10 +513,11 @@ async def list_judge_reports(user: dict = Depends(auth.get_current_user)):
 
 @router.get("/api/tool-eval/judge/reports/{report_id}")
 async def get_judge_report(report_id: str, user: dict = Depends(auth.get_current_user)):
-    """Get full judge report detail."""
+    """Get full judge report detail with verdicts."""
     report = await db.get_judge_report(report_id, user["id"])
     if not report:
         return JSONResponse({"error": "Judge report not found"}, status_code=404)
+    report["verdicts"] = await db.get_judge_verdicts(report_id)
     return report
 
 
@@ -572,8 +573,8 @@ async def rerun_judge(request: Request, user: dict = Depends(auth.get_current_us
     if not eval_run:
         return JSONResponse({"error": "Linked eval run not found"}, status_code=404)
 
-    results = json.loads(eval_run.get("results_json", "[]"))
-    if not results:
+    case_results = await db.get_case_results(eval_run_id)
+    if not case_results:
         return JSONResponse({"error": "Linked eval run has no results"}, status_code=400)
 
     # Rate limit
@@ -586,16 +587,7 @@ async def rerun_judge(request: Request, user: dict = Depends(auth.get_current_us
     if not judge_targets:
         return JSONResponse({"error": f"Judge model '{judge_model_id}' not found in config"}, status_code=400)
 
-    # Build instructions_json to record the config used for this version
-    instructions_json = json.dumps({
-        "custom_instructions": custom_instructions,
-        "judge_model": judge_model_id,
-        "judge_provider_key": judge_provider_key,
-        "score_override_enabled": validated.score_override_enabled,
-        "concurrency": concurrency,
-    })
-
-    progress_detail = f"Judge v{next_version}: {len(results)} verdicts, {judge_targets[0].display_name}"
+    progress_detail = f"Judge v{next_version}: {len(case_results)} verdicts, {judge_targets[0].display_name}"
 
     job_params = {
         "user_id": user["id"],
@@ -608,7 +600,7 @@ async def rerun_judge(request: Request, user: dict = Depends(auth.get_current_us
         "experiment_id": parent.get("experiment_id"),
         "parent_report_id": root_id,
         "version": next_version,
-        "instructions_json": instructions_json,
+        "custom_instructions": custom_instructions,
     }
 
     job_id = await job_registry.submit(
@@ -646,24 +638,18 @@ async def get_judge_report_for_eval(eval_id: str, user: dict = Depends(auth.get_
     if not report:
         return JSONResponse({"error": "No judge report found for this eval run"}, status_code=404)
 
-    # Parse verdicts_json into per-case explanation entries
+    # Fetch verdicts from normalized table
+    verdicts = await db.get_judge_verdicts(report["id"])
     case_results = []
-    verdicts_raw = report.get("verdicts_json")
-    if verdicts_raw:
-        try:
-            verdicts = json.loads(verdicts_raw) if isinstance(verdicts_raw, str) else verdicts_raw
-            for v in verdicts:
-                case_results.append({
-                    "model_id": v.get("model_id", ""),
-                    "test_case_id": v.get("test_case_id", ""),
-                    "explanation": v.get("reasoning") or v.get("summary") or "",
-                    "quality_score": v.get("quality_score"),
-                    "verdict": v.get("verdict", ""),
-                    "tool_selection_assessment": v.get("tool_selection_assessment", ""),
-                    "param_assessment": v.get("param_assessment", ""),
-                })
-        except (json.JSONDecodeError, TypeError):
-            logger.warning("Failed to parse verdicts_json for eval_id=%s", eval_id)
+    for v in verdicts:
+        case_results.append({
+            "case_result_id": v.get("case_result_id", ""),
+            "explanation": v.get("reasoning") or v.get("summary") or "",
+            "quality_score": v.get("quality_score"),
+            "verdict": v.get("verdict", ""),
+            "tool_selection_assessment": v.get("tool_selection_assessment", ""),
+            "param_assessment": v.get("param_assessment", ""),
+        })
 
     return {
         "report_id": report["id"],

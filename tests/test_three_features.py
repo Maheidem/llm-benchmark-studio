@@ -521,7 +521,7 @@ class TestIrrelevanceDetectionDB:
     async def test_create_test_case_with_should_call_tool(self, test_user):
         """DB function can create test case with should_call_tool=false."""
         user, _ = test_user
-        suite_id = await db.create_tool_suite(user["id"], "Irrel DB Test Suite", "", "[]")
+        suite_id = await db.create_tool_suite(user["id"], "Irrel DB Test Suite", "")
         case_id = await db.create_test_case(
             suite_id=suite_id,
             prompt="Should not call any tool",
@@ -541,7 +541,7 @@ class TestIrrelevanceDetectionDB:
     async def test_existing_cases_default_to_should_call_tool_true(self, test_user):
         """Cases without should_call_tool column default to 1 (true)."""
         user, _ = test_user
-        suite_id = await db.create_tool_suite(user["id"], "Default True DB Suite", "", "[]")
+        suite_id = await db.create_tool_suite(user["id"], "Default True DB Suite", "")
         case_id = await db.create_test_case(
             suite_id=suite_id,
             prompt="Normal tool call prompt",
@@ -561,136 +561,92 @@ class TestIrrelevanceDetectionDB:
 
 
 class TestJudgeOnFailureDB:
-    """DB-level tests for judge_explanations_json column on tool_eval_runs."""
+    """DB-level tests for judge verdicts (ERD v2: judge_verdicts child table)."""
 
-    async def test_tool_eval_run_has_judge_explanations_column(self, test_user):
-        """tool_eval_runs table has judge_explanations_json column."""
+    async def test_tool_eval_run_exists_after_save(self, test_user):
+        """tool_eval_runs can be saved and listed."""
         user, _ = test_user
-        suite_id = await db.create_tool_suite(user["id"], "Judge Column Test Suite", "", "[]")
+        suite_id = await db.create_tool_suite(user["id"], "Judge Column Test Suite", "")
         run_id = await db.save_tool_eval_run(
             user_id=user["id"],
             suite_id=suite_id,
-
-            models_json='["gpt-4o"]',
-            results_json='[]',
-            summary_json='{}',
             temperature=0.0,
         )
-        # Fetch the run and check column exists
+        # Fetch the run and check it exists
         runs = await db.get_tool_eval_runs(user["id"])
         assert any(r["id"] == run_id for r in runs), "Run should appear in list"
 
-    async def test_judge_explanations_can_be_stored_and_retrieved(self, test_user, _patch_db_path):
-        """judge_explanations_json can be stored and retrieved on a tool_eval_run."""
-        import aiosqlite
+    async def test_judge_verdicts_stored_via_child_table(self, test_user, _patch_db_path):
+        """Judge verdicts are stored in judge_verdicts table (ERD v2)."""
         user, _ = test_user
-        suite_id = await db.create_tool_suite(user["id"], "Judge Explain Test Suite", "", "[]")
+        suite_id = await db.create_tool_suite(user["id"], "Judge Explain Test Suite", "")
         run_id = await db.save_tool_eval_run(
             user_id=user["id"],
             suite_id=suite_id,
-
-            models_json='["gpt-4o"]',
-            results_json='[]',
-            summary_json='{}',
             temperature=0.0,
         )
 
-        explanations = {
-            "case-id-1": "The model called get_weather but provided city=Berlin instead of Paris.",
-            "case-id-2": "The model failed to pass the 'units' parameter.",
-        }
-        explanations_json = json.dumps(explanations)
+        # Create a judge report linked to this eval run
+        report_id = await db.save_judge_report(
+            user_id=user["id"],
+            mode="post_eval",
+            eval_run_id=run_id,
+        )
 
-        # Update via raw SQL (simulating what the handler will do after judge runs)
-        async with aiosqlite.connect(str(_patch_db_path)) as conn:
-            await conn.execute(
-                "UPDATE tool_eval_runs SET judge_explanations_json = ? WHERE id = ?",
-                (explanations_json, run_id),
-            )
-            await conn.commit()
-
-        # Retrieve and verify
-        run = await db.get_tool_eval_run(run_id, user["id"])
-        assert run is not None
-        stored = run.get("judge_explanations_json")
-        assert stored is not None
-        parsed = json.loads(stored)
-        assert parsed["case-id-1"] == explanations["case-id-1"]
-        assert parsed["case-id-2"] == explanations["case-id-2"]
+        # Verify report is linked to eval run
+        report = await db.get_judge_report(report_id, user["id"])
+        assert report is not None
+        assert report["eval_run_id"] == run_id
 
 
 class TestJudgeOnFailureAPI:
     """API tests for judge-on-failure feature."""
 
-    async def test_tool_eval_history_detail_includes_judge_explanations(self, app_client, auth_headers, test_user):
-        """GET /api/tool-eval/history/{run_id} always includes judge_explanations key.
-
-        When no judge has run, the field is None. When a judge has run, it's a dict.
-        The key must always be present (not missing) — the frontend depends on this.
-        See tool_eval.py lines 969-978 for the parsing logic.
-        """
+    async def test_tool_eval_history_detail_returns_run_data(self, app_client, auth_headers, test_user):
+        """GET /api/tool-eval/history/{run_id} returns eval run with results and summary."""
         user, _ = test_user
-        suite_id = await db.create_tool_suite(user["id"], "Judge API Test Suite", "", "[]")
+        suite_id = await db.create_tool_suite(user["id"], "Judge API Test Suite", "")
         run_id = await db.save_tool_eval_run(
             user_id=user["id"],
             suite_id=suite_id,
-
-            models_json='["gpt-4o"]',
-            results_json='[]',
-            summary_json='{"total_cases": 1, "correct": 0, "accuracy": 0.0}',
             temperature=0.0,
         )
 
         resp = await app_client.get(f"/api/tool-eval/history/{run_id}", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
-        # judge_explanations must always be present (None when no judge ran)
-        assert "judge_explanations" in data, (
-            "judge_explanations key missing from history detail response. "
-            "The frontend depends on this key being present."
-        )
-        assert data["judge_explanations"] is None  # No judge was run for this eval
-        # Raw DB column should NOT be surfaced to the API
-        assert "judge_explanations_json" not in data
+        # ERD v2: results and summary are populated from child tables
+        assert "results" in data
+        assert "summary" in data
 
-    async def test_tool_eval_history_detail_judge_explanations_with_data(self, app_client, auth_headers, test_user):
-        """GET /api/tool-eval/history/{run_id} returns parsed judge_explanations when stored.
+    async def test_tool_eval_history_detail_with_judge_report(self, app_client, auth_headers, test_user):
+        """GET /api/tool-eval/history/{run_id} works when a judge report exists.
 
-        When judge_explanations_json is stored in the DB, the API should parse
-        and return it as a structured dict, not a raw JSON string.
+        Judge verdicts are now stored in the judge_verdicts child table,
+        not as a JSON blob on tool_eval_runs.
         """
         user, _ = test_user
-        import aiosqlite
-        import db as db_module
 
-        suite_id = await db_module.create_tool_suite(user["id"], "Judge API Data Suite", "", "[]")
-        run_id = await db_module.save_tool_eval_run(
+        suite_id = await db.create_tool_suite(user["id"], "Judge API Data Suite", "")
+        run_id = await db.save_tool_eval_run(
             user_id=user["id"],
             suite_id=suite_id,
-
-            models_json='["gpt-4o"]',
-            results_json='[]',
-            summary_json='{"total_cases": 1, "correct": 0, "accuracy": 0.0}',
             temperature=0.0,
         )
 
-        # Directly write judge_explanations_json to simulate completed judge run
-        explanations = {"case-abc": {"verdict": "wrong_tool", "explanation": "Model called wrong fn"}}
-        async with aiosqlite.connect(db_module.DB_PATH) as conn:
-            await conn.execute(
-                "UPDATE tool_eval_runs SET judge_explanations_json = ? WHERE id = ?",
-                (json.dumps(explanations), run_id),
-            )
-            await conn.commit()
+        # Create a completed judge report for this eval run
+        report_id = await db.save_judge_report(
+            user_id=user["id"],
+            mode="post_eval",
+            eval_run_id=run_id,
+        )
+        await db.update_judge_report(report_id, status="completed", overall_score=0.5)
 
         resp = await app_client.get(f"/api/tool-eval/history/{run_id}", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
-        assert "judge_explanations" in data
-        assert data["judge_explanations"] is not None
-        assert data["judge_explanations"]["case-abc"]["verdict"] == "wrong_tool"
-        # Raw column must not be exposed
-        assert "judge_explanations_json" not in data
+        assert "results" in data
+        assert "summary" in data
 
     async def test_judge_threshold_config_exists_in_settings(self, app_client, auth_headers):
         """Judge settings allow configuring a threshold for auto-triggering."""
@@ -1019,38 +975,43 @@ class TestGetJudgeReportForEval:
         """Valid eval_id with a completed judge report returns 200 with case_results and report_id."""
         user, _ = test_user
 
-        # Seed: create an eval run and a completed judge report linked to it
-        suite_id = await db.create_tool_suite(user["id"], "Judge Report Suite", "", "[]")
+        # Seed: create provider + model for FK constraints
+        provider_id = await db.create_provider(user["id"], "test_openai_jr", "Test OpenAI JR")
+        model_db_id = await db.create_model(provider_id, "gpt-4o", "GPT-4o")
+
+        suite_id = await db.create_tool_suite(user["id"], "Judge Report Suite", "")
+        tc_id = await db.create_test_case(suite_id, "What is the weather?", "get_weather", '{"city": "Paris"}')
         eval_id = await db.save_tool_eval_run(
             user_id=user["id"],
             suite_id=suite_id,
-
-            models_json='["gpt-4o"]',
-            results_json='[]',
-            summary_json='{"total_cases": 2, "correct": 0, "accuracy": 0.0}',
             temperature=0.0,
         )
+
+        # Create a case_result (required FK for judge_verdicts)
+        cr_id = await db.save_case_result(
+            eval_run_id=eval_id,
+            test_case_id=tc_id,
+            model_id=model_db_id,
+            overall_score=0.2,
+        )
+
         report_id = await db.save_judge_report(
             user_id=user["id"],
-            judge_model="gpt-4o",
             mode="post_eval",
             eval_run_id=eval_id,
         )
-        verdicts = [
-            {
-                "model_id": "gpt-4o",
-                "test_case_id": "case-1",
-                "reasoning": "Model called wrong function",
-                "verdict": "incorrect",
-                "quality_score": 0.2,
-                "tool_selection_assessment": "Wrong tool selected",
-                "param_assessment": "N/A",
-            }
-        ]
+        await db.save_judge_verdict(
+            report_id=report_id,
+            case_result_id=cr_id,
+            quality_score=2,
+            verdict="incorrect",
+            reasoning="Model called wrong function",
+            tool_selection_assessment="Wrong tool selected",
+            param_assessment="N/A",
+        )
         await db.update_judge_report(
             report_id,
             status="completed",
-            verdicts_json=json.dumps(verdicts),
             overall_grade="D",
             overall_score=0.2,
         )
@@ -1066,22 +1027,17 @@ class TestGetJudgeReportForEval:
         assert len(data["case_results"]) == 1
 
         case = data["case_results"][0]
-        assert case["model_id"] == "gpt-4o"
-        assert case["test_case_id"] == "case-1"
+        assert case["case_result_id"] == cr_id
         assert "explanation" in case
 
     async def test_returns_404_when_no_judge_report_for_eval(self, app_client, auth_headers, test_user):
         """eval_id with no completed judge report returns 404."""
         user, _ = test_user
 
-        suite_id = await db.create_tool_suite(user["id"], "No Judge Suite", "", "[]")
+        suite_id = await db.create_tool_suite(user["id"], "No Judge Suite", "")
         eval_id = await db.save_tool_eval_run(
             user_id=user["id"],
             suite_id=suite_id,
-
-            models_json='["gpt-4o"]',
-            results_json='[]',
-            summary_json='{"total_cases": 1, "correct": 1, "accuracy": 1.0}',
             temperature=0.0,
         )
 
@@ -1108,19 +1064,14 @@ class TestGetJudgeReportForEval:
         other_token = reg_data["access_token"]
         other_user_id = reg_data["user"]["id"]
         other_headers = {"Authorization": f"Bearer {other_token}"}  # noqa: F841
-        other_suite_id = await db.create_tool_suite(other_user_id, "Other Suite", "", "[]")
+        other_suite_id = await db.create_tool_suite(other_user_id, "Other Suite", "")
         other_eval_id = await db.save_tool_eval_run(
             user_id=other_user_id,
             suite_id=other_suite_id,
-
-            models_json='["gpt-4o"]',
-            results_json='[]',
-            summary_json='{"total_cases": 1, "correct": 0, "accuracy": 0.0}',
             temperature=0.0,
         )
         other_report_id = await db.save_judge_report(
             user_id=other_user_id,
-            judge_model="gpt-4o",
             mode="post_eval",
             eval_run_id=other_eval_id,
         )
@@ -1137,20 +1088,15 @@ class TestGetJudgeReportForEval:
         """
         user, _ = test_user
 
-        suite_id = await db.create_tool_suite(user["id"], "Running Judge Suite", "", "[]")
+        suite_id = await db.create_tool_suite(user["id"], "Running Judge Suite", "")
         eval_id = await db.save_tool_eval_run(
             user_id=user["id"],
             suite_id=suite_id,
-
-            models_json='["gpt-4o"]',
-            results_json='[]',
-            summary_json='{"total_cases": 1, "correct": 0, "accuracy": 0.0}',
             temperature=0.0,
         )
         # Save report but leave status as default 'running'
         await db.save_judge_report(
             user_id=user["id"],
-            judge_model="gpt-4o",
             mode="post_eval",
             eval_run_id=eval_id,
         )

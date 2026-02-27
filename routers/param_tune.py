@@ -151,10 +151,11 @@ async def get_param_tune_history(user: dict = Depends(auth.get_current_user)):
 
 @router.get("/api/tool-eval/param-tune/history/{tune_id}")
 async def get_param_tune_detail(tune_id: str, user: dict = Depends(auth.get_current_user)):
-    """Get full param tune run details including all results."""
+    """Get full param tune run details including all combos."""
     run = await db.get_param_tune_run(tune_id, user["id"])
     if not run:
         return JSONResponse({"error": "Tune run not found"}, status_code=404)
+    run["combos"] = await db.get_param_tune_combos(tune_id)
     return run
 
 
@@ -182,61 +183,57 @@ async def get_param_tune_correlation(run_id: str, user: dict = Depends(auth.get_
     if not run:
         return JSONResponse({"error": "Tune run not found"}, status_code=404)
 
-    try:
-        results = json.loads(run["results_json"] or "[]")
-    except (json.JSONDecodeError, TypeError):
-        results = []
-
-    # Load judge scores if available
-    judge_scores: dict[str, float] = {}
-    if run.get("judge_scores_json"):
-        try:
-            raw_scores = json.loads(run["judge_scores_json"])
-            if isinstance(raw_scores, list):
-                for s in raw_scores:
-                    key = f"{s.get('model_id', '')}_{s.get('combo_index', 0)}"
-                    judge_scores[key] = s.get("quality_score", 0.0)
-        except (json.JSONDecodeError, TypeError):
-            pass
+    combos = await db.get_param_tune_combos(run_id)
 
     correlation_data = []
-    for r in results:
+    for r in combos:
         combo_idx = r.get("combo_index", 0)
         model_id = r.get("model_id", "")
-        score_key = f"{model_id}_{combo_idx}"
 
-        # Extract config params for axes
-        config = r.get("config", {})
+        # Parse config from combo
+        config = {}
+        if r.get("config_json"):
+            try:
+                config = json.loads(r["config_json"]) if isinstance(r["config_json"], str) else r["config_json"]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         latency_avg_ms = r.get("latency_avg_ms", 0)
         # Speed: tokens/sec estimate from latency (rough: assume 100 output tokens)
         tokens_per_sec = round(100_000 / latency_avg_ms, 1) if latency_avg_ms > 0 else None
 
+        # Parse adjustments
+        adjustments = []
+        if r.get("adjustments_json"):
+            try:
+                adjustments = json.loads(r["adjustments_json"]) if isinstance(r["adjustments_json"], str) else r["adjustments_json"]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         entry = {
             "combo_index": combo_idx,
             "model_id": model_id,
-            "model_name": r.get("model_name", model_id),
-            "provider_key": r.get("provider_key", ""),
             "config": config,
             # Axis 1: Speed (estimated from latency)
             "latency_avg_ms": latency_avg_ms,
             "tokens_per_sec_estimate": tokens_per_sec,
             # Axis 2: Quality (tool + param accuracy from eval)
-            "tool_accuracy": r.get("tool_accuracy", 0.0),
-            "param_accuracy": r.get("param_accuracy", 0.0),
+            "tool_accuracy": r.get("tool_accuracy_pct", 0.0),
+            "param_accuracy": r.get("param_accuracy_pct", 0.0),
             "overall_score": r.get("overall_score", 0.0),
             "cases_passed": r.get("cases_passed", 0),
             "cases_total": r.get("cases_total", 0),
-            # Axis 3: Judge quality score (if available)
-            "quality_score": judge_scores.get(score_key),
+            # Axis 3: Judge quality score (None when no judge has been run)
+            "quality_score": None,
             # Adjustments/clamping info
-            "adjustments": r.get("adjustments", []),
+            "adjustments": adjustments,
         }
         correlation_data.append(entry)
 
     return {
         "run_id": run_id,
         "optimization_mode": run.get("optimization_mode", "grid"),
-        "has_judge_scores": bool(judge_scores),
+        "has_judge_scores": False,
         "data": correlation_data,
     }
 
@@ -248,7 +245,6 @@ async def score_param_tune_with_judge(
     """2B: Trigger judge scoring on param tuner output samples.
 
     Submits a judge job for each combo's representative results.
-    The judge scores are stored as judge_scores_json on the param_tune_run.
     """
     run = await db.get_param_tune_run(run_id, user["id"])
     if not run:

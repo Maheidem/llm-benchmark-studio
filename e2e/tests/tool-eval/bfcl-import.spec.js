@@ -157,7 +157,7 @@ test.describe('@regression BFCL Import', () => {
     // and shows an error toast when they are missing.
     await expect(
       page.locator('.toast, [class*="toast"], [role="alert"]').filter({
-        hasText: /invalid bfcl|failed to import/i,
+        hasText: /invalid bfcl|failed to import|invalid.*format/i,
       }),
     ).toBeVisible({ timeout: TIMEOUT.modal });
 

@@ -371,10 +371,11 @@ async def get_prompt_tune_history(user: dict = Depends(auth.get_current_user)):
 
 @router.get("/api/tool-eval/prompt-tune/history/{tune_id}")
 async def get_prompt_tune_detail(tune_id: str, user: dict = Depends(auth.get_current_user)):
-    """Get full prompt tune run details."""
+    """Get full prompt tune run details with generations."""
     run = await db.get_prompt_tune_run(tune_id, user["id"])
     if not run:
         return JSONResponse({"error": "Tune run not found"}, status_code=404)
+    run["generations"] = await db.get_prompt_tune_generations(tune_id)
     return run
 
 

@@ -8,6 +8,10 @@ Each handler follows the job_registry handler signature:
 
 The module-level `ws_manager` is injected by app.py at startup, same pattern
 used by the router modules.
+
+ERD v2: All handlers persist to normalized child tables (benchmark_results,
+case_results, param_tune_combos, prompt_tune_generations/candidates,
+judge_verdicts) instead of JSON blob columns.
 """
 
 import asyncio
@@ -48,6 +52,53 @@ logger = logging.getLogger(__name__)
 
 # Module-level ws_manager -- injected by app.py after import
 ws_manager = None
+
+
+# ---------------------------------------------------------------------------
+# Helper: Reconstruct OpenAI-format tools from tool_definitions rows
+# ---------------------------------------------------------------------------
+
+def _tool_defs_to_openai(tool_defs: list[dict]) -> list[dict]:
+    """Convert tool_definitions DB rows to the OpenAI function-calling format
+    expected by LiteLLM and the eval engine.
+
+    Each DB row has: name, description, parameters_schema (JSON string).
+    Returns: [{"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}, ...]
+    """
+    tools = []
+    for td in tool_defs:
+        params_schema = td.get("parameters_schema", "{}")
+        if isinstance(params_schema, str):
+            try:
+                params_schema = json.loads(params_schema)
+            except (json.JSONDecodeError, TypeError):
+                params_schema = {}
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": td["name"],
+                "description": td.get("description", ""),
+                "parameters": params_schema,
+            },
+        })
+    return tools
+
+
+# ---------------------------------------------------------------------------
+# Helper: Resolve model DB ID from litellm_id
+# ---------------------------------------------------------------------------
+
+async def _resolve_model_db_id(user_id: str, litellm_id: str) -> str | None:
+    """Resolve the models table ID for a given litellm_id.
+
+    Auto-creates provider + model records if not found.
+    Returns None only on unexpected errors.
+    """
+    try:
+        return await db.ensure_model_exists(user_id, litellm_id)
+    except Exception as e:
+        logger.warning("Failed to resolve/create model DB ID for %s: %s", litellm_id, e)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -117,12 +168,44 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
     if total == 0:
         return None
 
+    # Build config_json for re-run support
+    bench_config = {
+        "models": model_ids,
+        "context_tiers": context_tiers,
+        "runs": runs,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "warmup": warmup,
+    }
+    if provider_params:
+        bench_config["provider_params"] = provider_params
+    if target_set:
+        bench_config["target_set"] = [list(t) for t in target_set]
+    if profiles_map:
+        bench_config["profiles"] = profiles_map
+
+    # ERD v2: Create benchmark_runs row BEFORE the loop
+    run_id = await db.save_benchmark_run(
+        user_id=user_id,
+        prompt=prompt,
+        context_tiers=json.dumps(context_tiers),
+        max_tokens=max_tokens,
+        temperature=temperature,
+        warmup=warmup,
+        config_json=json.dumps(bench_config),
+    )
+
+    # Pre-resolve model DB IDs for benchmark_results FK
+    model_db_id_cache: dict[str, str | None] = {}
+
     # Group targets by provider for parallel execution
     provider_groups = {}
     for target in targets:
         provider_groups.setdefault(target.provider, []).append(target)
 
     results_queue = asyncio.Queue()
+    # Track run numbers per model for benchmark_results
+    run_number_tracker: dict[str, int] = {}
 
     # Helper to send WebSocket messages directly to the user
     async def _ws_send(payload: dict):
@@ -259,37 +342,40 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
                 "data": item,
             })
 
-    # Save results
+            # ERD v2: Persist each result row to benchmark_results
+            try:
+                model_litellm_id = item.get("model_id", "")
+                if model_litellm_id not in model_db_id_cache:
+                    model_db_id_cache[model_litellm_id] = await _resolve_model_db_id(user_id, model_litellm_id)
+                model_db_id = model_db_id_cache[model_litellm_id]
+
+                if model_db_id:
+                    # Track run numbers per model+tier
+                    rn_key = f"{model_litellm_id}:{item.get('context_tokens', 0)}"
+                    run_number_tracker[rn_key] = run_number_tracker.get(rn_key, 0) + 1
+
+                    await db.save_benchmark_result(
+                        run_id=run_id,
+                        model_id=model_db_id,
+                        run_number=run_number_tracker[rn_key],
+                        context_tokens=item.get("context_tokens", 0),
+                        ttft_ms=item.get("ttft_ms"),
+                        total_time_s=item.get("total_time_s"),
+                        output_tokens=item.get("output_tokens"),
+                        input_tokens=item.get("input_tokens"),
+                        tokens_per_second=item.get("tokens_per_second"),
+                        input_tokens_per_second=item.get("input_tokens_per_second"),
+                        cost=item.get("cost"),
+                        success=item.get("success", True),
+                        error=item.get("error"),
+                    )
+            except Exception as e:
+                logger.warning("Failed to save benchmark_result: %s", e)
+
+    # Save aggregated results to JSON files (legacy format)
     if all_results:
         agg_results = _aggregate(all_results, config)
         save_results(agg_results, prompt, context_tiers=context_tiers)
-
-        # Build config_json for re-run support
-        bench_config = {
-            "models": model_ids,
-            "context_tiers": context_tiers,
-            "runs": runs,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "warmup": warmup,
-        }
-        if provider_params:
-            bench_config["provider_params"] = provider_params
-        if target_set:
-            bench_config["target_set"] = [list(t) for t in target_set]
-        if profiles_map:
-            bench_config["profiles"] = profiles_map
-
-        run_id = await db.save_benchmark_run(
-            user_id=user_id,
-            prompt=prompt,
-            context_tiers=json.dumps(context_tiers),
-            results_json=json.dumps(all_results),
-            max_tokens=max_tokens,
-            temperature=temperature,
-            warmup=warmup,
-            config_json=json.dumps(bench_config),
-        )
 
         logger.info(
             "Benchmark completed: job_id=%s user_id=%s results=%d run_id=%s",
@@ -303,24 +389,6 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
             resource_type="benchmark",
             detail={"models": model_ids, "result_count": len(all_results)},
         )
-
-        # Dual-write to run_results (Phase 4 normalization)
-        try:
-            for result in all_results:
-                model_id = result.get("model_id", "")
-                await db.save_run_result(
-                    run_id=run_id,
-                    run_type="benchmark",
-                    user_id=user_id,
-                    model_litellm_id=model_id,
-                    provider_key=result.get("provider", ""),
-                    throughput_tps=result.get("tokens_per_second"),
-                    ttft_ms=result.get("ttft_ms"),
-                    tokens_generated=result.get("output_tokens"),
-                    cost=result.get("cost"),
-                )
-        except Exception as e:
-            logger.warning("Failed to dual-write benchmark run_results: %s", e)
 
         return run_id
 
@@ -368,7 +436,10 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
     # Load suite + test cases
     suite = await db.get_tool_suite(suite_id, user_id)
     cases = await db.get_test_cases(suite_id)
-    tools = json.loads(suite["tools_json"])
+
+    # ERD v2: Load tools from tool_definitions table instead of tools_json
+    tool_defs = await db.get_tool_definitions(suite_id)
+    tools = _tool_defs_to_openai(tool_defs)
 
     # Build targets
     config = await _get_user_config(user_id)
@@ -437,6 +508,50 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
     async def _ws_send(payload: dict):
         if ws_manager:
             await ws_manager.send_to_user(user_id, payload)
+
+    # Build config_json for reproducibility (M1)
+    eval_config = {
+        "temperature": temperature,
+        "tool_choice": tool_choice,
+    }
+    if provider_params:
+        eval_config["provider_params"] = provider_params
+    if system_prompt_raw:
+        eval_config["system_prompt"] = system_prompt_raw
+    # Build target_set from the targets list
+    target_set_list = []
+    for t in targets:
+        target_set_list.append([t.provider_key or "", t.model_id])
+    target_set_cleaned = [ts for ts in target_set_list if ts[0] or ts[1]]
+    if target_set_cleaned:
+        eval_config["target_set"] = target_set_cleaned
+    if profiles_map:
+        eval_config["profiles"] = profiles_map
+
+    # Build system_prompt_config and provider_params_json for DB
+    system_prompt_config_json = json.dumps(system_prompt_raw) if system_prompt_raw else None
+    provider_params_json = json.dumps(provider_params) if provider_params else None
+    profiles_json_str = json.dumps(profiles_map) if profiles_map else None
+
+    # ERD v2: Create eval run row BEFORE the eval loop
+    eval_id = await db.save_tool_eval_run(
+        user_id=user_id,
+        suite_id=suite["id"],
+        temperature=temperature,
+        tool_choice=tool_choice,
+        system_prompt_config=system_prompt_config_json,
+        provider_params_json=provider_params_json,
+        profiles_json=profiles_json_str,
+        experiment_id=experiment_id,
+        orchestrator_type="standalone",
+        orchestrator_run_id=None,
+    )
+
+    # Store result_ref so frontend can discover eval_id on reconnect
+    await db.set_job_result_ref(job_id, eval_id)
+
+    # Pre-resolve model DB IDs
+    model_db_id_cache: dict[str, str | None] = {}
 
     # Send init event so frontend can set up tracking
     await _ws_send({
@@ -531,6 +646,9 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
     tool_defs_text = _build_tool_definitions_text(tools) if judge_enabled else ""
     target_map = {t.model_id: t for t in targets}
 
+    # Map from (model_id, test_case_id) -> case_result DB id (for judge verdicts)
+    case_result_db_ids: dict[str, str] = {}
+
     while True:
         try:
             item = await asyncio.wait_for(results_queue.get(), timeout=15)
@@ -577,6 +695,42 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
         })
         all_results.append(item)
 
+        # ERD v2: Persist each case result to case_results table
+        try:
+            model_litellm_id = item.get("model_id", "")
+            if model_litellm_id not in model_db_id_cache:
+                model_db_id_cache[model_litellm_id] = await _resolve_model_db_id(user_id, model_litellm_id)
+            model_db_id = model_db_id_cache[model_litellm_id]
+
+            if model_db_id:
+                actual_params_str = json.dumps(item.get("actual_params")) if item.get("actual_params") is not None else None
+                raw_request_str = json.dumps(item.get("raw_request")) if item.get("raw_request") is not None else None
+                raw_response_str = json.dumps(item.get("raw_response")) if item.get("raw_response") is not None else None
+
+                case_result_id = await db.save_case_result(
+                    eval_run_id=eval_id,
+                    test_case_id=item.get("test_case_id", ""),
+                    model_id=model_db_id,
+                    tool_selection_score=item.get("tool_selection_score", 0.0),
+                    param_accuracy=item.get("param_accuracy"),
+                    overall_score=item.get("overall_score", 0.0),
+                    irrelevance_score=item.get("irrelevance_score"),
+                    actual_tool=item.get("actual_tool"),
+                    actual_params=actual_params_str,
+                    success=item.get("success", True),
+                    error=item.get("error", ""),
+                    latency_ms=item.get("latency_ms", 0),
+                    format_compliance=item.get("format_compliance", "PASS"),
+                    error_type=item.get("error_type"),
+                    raw_request=raw_request_str,
+                    raw_response=raw_response_str,
+                )
+                # Track for judge verdicts later
+                cr_key = f"{model_litellm_id}::{item.get('test_case_id', '')}"
+                case_result_db_ids[cr_key] = case_result_id
+        except Exception as e:
+            logger.warning("Failed to save case_result: %s", e)
+
         # Live inline judge: fire concurrent judge task per result (with semaphore)
         if judge_queue and judge_target:
             async def _judge_async(jt, td, res, jq, sem, ci=judge_custom_instructions):
@@ -619,63 +773,12 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
             judge_verdicts.append(verdict)
             await _ws_send({"type": "judge_verdict", "job_id": job_id, **verdict})
 
-    # Compute per-model summaries
+    # Compute per-model summaries (in-memory for WS events)
     summaries = _compute_eval_summaries(all_results, targets)
     for s in summaries:
         await _ws_send({"type": "tool_eval_summary", "job_id": job_id, "data": s})
 
-    # Build config_json for reproducibility (M1)
-    config = {
-        "temperature": temperature,
-        "tool_choice": tool_choice,
-    }
-    if provider_params:
-        config["provider_params"] = provider_params
-    if system_prompt_raw:
-        config["system_prompt"] = system_prompt_raw
-    # Build target_set from the targets list
-    target_set_list = []
-    for t in targets:
-        target_set_list.append([t.provider_key or "", t.model_id])
-    target_set_cleaned = [ts for ts in target_set_list if ts[0] or ts[1]]
-    if target_set_cleaned:
-        config["target_set"] = target_set_cleaned
-    if profiles_map:
-        config["profiles"] = profiles_map
-    config_json_str = json.dumps(config)
-
-    # Save to DB (include profiles_json for reproducibility)
-    profiles_json_str = json.dumps(profiles_map) if profiles_map else None
-    eval_id = await db.save_tool_eval_run(
-        user_id=user_id,
-        suite_id=suite["id"],
-        models_json=json.dumps(model_ids),
-        results_json=json.dumps(all_results),
-        summary_json=json.dumps(summaries),
-        temperature=temperature,
-        config_json=config_json_str,
-        experiment_id=experiment_id,
-        profiles_json=profiles_json_str,
-    )
-
-    # Store result_ref so frontend can discover eval_id on reconnect
-    await db.set_job_result_ref(job_id, eval_id)
-
-    # Dual-write to run_results (Phase 4 normalization)
-    try:
-        for s in summaries:
-            await db.save_run_result(
-                run_id=eval_id,
-                run_type="tool_eval",
-                user_id=user_id,
-                model_litellm_id=s.get("model_id", ""),
-                provider_key=s.get("provider", ""),
-                tool_accuracy_pct=s.get("tool_accuracy_pct"),
-                param_accuracy_pct=s.get("param_accuracy_pct"),
-                score=s.get("overall_pct"),
-            )
-    except Exception as e:
-        logger.warning("Failed to dual-write tool_eval run_results: %s", e)
+    config_json_str = json.dumps(eval_config)
 
     # --- Experiment integration (M2) ---
     if experiment_id:
@@ -712,11 +815,11 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
             _judge_db_model_id = _judge_db_model["id"] if _judge_db_model else None
             judge_report_id = await db.save_judge_report(
                 user_id=user_id,
-                judge_model=judge_target.model_id,
                 mode="post_eval",
                 eval_run_id=eval_id,
                 experiment_id=experiment_id,
                 judge_model_id=_judge_db_model_id,
+                custom_instructions=judge_custom_instructions or None,
             )
             await _ws_send({
                 "type": "judge_start",
@@ -762,6 +865,26 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                         # Update progress for judge phase
                         j_pct = int((judge_completed / judge_total) * 100) if judge_total > 0 else 0
                         await progress_cb(j_pct, f"Judge: {judge_completed}/{judge_total}")
+
+                        # ERD v2: Save judge verdict to DB
+                        try:
+                            cr_key = f"{v.get('model_id', '')}::{v.get('test_case_id', '')}"
+                            cr_id = case_result_db_ids.get(cr_key)
+                            if cr_id and judge_report_id:
+                                await db.save_judge_verdict(
+                                    report_id=judge_report_id,
+                                    case_result_id=cr_id,
+                                    quality_score=v.get("quality_score", 0),
+                                    verdict=v.get("verdict", "fail"),
+                                    summary=v.get("summary", ""),
+                                    reasoning=v.get("reasoning", ""),
+                                    tool_selection_assessment=v.get("tool_selection_assessment", "unknown"),
+                                    param_assessment=v.get("param_assessment", "unknown"),
+                                    judge_override_score=v.get("judge_override_score"),
+                                    override_reason=v.get("override_reason"),
+                                )
+                        except Exception as ve:
+                            logger.warning("Failed to save judge verdict: %s", ve)
                 except Exception:
                     # Cancel remaining judge tasks to avoid orphaned "Task exception was never retrieved"
                     for bt in judge_batch:
@@ -790,7 +913,6 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
 
             await db.update_judge_report(
                 judge_report_id,
-                verdicts_json=json.dumps(pe_verdicts),
                 report_json=json.dumps(all_pe_reports),
                 overall_grade=pe_final_grade,
                 overall_score=pe_final_score,
@@ -809,11 +931,11 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
             _judge_db_model_id_li = _judge_db_model_li["id"] if _judge_db_model_li else None
             judge_report_id = await db.save_judge_report(
                 user_id=user_id,
-                judge_model=judge_target.model_id,
                 mode="live_inline",
                 eval_run_id=eval_id,
                 experiment_id=experiment_id,
                 judge_model_id=_judge_db_model_id_li,
+                custom_instructions=judge_custom_instructions or None,
             )
             model_results_j: dict[str, list[dict]] = {}
             for v in judge_verdicts:
@@ -830,6 +952,27 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                 all_li_reports.append(li_report_data)
                 await _ws_send({"type": "judge_report", "job_id": job_id, "eval_id": eval_id, "report": li_report_data})
 
+                # ERD v2: Save verdicts to DB
+                for v in mvds:
+                    try:
+                        cr_key = f"{v.get('model_id', '')}::{v.get('test_case_id', '')}"
+                        cr_id = case_result_db_ids.get(cr_key)
+                        if cr_id and judge_report_id:
+                            await db.save_judge_verdict(
+                                report_id=judge_report_id,
+                                case_result_id=cr_id,
+                                quality_score=v.get("quality_score", 0),
+                                verdict=v.get("verdict", "fail"),
+                                summary=v.get("summary", ""),
+                                reasoning=v.get("reasoning", ""),
+                                tool_selection_assessment=v.get("tool_selection_assessment", "unknown"),
+                                param_assessment=v.get("param_assessment", "unknown"),
+                                judge_override_score=v.get("judge_override_score"),
+                                override_reason=v.get("override_reason"),
+                            )
+                    except Exception as ve:
+                        logger.warning("Failed to save live inline judge verdict: %s", ve)
+
             # Derive overall grade/score from the best model's report
             if all_li_reports:
                 best_li = max(all_li_reports, key=lambda r: r.get("overall_score", 0))
@@ -841,7 +984,6 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
 
             await db.update_judge_report(
                 judge_report_id,
-                verdicts_json=json.dumps(judge_verdicts),
                 report_json=json.dumps(all_li_reports),
                 overall_grade=li_final_grade,
                 overall_score=li_final_score,
@@ -958,7 +1100,7 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
 
                 if _auto_judge_after_eval and _default_judge_model:
                     logger.info(
-                        "Low accuracy (%.0f%% < %.0f%%) — auto-triggering judge: eval_id=%s model=%s",
+                        "Low accuracy (%.0f%% < %.0f%%) -- auto-triggering judge: eval_id=%s model=%s",
                         avg_score * 100, LOW_ACCURACY_THRESHOLD * 100, eval_id, _default_judge_model,
                     )
                     # Resolve judge target
@@ -1002,7 +1144,37 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                                 logger.debug("Judge explanation task failed: %s", er)
 
                         if _expls:
-                            await db.update_tool_eval_run(eval_id, judge_explanations_json=json.dumps(_expls))
+                            # ERD v2: Explanations are stored as judge verdicts in a separate report
+                            # Create a lightweight judge report for low-accuracy explanations
+                            try:
+                                _expl_judge_db = await db.get_model_by_litellm_id(user_id, _default_judge_model)
+                                _expl_judge_db_id = _expl_judge_db["id"] if _expl_judge_db else None
+                                _expl_report_id = await db.save_judge_report(
+                                    user_id=user_id,
+                                    mode="post_eval",
+                                    eval_run_id=eval_id,
+                                    judge_model_id=_expl_judge_db_id,
+                                    custom_instructions=_ci or None,
+                                )
+                                for expl in _expls:
+                                    cr_key = f"{expl.get('model_id', '')}::{expl.get('test_case_id', '')}"
+                                    cr_id = case_result_db_ids.get(cr_key)
+                                    if cr_id:
+                                        await db.save_judge_verdict(
+                                            report_id=_expl_report_id,
+                                            case_result_id=cr_id,
+                                            quality_score=expl.get("quality_score", 0),
+                                            verdict=expl.get("verdict", "fail"),
+                                            summary=expl.get("summary", ""),
+                                            reasoning=expl.get("reasoning", ""),
+                                        )
+                                await db.update_judge_report(
+                                    _expl_report_id,
+                                    status="completed",
+                                )
+                            except Exception as expl_e:
+                                logger.warning("Failed to save low-accuracy judge explanations: %s", expl_e)
+
                             await _ws_send({
                                 "type": "judge_explanations_ready",
                                 "job_id": job_id,
@@ -1114,7 +1286,10 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
     # Load suite + test cases
     suite = await db.get_tool_suite(suite_id, user_id)
     cases = await db.get_test_cases(suite_id)
-    tools = json.loads(suite["tools_json"])
+
+    # ERD v2: Load tools from tool_definitions table
+    tool_defs = await db.get_tool_definitions(suite_id)
+    tools = _tool_defs_to_openai(tool_defs)
 
     # Build targets first (may differ from model_ids if duplicates exist)
     config = await _get_user_config(user_id)
@@ -1176,19 +1351,22 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
                 user_keys_cache[t.provider_key] = encrypted
     targets = inject_user_keys(targets, user_keys_cache)
 
-    # Pre-create the tune run in DB (use new function that stores optimization_mode)
-    tune_id = await db.save_param_tune_run_with_mode(
+    # ERD v2: Create param tune run BEFORE the loop
+    tune_id = await db.save_param_tune_run(
         user_id=user_id,
         suite_id=suite["id"],
-        models_json=json.dumps(model_ids),
         search_space_json=json.dumps(per_model_search_spaces if per_model_combos else search_space),
         total_combos=total_combos,
         optimization_mode=optimization_mode,
+        n_trials=n_trials if optimization_mode != "grid" else None,
         experiment_id=experiment_id,
     )
 
     # Store result_ref early so the frontend can discover tune_id on reconnect
     await db.set_job_result_ref(job_id, tune_id)
+
+    # Pre-resolve model DB IDs
+    model_db_id_cache: dict[str, str | None] = {}
 
     # Helper to send WebSocket messages directly to the user
     async def _ws_send(payload: dict):
@@ -1263,7 +1441,7 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
 
                 cases_passed = sum(1 for r in case_results if r.get("success") and r.get("overall_score", 0) == 1.0)
 
-                # Trim case results for storage/WS (exclude raw_request/raw_response)
+                # Trim case results for WS (exclude raw_request/raw_response)
                 trimmed_cases = []
                 for cr in case_results:
                     trimmed_cases.append({
@@ -1323,7 +1501,6 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
             duration = time.perf_counter() - start_time
             await db.update_param_tune_run(
                 tune_id, user_id,
-                results_json=json.dumps(all_results),
                 completed_combos=completed,
                 status="cancelled",
                 duration_s=round(duration, 2),
@@ -1343,10 +1520,33 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
             "data": item,
         })
 
-        # Incrementally save results to DB so reconnecting clients can fetch them
+        # ERD v2: Persist combo to param_tune_combos table
+        try:
+            model_litellm_id = item.get("model_id", "")
+            if model_litellm_id not in model_db_id_cache:
+                model_db_id_cache[model_litellm_id] = await _resolve_model_db_id(user_id, model_litellm_id)
+            model_db_id = model_db_id_cache[model_litellm_id]
+
+            if model_db_id:
+                await db.save_param_tune_combo(
+                    tune_run_id=tune_id,
+                    combo_index=item.get("combo_index", completed - 1),
+                    model_id=model_db_id,
+                    config_json=json.dumps(item.get("config", {})),
+                    overall_score=item.get("overall_score", 0.0),
+                    tool_accuracy_pct=item.get("tool_accuracy", 0.0),
+                    param_accuracy_pct=item.get("param_accuracy", 0.0),
+                    latency_avg_ms=item.get("latency_avg_ms", 0),
+                    cases_passed=item.get("cases_passed", 0),
+                    cases_total=item.get("cases_total", 0),
+                    adjustments_json=json.dumps(item.get("adjustments")) if item.get("adjustments") else None,
+                )
+        except Exception as e:
+            logger.warning("Failed to save param_tune_combo: %s", e)
+
+        # Update parent run progress
         await db.update_param_tune_run(
             tune_id, user_id,
-            results_json=json.dumps(all_results),
             completed_combos=completed,
         )
 
@@ -1376,7 +1576,6 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
 
     await db.update_param_tune_run(
         tune_id, user_id,
-        results_json=json.dumps(all_results),
         best_config_json=json.dumps(best_config),
         best_score=best_score,
         completed_combos=completed,
@@ -1428,27 +1627,42 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
                 # Add promoted_from marker
                 config_for_promote["promoted_from"] = f"param_tune:{tune_id}"
 
-                promoted_summary = [{
-                    "model_id": best["model_id"],
-                    "model_name": best.get("model_name", best["model_id"]),
-                    "provider": best.get("provider_key", ""),
-                    "tool_accuracy_pct": best.get("tool_accuracy", 0.0),
-                    "param_accuracy_pct": best.get("param_accuracy", 0.0),
-                    "overall_pct": round(best.get("overall_score", 0.0) * 100, 1),
-                    "cases_run": best.get("cases_total", 0),
-                    "cases_passed": best.get("cases_passed", 0),
-                }]
-
+                # ERD v2: Create promoted eval run as a child of param_tune
                 promoted_eval_id = await db.save_tool_eval_run(
                     user_id=user_id,
                     suite_id=suite["id"],
-                    models_json=json.dumps([best["model_id"]]),
-                    results_json=json.dumps(promoted_results),
-                    summary_json=json.dumps(promoted_summary),
                     temperature=config_for_promote.get("temperature", 0.0),
-                    config_json=json.dumps(config_for_promote),
+                    tool_choice=config_for_promote.get("tool_choice", "required"),
+                    provider_params_json=json.dumps(pp) if pp else None,
                     experiment_id=experiment_id,
+                    orchestrator_type="param_tune",
+                    orchestrator_run_id=tune_id,
                 )
+
+                # Save case results for the promoted eval
+                for cr in promoted_results:
+                    try:
+                        model_litellm_id = cr.get("model_id", "")
+                        if model_litellm_id not in model_db_id_cache:
+                            model_db_id_cache[model_litellm_id] = await _resolve_model_db_id(user_id, model_litellm_id)
+                        m_db_id = model_db_id_cache[model_litellm_id]
+                        if m_db_id:
+                            actual_params_str = json.dumps(cr.get("actual_params")) if cr.get("actual_params") is not None else None
+                            await db.save_case_result(
+                                eval_run_id=promoted_eval_id,
+                                test_case_id=cr.get("test_case_id", ""),
+                                model_id=m_db_id,
+                                tool_selection_score=cr.get("tool_selection_score", 0.0),
+                                param_accuracy=cr.get("param_accuracy"),
+                                overall_score=cr.get("overall_score", 0.0),
+                                actual_tool=cr.get("actual_tool"),
+                                actual_params=actual_params_str,
+                                success=cr.get("success", True),
+                                error=cr.get("error", ""),
+                                latency_ms=cr.get("latency_ms", 0),
+                            )
+                    except Exception as cr_e:
+                        logger.warning("Failed to save promoted case result: %s", cr_e)
 
                 await _maybe_update_experiment_best(
                     experiment_id, user_id,
@@ -1529,7 +1743,10 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
     # Load suite + test cases
     suite = await db.get_tool_suite(suite_id, user_id)
     cases = await db.get_test_cases(suite_id)
-    tools = json.loads(suite["tools_json"])
+
+    # ERD v2: Load tools from tool_definitions table
+    tool_defs = await db.get_tool_definitions(suite_id)
+    tools = _tool_defs_to_openai(tool_defs)
 
     # Build targets
     config = await _get_user_config(user_id)
@@ -1559,18 +1776,19 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
     _meta_db_model = await db.get_model_by_litellm_id(user_id, meta_model_id)
     _meta_db_model_id = _meta_db_model["id"] if _meta_db_model else None
 
-    # Pre-create DB record
+    # ERD v2: Create prompt tune run with decomposed config columns
     tune_id = await db.save_prompt_tune_run(
         user_id=user_id,
         suite_id=suite["id"],
         mode=mode,
-        target_models_json=json.dumps(target_model_ids),
-        meta_model=meta_model_id,
         base_prompt=base_prompt,
-        config_json=json.dumps(cfg),
         total_prompts=total_prompts,
+        population_size=population_size,
+        generations=generations,
+        selection_ratio=selection_ratio,
+        eval_temperature=eval_temperature,
+        eval_tool_choice=eval_tool_choice,
         experiment_id=experiment_id,
-        meta_provider_key=meta_provider_key,
         meta_model_id=_meta_db_model_id,
     )
 
@@ -1798,11 +2016,30 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
             "survivors": [p["index"] for p in survivors],
         })
 
-        # Incrementally save results to DB
+        # ERD v2: Save generation and candidates to DB
+        try:
+            gen_id = await db.save_prompt_tune_generation(
+                tune_run_id=tune_id,
+                generation_number=gen_num,
+                best_score=gen_best["avg_score"] if gen_best else 0.0,
+                best_candidate_index=gen_best["index"] if gen_best else None,
+            )
+            for p in gen_prompts:
+                await db.save_prompt_tune_candidate(
+                    generation_id=gen_id,
+                    candidate_index=p["index"],
+                    prompt_text=p["text"],
+                    style=p.get("style", "variation"),
+                    mutation_type=p.get("mutation_type"),
+                    avg_score=p["avg_score"],
+                    survived=p.get("survived", False),
+                )
+        except Exception as gen_e:
+            logger.warning("Failed to save prompt_tune generation/candidates: %s", gen_e)
+
+        # Incrementally update parent run progress
         await db.update_prompt_tune_run(
             tune_id, user_id,
-            generations_json=json.dumps(all_generations),
-            best_prompt=best_prompt,
             best_score=best_score,
             best_prompt_origin_json=json.dumps(best_prompt_origin) if best_prompt_origin else None,
             completed_prompts=completed_prompts,
@@ -1816,8 +2053,6 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
     if cancel_event.is_set():
         await db.update_prompt_tune_run(
             tune_id, user_id,
-            generations_json=json.dumps(all_generations),
-            best_prompt=best_prompt,
             best_score=best_score,
             best_prompt_origin_json=_origin_json,
             completed_prompts=completed_prompts,
@@ -1830,7 +2065,7 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
     best_pv_id = None
     if best_prompt:
         try:
-            label = f"Prompt Tune ({suite['name']}) — score {best_score:.0%}"
+            label = f"Prompt Tune ({suite['name']}) -- score {best_score:.0%}"
             best_pv_id = await db.create_prompt_version(
                 user_id=user_id,
                 prompt_text=best_prompt,
@@ -1844,8 +2079,6 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
 
     await db.update_prompt_tune_run(
         tune_id, user_id,
-        generations_json=json.dumps(all_generations),
-        best_prompt=best_prompt,
         best_score=best_score,
         best_prompt_origin_json=_origin_json,
         best_prompt_version_id=best_pv_id,
@@ -1920,16 +2153,70 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
     # Versioning params (set by rerun endpoint, optional for normal judge)
     parent_report_id = params.get("parent_report_id")
     version = int(params.get("version", 1))
-    instructions_json = params.get("instructions_json")
 
     logger.info(
         "Judge started: job_id=%s user_id=%s eval_run_id=%s concurrency=%d version=%d",
         job_id, user_id, eval_run_id, concurrency, version,
     )
 
-    # Load eval run
+    # ERD v2: Load eval results from case_results table instead of results_json
     eval_run = await db.get_tool_eval_run(eval_run_id, user_id)
-    results = json.loads(eval_run.get("results_json", "[]"))
+    case_results_rows = await db.get_case_results(eval_run_id)
+
+    # Pre-load test cases for the suite and index by ID
+    all_test_cases = await db.get_test_cases(eval_run["suite_id"])
+    test_case_by_id = {tc["id"]: tc for tc in all_test_cases}
+
+    # Pre-load model lookups to avoid N+1 queries
+    model_cache: dict[str, dict | None] = {}
+
+    # Convert case_results rows into the dict format expected by judge logic
+    results = []
+    case_result_id_map: dict[str, str] = {}  # keyed by "model_id::test_case_id" -> case_result DB id
+    for cr in case_results_rows:
+        # Resolve model litellm_id from model_id FK
+        model_id_fk = cr.get("model_id", "")
+        if model_id_fk not in model_cache:
+            model_cache[model_id_fk] = await db.get_model(model_id_fk) if model_id_fk else None
+        model_row = model_cache[model_id_fk]
+        model_litellm_id = model_row["litellm_id"] if model_row else "unknown"
+
+        actual_params = cr.get("actual_params")
+        if actual_params and isinstance(actual_params, str):
+            try:
+                actual_params = json.loads(actual_params)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        result_dict = {
+            "test_case_id": cr.get("test_case_id", ""),
+            "model_id": model_litellm_id,
+            "actual_tool": cr.get("actual_tool"),
+            "actual_params": actual_params,
+            "tool_selection_score": cr.get("tool_selection_score", 0.0),
+            "param_accuracy": cr.get("param_accuracy"),
+            "overall_score": cr.get("overall_score", 0.0),
+            "success": bool(cr.get("success", 1)),
+            "error": cr.get("error", ""),
+            "latency_ms": cr.get("latency_ms", 0),
+            "format_compliance": cr.get("format_compliance", "PASS"),
+            "error_type": cr.get("error_type"),
+        }
+
+        # Enrich with test case data for judge context
+        tc = test_case_by_id.get(cr.get("test_case_id", ""))
+        if tc:
+            result_dict["prompt"] = tc.get("prompt", "")
+            result_dict["expected_tool"] = tc.get("expected_tool")
+            if tc.get("expected_params"):
+                try:
+                    result_dict["expected_params"] = json.loads(tc["expected_params"]) if isinstance(tc["expected_params"], str) else tc["expected_params"]
+                except (json.JSONDecodeError, TypeError):
+                    result_dict["expected_params"] = tc.get("expected_params")
+
+        results.append(result_dict)
+        cr_key = f"{model_litellm_id}::{cr.get('test_case_id', '')}"
+        case_result_id_map[cr_key] = cr["id"]
 
     # --- Build tuner analysis context (appended to cross-case prompt) ---
     tuner_analysis_context = ""
@@ -1952,12 +2239,14 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
             elif tune_type == "prompt_tuner":
                 tune_run = await db.get_prompt_tune_run(tune_run_id, user_id)
                 if tune_run:
-                    # Resolve best_prompt from prompt_versions (post-migration 600) or fallback to column
-                    best_prompt = tune_run.get("best_prompt", "")
-                    if not best_prompt and tune_run.get("best_prompt_version_id"):
+                    # Resolve best_prompt from prompt_versions or fallback to column
+                    best_prompt = ""
+                    if tune_run.get("best_prompt_version_id"):
                         _bpv = await db.get_prompt_version(tune_run["best_prompt_version_id"], user_id)
                         if _bpv:
                             best_prompt = _bpv.get("prompt_text", "")
+                    if not best_prompt:
+                        best_prompt = tune_run.get("base_prompt", "")
                     tuner_analysis_context = (
                         "## Tuner Analysis Context\n"
                         "The prompt tuner found this winning system prompt:\n"
@@ -1975,7 +2264,8 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
 
     # Load suite for tool definitions
     suite = await db.get_tool_suite(eval_run["suite_id"], user_id)
-    tools = json.loads(suite["tools_json"]) if suite else []
+    tool_defs = await db.get_tool_definitions(eval_run["suite_id"])
+    tools = _tool_defs_to_openai(tool_defs)
     tool_defs_text = _build_tool_definitions_text(tools)
 
     # Build judge target
@@ -2006,16 +2296,15 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
     _judge_db = await db.get_model_by_litellm_id(user_id, judge_model_id)
     _judge_db_id = _judge_db["id"] if _judge_db else None
 
-    # Create judge report in DB (with versioning fields if present)
+    # Create judge report in DB
     report_id = await db.save_judge_report(
         user_id=user_id,
-        judge_model=judge_model_id,
         mode="post_eval",
         eval_run_id=eval_run_id,
         experiment_id=experiment_id,
         parent_report_id=parent_report_id,
         version=version,
-        instructions_json=instructions_json,
+        custom_instructions=custom_instructions or None,
         judge_model_id=_judge_db_id,
     )
 
@@ -2077,9 +2366,29 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
             mname = tgt.display_name if tgt else model_id
             await progress_cb(j_pct, f"Judge {mname}: {completed}/{total_verdicts}")
 
+            # ERD v2: Save verdict to DB
+            try:
+                cr_key = f"{v.get('model_id', '')}::{v.get('test_case_id', '')}"
+                cr_id = case_result_id_map.get(cr_key)
+                if cr_id:
+                    await db.save_judge_verdict(
+                        report_id=report_id,
+                        case_result_id=cr_id,
+                        quality_score=v.get("quality_score", 0),
+                        verdict=v.get("verdict", "fail"),
+                        summary=v.get("summary", ""),
+                        reasoning=v.get("reasoning", ""),
+                        tool_selection_assessment=v.get("tool_selection_assessment", "unknown"),
+                        param_assessment=v.get("param_assessment", "unknown"),
+                        judge_override_score=v.get("judge_override_score"),
+                        override_reason=v.get("override_reason"),
+                    )
+            except Exception as ve:
+                logger.warning("Failed to save judge verdict: %s", ve)
+
         if cancel_event.is_set():
             if report_id:
-                await db.update_judge_report(report_id, verdicts_json=json.dumps(all_verdicts), status="error")
+                await db.update_judge_report(report_id, status="error")
             return None
 
         # Cross-case analysis per model
@@ -2102,7 +2411,6 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
 
     await db.update_judge_report(
         report_id,
-        verdicts_json=json.dumps(all_verdicts),
         report_json=json.dumps(all_model_reports),
         overall_grade=final_grade,
         overall_score=final_score,
@@ -2145,15 +2453,65 @@ async def judge_compare_handler(job_id: str, params: dict, cancel_event, progres
         job_id, user_id, eval_run_id_a, eval_run_id_b,
     )
 
-    # Load both runs
+    # ERD v2: Load results from case_results table
     run_a = await db.get_tool_eval_run(eval_run_id_a, user_id)
     run_b = await db.get_tool_eval_run(eval_run_id_b, user_id)
-    results_a = json.loads(run_a.get("results_json", "[]"))
-    results_b = json.loads(run_b.get("results_json", "[]"))
+
+    case_results_a = await db.get_case_results(eval_run_id_a)
+    case_results_b = await db.get_case_results(eval_run_id_b)
+
+    # Pre-load test cases and model lookups for batch enrichment
+    all_test_cases = await db.get_test_cases(run_a["suite_id"])
+    test_case_by_id = {tc["id"]: tc for tc in all_test_cases}
+    model_cache: dict[str, dict | None] = {}
+
+    # Convert case_results to dicts with litellm model IDs
+    async def _enrich_results(case_results_rows: list[dict]) -> list[dict]:
+        enriched = []
+        for cr in case_results_rows:
+            model_id_fk = cr.get("model_id", "")
+            if model_id_fk not in model_cache:
+                model_cache[model_id_fk] = await db.get_model(model_id_fk) if model_id_fk else None
+            model_row = model_cache[model_id_fk]
+            model_litellm_id = model_row["litellm_id"] if model_row else "unknown"
+
+            actual_params = cr.get("actual_params")
+            if actual_params and isinstance(actual_params, str):
+                try:
+                    actual_params = json.loads(actual_params)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            result_dict = {
+                "test_case_id": cr.get("test_case_id", ""),
+                "model_id": model_litellm_id,
+                "actual_tool": cr.get("actual_tool"),
+                "actual_params": actual_params,
+                "overall_score": cr.get("overall_score", 0.0),
+                "success": bool(cr.get("success", 1)),
+            }
+
+            # Enrich with test case data for judge context
+            tc = test_case_by_id.get(cr.get("test_case_id", ""))
+            if tc:
+                result_dict["prompt"] = tc.get("prompt", "")
+                result_dict["expected_tool"] = tc.get("expected_tool")
+                if tc.get("expected_params"):
+                    try:
+                        result_dict["expected_params"] = json.loads(tc["expected_params"]) if isinstance(tc["expected_params"], str) else tc["expected_params"]
+                    except (json.JSONDecodeError, TypeError):
+                        result_dict["expected_params"] = tc.get("expected_params")
+
+            enriched.append(result_dict)
+        return enriched
+
+    results_a = await _enrich_results(case_results_a)
+    results_b = await _enrich_results(case_results_b)
 
     # Load suite for tool definitions
     suite = await db.get_tool_suite(run_a["suite_id"], user_id)
-    tools = json.loads(suite["tools_json"]) if suite else []
+    tool_defs = await db.get_tool_definitions(run_a["suite_id"])
+    tools = _tool_defs_to_openai(tool_defs)
     tool_defs_text = _build_tool_definitions_text(tools)
 
     # Build judge target
@@ -2174,11 +2532,11 @@ async def judge_compare_handler(job_id: str, params: dict, cancel_event, progres
         if ws_manager:
             await ws_manager.send_to_user(user_id, payload)
 
-    # Determine model names
-    models_a = json.loads(run_a.get("models_json", "[]"))
-    models_b = json.loads(run_b.get("models_json", "[]"))
-    model_a_name = models_a[0] if models_a else "Model A"
-    model_b_name = models_b[0] if models_b else "Model B"
+    # Determine model names from enriched case results
+    model_ids_a = list(dict.fromkeys(r["model_id"] for r in results_a))  # preserve order, unique
+    model_ids_b = list(dict.fromkeys(r["model_id"] for r in results_b))
+    model_a_name = model_ids_a[0] if model_ids_a else "Model A"
+    model_b_name = model_ids_b[0] if model_ids_b else "Model B"
     target_map = {t.model_id: t for t in all_targets}
     ta = target_map.get(model_a_name)
     tb = target_map.get(model_b_name)
@@ -2202,7 +2560,6 @@ async def judge_compare_handler(job_id: str, params: dict, cancel_event, progres
     # Create report in DB
     report_id = await db.save_judge_report(
         user_id=user_id,
-        judge_model=judge_model_id,
         mode="comparative",
         eval_run_id=eval_run_id_a,
         eval_run_id_b=eval_run_id_b,
@@ -2262,7 +2619,7 @@ async def judge_compare_handler(job_id: str, params: dict, cancel_event, progres
             for ct in compare_tasks:
                 ct.cancel()
             if report_id:
-                await db.update_judge_report(report_id, verdicts_json=json.dumps(case_comparisons), status="error")
+                await db.update_judge_report(report_id, status="error")
             return None
         comparison = await coro
         case_comparisons.append(comparison)
@@ -2319,7 +2676,6 @@ async def judge_compare_handler(job_id: str, params: dict, cancel_event, progres
 
     await db.update_judge_report(
         report_id,
-        verdicts_json=json.dumps(case_comparisons),
         report_json=json.dumps(full_report),
         overall_grade=overall_grade,
         overall_score=overall_score,
@@ -2391,7 +2747,10 @@ async def prompt_auto_optimize_handler(job_id: str, params: dict, cancel_event, 
     if not cases:
         logger.error("Auto-optimize: no test cases in suite suite_id=%s", suite_id)
         return None
-    tools = json.loads(suite["tools_json"])
+
+    # ERD v2: Load tools from tool_definitions table
+    tool_defs = await db.get_tool_definitions(suite_id)
+    tools = _tool_defs_to_openai(tool_defs)
 
     # Build targets
     config = await _get_user_config(user_id)
@@ -2614,7 +2973,7 @@ async def prompt_auto_optimize_handler(job_id: str, params: dict, cancel_event, 
     # Save best prompt to prompt_versions table
     if best_prompt and best_prompt != base_prompt:
         try:
-            label = f"Auto-Optimize ({suite['name']}) — score {best_score:.0%}"
+            label = f"Auto-Optimize ({suite['name']}) -- score {best_score:.0%}"
             best_version_id = await db.create_prompt_version(
                 user_id=user_id,
                 prompt_text=best_prompt,
@@ -2649,7 +3008,7 @@ async def prompt_auto_optimize_handler(job_id: str, params: dict, cancel_event, 
                     vid = await db.create_prompt_version(
                         user_id=user_id,
                         prompt_text=text,
-                        label=f"Auto-Optimize #{candidate['iteration']}.{candidate['index']} ({suite['name']}) — score {candidate['avg_score']:.0%}",
+                        label=f"Auto-Optimize #{candidate['iteration']}.{candidate['index']} ({suite['name']}) -- score {candidate['avg_score']:.0%}",
                         source="auto_optimize",
                         origin_run_id=job_id,
                         parent_version_id=best_version_id,

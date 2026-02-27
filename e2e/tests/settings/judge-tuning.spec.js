@@ -51,14 +51,14 @@ test.describe('@smoke Judge & Tuning Settings', () => {
 
     // Verify the "Judge Model" section label is visible
     await expect(
-      page.locator('.section-label', { hasText: 'Judge Model' }),
+      page.locator('.section-label').filter({ hasText: 'Judge Model' }),
     ).toBeVisible({ timeout: TIMEOUT.nav });
 
     // Verify key controls are present
     await expect(page.getByText('Auto-judge enabled')).toBeVisible();
-    await expect(page.locator('.field-label', { hasText: /^Judge Model$/ })).toBeVisible();
-    await expect(page.locator('.field-label', { hasText: /^Judge Mode$/ })).toBeVisible();
-    await expect(page.locator('.field-label', { hasText: 'Temperature' })).toBeVisible();
+    await expect(page.locator('.field-label').filter({ hasText: /^Judge Model$/ })).toBeVisible();
+    await expect(page.locator('.field-label').filter({ hasText: /^Judge Mode$/ })).toBeVisible();
+    await expect(page.locator('.field-label').filter({ hasText: 'Temperature' })).toBeVisible();
   });
 
   test('Step 2: Interact with judge settings controls', async () => {
@@ -112,11 +112,11 @@ test.describe('@smoke Judge & Tuning Settings', () => {
 
     // Verify "Parameter Tuner Defaults" section is visible (open by default)
     await expect(
-      page.locator('.section-label', { hasText: 'Parameter Tuner Defaults' }),
+      page.locator('.section-label').filter({ hasText: 'Parameter Tuner Defaults' }),
     ).toBeVisible({ timeout: TIMEOUT.nav });
 
     // Verify parameter tuner fields are visible
-    await expect(page.locator('.field-label', { hasText: 'Max Combinations' })).toBeVisible();
+    await expect(page.locator('.field-label').filter({ hasText: 'Max Combinations' })).toBeVisible();
   });
 
   test('Step 4: Interact with tuning settings controls', async () => {
@@ -131,11 +131,11 @@ test.describe('@smoke Judge & Tuning Settings', () => {
     await tempMinInput.dispatchEvent('change');
 
     // --- Expand Prompt Tuner Defaults section (collapsed by default) ---
-    const promptTunerHeader = page.locator('.section-label', { hasText: 'Prompt Tuner Defaults' });
+    const promptTunerHeader = page.locator('.section-label').filter({ hasText: 'Prompt Tuner Defaults' });
     await promptTunerHeader.click();
 
     // Verify prompt tuner fields become visible
-    await expect(page.locator('.field-label', { hasText: 'Mode' })).toBeVisible({ timeout: TIMEOUT.modal });
+    await expect(page.locator('.field-label').filter({ hasText: 'Mode' })).toBeVisible({ timeout: TIMEOUT.modal });
 
     // --- Change prompt tuner mode to "thorough" ---
     const modeSelect = page.locator('.settings-select').filter({ hasText: /Quick|Thorough|Exhaustive/ }).first();
@@ -158,7 +158,7 @@ test.describe('@smoke Judge & Tuning Settings', () => {
     await page.getByRole('link', { name: /Judge/ }).click();
     await expect(page).toHaveURL(/\/settings\/judge/);
     await expect(
-      page.locator('.section-label', { hasText: 'Judge Model' }),
+      page.locator('.section-label').filter({ hasText: 'Judge Model' }),
     ).toBeVisible({ timeout: TIMEOUT.nav });
 
     // Auto-judge should be toggled on (we toggled it from off to on in Step 2)
@@ -181,7 +181,7 @@ test.describe('@smoke Judge & Tuning Settings', () => {
     await page.getByRole('link', { name: /Tuning/ }).click();
     await expect(page).toHaveURL(/\/settings\/tuning/);
     await expect(
-      page.locator('.section-label', { hasText: 'Parameter Tuner Defaults' }),
+      page.locator('.section-label').filter({ hasText: 'Parameter Tuner Defaults' }),
     ).toBeVisible({ timeout: TIMEOUT.nav });
 
     // Max combinations should be 25
@@ -193,9 +193,9 @@ test.describe('@smoke Judge & Tuning Settings', () => {
     await expect(tempMinInput).toHaveValue('0.2');
 
     // Expand prompt tuner section and check mode
-    const promptTunerHeader = page.locator('.section-label', { hasText: 'Prompt Tuner Defaults' });
+    const promptTunerHeader = page.locator('.section-label').filter({ hasText: 'Prompt Tuner Defaults' });
     await promptTunerHeader.click();
-    await expect(page.locator('.field-label', { hasText: 'Mode' })).toBeVisible({ timeout: TIMEOUT.modal });
+    await expect(page.locator('.field-label').filter({ hasText: 'Mode' })).toBeVisible({ timeout: TIMEOUT.modal });
 
     const promptModeSelect = page.locator('.settings-select').filter({ hasText: /Quick|Thorough|Exhaustive/ }).first();
     await expect(promptModeSelect).toHaveValue('thorough');

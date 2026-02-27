@@ -119,15 +119,8 @@ export const useParamTunerStore = defineStore('paramTuner', () => {
     const res = await apiFetch(`/api/tool-eval/param-tune/history/${id}`)
     if (!res.ok) throw new Error('Run not found')
     const data = await res.json()
-    // Populate results from loaded run
-    if (data.results_json) {
-      try {
-        const parsed = typeof data.results_json === 'string'
-          ? JSON.parse(data.results_json)
-          : data.results_json
-        results.value = parsed
-      } catch { results.value = [] }
-    }
+    // combos come pre-parsed as an array from the API
+    results.value = Array.isArray(data.combos) ? data.combos : []
     return data
   }
 

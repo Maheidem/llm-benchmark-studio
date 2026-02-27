@@ -128,11 +128,11 @@ test.describe('Platform Validation — 16 Feature Scenarios', () => {
       await dismissOnboardingIfPresent(page);
 
       // Tab should be active
-      const tab = page.locator('a', { hasText: 'Model Profiles' });
+      const tab = page.locator('a').filter({ hasText: 'Model Profiles' });
       await expect(tab).toBeVisible({ timeout: TIMEOUT.nav });
 
       // "+ New Profile" button should be visible
-      const newBtn = page.locator('button', { hasText: '+ New Profile' });
+      const newBtn = page.locator('button').filter({ hasText: '+ New Profile' });
       await expect(newBtn).toBeVisible({ timeout: TIMEOUT.modal });
 
       // Click it to open the create modal

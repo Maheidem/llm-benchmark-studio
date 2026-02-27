@@ -184,14 +184,18 @@ class TestFormatComplianceInEvalResult:
         assert run_resp.status_code == 200
         run_data = run_resp.json()
 
-        # Find results — either inline or via history
+        # Find results — either inline or via history detail endpoint
         results = run_data.get("results") or []
         if not results:
             history_resp = await app_client.get("/api/tool-eval/history", headers=auth_headers)
             assert history_resp.status_code == 200
             runs = history_resp.json().get("runs", [])
             if runs:
-                results = json.loads(runs[0].get("results_json", "[]"))
+                detail_resp = await app_client.get(
+                    f"/api/tool-eval/history/{runs[0]['id']}", headers=auth_headers
+                )
+                if detail_resp.status_code == 200:
+                    results = detail_resp.json().get("results", [])
 
         if results:
             for r in results:
@@ -203,17 +207,16 @@ class TestFormatComplianceInEvalResult:
     async def test_old_run_missing_format_compliance_does_not_500(
         self, app_client, auth_headers, _patch_db_path
     ):
-        """Old eval runs that lack format_compliance in results_json must not crash."""
-        import aiosqlite, json, uuid
+        """Eval runs without format_compliance in case_results must not crash."""
+        import aiosqlite, uuid
 
-        old_result = [{"test_case_id": "tc1", "overall_score": 1.0,
-                       "model_id": "old-model", "prompt": "test"}]
+        # Create a minimal eval run (results now live in case_results child table)
+        run_id = uuid.uuid4().hex
         async with aiosqlite.connect(str(_patch_db_path)) as conn:
             await conn.execute(
-                "INSERT INTO tool_eval_runs (id, user_id, suite_id, "
-                "models_json, results_json, summary_json) VALUES (?,?,?,?,?,?)",
-                (str(uuid.uuid4()), "missing-user", "s-old",
-                 "[]", json.dumps(old_result), "{}"),
+                "INSERT INTO tool_eval_runs (id, user_id, suite_id, temperature) "
+                "VALUES (?, ?, ?, ?)",
+                (run_id, "missing-user", "s-old", 0.0),
             )
             await conn.commit()
 

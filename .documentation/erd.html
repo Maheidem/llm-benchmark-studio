@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LLM Benchmark Studio - Fully Normalized ERD</title>
+<title>LLM Benchmark Studio — ERD v2: Full Domain Normalization</title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
@@ -31,7 +31,7 @@
 
   .canvas-wrap{position:relative;overflow:auto;height:calc(100vh - 120px);cursor:grab}
   .canvas-wrap:active{cursor:grabbing}
-  .canvas{position:relative;min-width:2800px;min-height:2400px;padding:30px;transform-origin:0 0}
+  .canvas{position:relative;min-width:2100px;min-height:1800px;padding:30px;transform-origin:0 0}
 
   .lines-layer{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:1}
   .lines-layer line,.lines-layer path{stroke:#475569;stroke-width:1.4;opacity:.4;transition:opacity .2s,stroke .2s;fill:none}
@@ -42,7 +42,7 @@
   .lines-layer circle.hl{fill:#38bdf8}
   .lines-layer circle.nr{fill:#10b981}
 
-  .tc{position:absolute;background:#1e293b;border:1px solid #334155;border-radius:8px;min-width:230px;box-shadow:0 3px 12px rgba(0,0,0,.3);z-index:10;transition:box-shadow .2s,border-color .2s,opacity .2s;overflow:hidden}
+  .tc{position:absolute;background:#1e293b;border:1px solid #334155;border-radius:8px;min-width:235px;box-shadow:0 3px 12px rgba(0,0,0,.3);z-index:10;transition:box-shadow .2s,border-color .2s,opacity .2s;overflow:hidden}
   .tc:hover,.tc.hl{border-color:#3b82f6;box-shadow:0 0 16px rgba(59,130,246,.2)}
   .tc.dim{opacity:.18}
   .tc.sn{border-color:#10b981;box-shadow:0 0 20px rgba(16,185,129,.25),inset 0 0 20px rgba(16,185,129,.04)}
@@ -60,7 +60,7 @@
   .cr:last-child{border-bottom:none}
   .cr:hover{background:rgba(56,189,248,.04)}
   .cr.cn{background:rgba(16,185,129,.07)} .cr.cc{background:rgba(245,158,11,.07)} .cr.cd{background:rgba(239,68,68,.07);text-decoration:line-through;opacity:.45}
-  .cn-n{color:#e2e8f0;min-width:130px} .cn-t{color:#64748b;font-size:9px}
+  .cn-n{color:#e2e8f0;min-width:140px} .cn-t{color:#64748b;font-size:9px}
   .cb{font-size:7px;padding:1px 4px;border-radius:3px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;margin-left:auto;flex-shrink:0}
   .b-pk{background:#facc1520;color:#fbbf24;border:1px solid #fbbf2440}
   .b-fk{background:#38bdf820;color:#38bdf8;border:1px solid #38bdf840}
@@ -70,30 +70,31 @@
   .b-chg{background:#f59e0b18;color:#fbbf24;border:1px solid #f59e0b38}
   .b-del{background:#ef444418;color:#f87171;border:1px solid #ef444438}
 
-  .cat-core .th{background:linear-gradient(135deg,#10b98120,#10b98108)} .cat-core .ic{background:#10b981}
   .cat-auth .th{background:linear-gradient(135deg,#7c3aed18,#7c3aed08)} .cat-auth .ic{background:#8b5cf6}
-  .cat-bench .th{background:linear-gradient(135deg,#2563eb18,#2563eb08)} .cat-bench .ic{background:#3b82f6}
-  .cat-eval .th{background:linear-gradient(135deg,#05966918,#05966908)} .cat-eval .ic{background:#10b981}
+  .cat-core .th{background:linear-gradient(135deg,#10b98120,#10b98108)} .cat-core .ic{background:#10b981}
+  .cat-suite .th{background:linear-gradient(135deg,#05966918,#05966908)} .cat-suite .ic{background:#059669}
+  .cat-exec .th{background:linear-gradient(135deg,#e879f918,#e879f908)} .cat-exec .ic{background:#e879f9}
+  .cat-judge .th{background:linear-gradient(135deg,#f4364518,#f4364508)} .cat-judge .ic{background:#f43f5e}
   .cat-tune .th{background:linear-gradient(135deg,#d9770618,#d9770608)} .cat-tune .ic{background:#f59e0b}
+  .cat-bench .th{background:linear-gradient(135deg,#2563eb18,#2563eb08)} .cat-bench .ic{background:#3b82f6}
   .cat-plat .th{background:linear-gradient(135deg,#dc262618,#dc262608)} .cat-plat .ic{background:#ef4444}
   .cat-pub .th{background:linear-gradient(135deg,#0891b218,#0891b208)} .cat-pub .ic{background:#06b6d4}
-  .cat-result .th{background:linear-gradient(135deg,#e879f918,#e879f908)} .cat-result .ic{background:#e879f9}
 
   .zi{position:fixed;bottom:12px;right:12px;background:#1e293b;border:1px solid #334155;padding:4px 10px;border-radius:5px;font-size:10px;color:#94a3b8;z-index:200}
-  .tt{position:fixed;background:#1e293b;border:1px solid #475569;padding:7px 11px;border-radius:6px;font-size:10px;color:#cbd5e1;max-width:300px;z-index:300;pointer-events:none;display:none;box-shadow:0 4px 16px rgba(0,0,0,.4);line-height:1.5}
+  .tt{position:fixed;background:#1e293b;border:1px solid #475569;padding:7px 11px;border-radius:6px;font-size:10px;color:#cbd5e1;max-width:320px;z-index:300;pointer-events:none;display:none;box-shadow:0 4px 16px rgba(0,0,0,.4);line-height:1.5}
 </style>
 </head>
 <body>
 <header>
   <div>
-    <h1>LLM Benchmark Studio &mdash; Fully Normalized ERD</h1>
+    <h1>LLM Benchmark Studio &mdash; ERD v2: Full Domain Normalization</h1>
     <div class="stats">
-      <span class="s-new">+3 new tables</span> &middot;
-      <span class="s-mod">11 modified</span> &middot;
+      <span class="s-new">+7 new tables</span> &middot;
+      <span class="s-mod">8 modified</span> &middot;
       <span class="s-del">1 dropped</span> &middot;
-      <span class="s-same">8 unchanged</span> &middot;
-      <span style="color:#38bdf8">22</span> total &middot;
-      <span style="color:#38bdf8">42</span> FKs
+      <span class="s-same">14 unchanged</span> &middot;
+      <span style="color:#38bdf8">30</span> total &middot;
+      <span style="color:#38bdf8">60</span> FKs
     </div>
   </div>
   <div class="controls">
@@ -109,17 +110,18 @@
   </div>
 </header>
 <div class="bar">
-  <span class="pill pill-n">+3 NEW</span> providers, models, run_results
-  <span class="pill pill-m">11 MOD</span> string&rarr;FK + suite_name dropped
-  <span class="pill pill-d">1 DROP</span> user_configs (replaced by providers/models DB)
-  <span class="pill pill-s">8 SAME</span>
+  <span class="pill pill-n">+7 NEW</span> tool_definitions, case_results, judge_verdicts, benchmark_results, param_tune_combos, prompt_tune_generations, prompt_tune_candidates
+  <span class="pill pill-m">8 MOD</span> blobs&rarr;child tables
+  <span class="pill pill-d">1 DROP</span> run_results
+  <span class="pill pill-s">14 SAME</span>
   <span style="margin-left:auto;display:flex;gap:8px">
-    <div class="legend-item"><div class="legend-dot" style="background:#10b981;box-shadow:0 0 4px #10b981"></div>Core (new)</div>
-    <div class="legend-item"><div class="legend-dot" style="background:#e879f9"></div>Results (new)</div>
     <div class="legend-item"><div class="legend-dot" style="background:#8b5cf6"></div>Auth</div>
-    <div class="legend-item"><div class="legend-dot" style="background:#3b82f6"></div>Bench</div>
-    <div class="legend-item"><div class="legend-dot" style="background:#059669"></div>Eval</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#10b981"></div>Core</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#059669"></div>Suite</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#e879f9;box-shadow:0 0 4px #e879f9"></div>Execution (new)</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f43f5e;box-shadow:0 0 4px #f43f5e"></div>Judge</div>
     <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div>Tune</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#3b82f6"></div>Bench</div>
     <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div>Platform</div>
     <div class="legend-item"><div class="legend-dot" style="background:#06b6d4"></div>Public</div>
   </span>
@@ -132,54 +134,15 @@
 
 <script>
 // ═══════════════════════════════════════════════════════════
-//  FULLY NORMALIZED SCHEMA
-//  N1: Provider → Model (first-class entities)
-//  N2: Drop suite_name (derivable from suite_id FK)
-//  N3: Prompts → prompt_versions FK
-//  N4: run_results table (normalized results)
-//  N5: Configs → model_profiles FK
-//  BONUS: Drop user_configs (replaced by DB-driven providers/models)
+//  ERD v2: FULL DOMAIN NORMALIZATION
+//  Key insight: Tool Eval Run = THE atomic execution unit
+//  Orchestrators (param/prompt/auto tune) own N eval runs
+//  JSON blobs → first-class child tables
 // ═══════════════════════════════════════════════════════════
 
 const T=[
-// ═══ NEW CORE: providers + models ═══
-{name:"providers",cat:"core",s:"new",x:460,y:30,
- note:"N1 NEW: Replaces config.yaml providers. Global system catalog. config.yaml becomes seed-only.",
- cols:[
-  {n:"id",t:"TEXT",pk:1},{n:"key",t:"TEXT",uq:1,nn:1},
-  {n:"name",t:"TEXT",nn:1},{n:"api_base",t:"TEXT"},
-  {n:"api_key_env",t:"TEXT"},{n:"model_prefix",t:"TEXT"},
-  {n:"is_active",t:"INT",nn:1},
-  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
-]},
-{name:"models",cat:"core",s:"new",x:460,y:290,
- note:"N1 NEW: Replaces config.yaml models. Each belongs to one provider. Source of truth for model IDs.",
- cols:[
-  {n:"id",t:"TEXT",pk:1},{n:"provider_id",t:"TEXT",fk:"providers",nn:1},
-  {n:"litellm_id",t:"TEXT",nn:1},{n:"display_name",t:"TEXT",nn:1},
-  {n:"context_window",t:"INT"},{n:"skip_temperature",t:"INT"},
-  {n:"is_active",t:"INT",nn:1},
-  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
-]},
-
-// ═══ NEW: run_results (N4 — normalized results) ═══
-{name:"run_results",cat:"result",s:"new",x:1480,y:830,
- note:"N4 NEW: Normalized per-model results. Replaces results_json blobs. Enables cross-run analytics via SQL.",
- cols:[
-  {n:"id",t:"TEXT",pk:1},
-  {n:"run_id",t:"TEXT",nn:1},
-  {n:"run_type",t:"TEXT",nn:1,ck:"benchmark|tool_eval|param_tune|prompt_tune"},
-  {n:"model_id",t:"TEXT",fk:"models",nn:1},
-  {n:"profile_id",t:"TEXT",fk:"model_profiles"},
-  {n:"tool_accuracy_pct",t:"REAL"},{n:"param_accuracy_pct",t:"REAL"},
-  {n:"throughput_tps",t:"REAL"},{n:"ttft_ms",t:"REAL"},
-  {n:"tokens_generated",t:"INT"},{n:"latency_p99_ms",t:"REAL"},
-  {n:"score",t:"REAL"},{n:"raw_response_json",t:"TEXT"},
-  {n:"created_at",t:"TEXT",nn:1}
-]},
-
-// ═══ AUTH ═══
-{name:"users",cat:"auth",s:"unchanged",x:50,y:30,
+// ═══════════ COLUMN 1: AUTH (x:30) ═══════════
+{name:"users",cat:"auth",s:"unchanged",x:30,y:30,
  cols:[
   {n:"id",t:"TEXT",pk:1},{n:"email",t:"TEXT",uq:1,nn:1},
   {n:"password_hash",t:"TEXT",nn:1},{n:"role",t:"TEXT",nn:1,ck:"admin|user"},
@@ -187,28 +150,26 @@ const T=[
   {n:"avatar_url",t:"TEXT"},{n:"leaderboard_opt_in",t:"INT"},
   {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
 ]},
-{name:"refresh_tokens",cat:"auth",s:"unchanged",x:50,y:370,
+{name:"refresh_tokens",cat:"auth",s:"unchanged",x:30,y:330,
  cols:[
   {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
   {n:"token_hash",t:"TEXT",uq:1,nn:1},{n:"expires_at",t:"TEXT",nn:1},
   {n:"created_at",t:"TEXT",nn:1}
 ]},
-{name:"password_reset_tokens",cat:"auth",s:"unchanged",x:50,y:540,
+{name:"password_reset_tokens",cat:"auth",s:"unchanged",x:30,y:500,
  cols:[
   {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
   {n:"token_hash",t:"TEXT",uq:1,nn:1},{n:"expires_at",t:"TEXT",nn:1},
   {n:"used",t:"INT",nn:1},{n:"created_at",t:"TEXT",nn:1}
 ]},
-{name:"user_api_keys",cat:"auth",s:"modified",x:230,y:370,
- note:"N1 MOD: provider_key (string) → provider_id FK. Proper User ↔ Provider bridge table.",
+{name:"user_api_keys",cat:"auth",s:"unchanged",x:30,y:700,
  cols:[
   {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
-  {n:"provider_id",t:"TEXT",fk:"providers",nn:1,ch:"new"},
-  {n:"provider_key",t:"TEXT",ch:"removed"},
+  {n:"provider_id",t:"TEXT",fk:"providers",nn:1},
   {n:"key_name",t:"TEXT",nn:1},{n:"encrypted_value",t:"TEXT",nn:1},
   {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
 ]},
-{name:"rate_limits",cat:"auth",s:"unchanged",x:50,y:720,
+{name:"rate_limits",cat:"auth",s:"unchanged",x:30,y:910,
  cols:[
   {n:"id",t:"INT",pk:1},{n:"user_id",t:"TEXT",fk:"users",uq:1,nn:1},
   {n:"benchmarks_per_hour",t:"INT",nn:1},{n:"max_concurrent",t:"INT",nn:1},
@@ -216,16 +177,304 @@ const T=[
   {n:"updated_at",t:"TEXT",nn:1},{n:"updated_by",t:"TEXT",fk:"users"}
 ]},
 
-// ═══ DROPPED ═══
-{name:"user_configs",cat:"auth",s:"dropped",x:230,y:550,
- note:"DROPPED: config_yaml stored per-user provider/model overrides. Now providers+models tables serve this. User preferences move to a settings key-value or stay in model_profiles.",
+// ═══════════ COLUMN 2: CORE (x:310) ═══════════
+{name:"providers",cat:"core",s:"unchanged",x:310,y:30,
  cols:[
-  {n:"id",t:"TEXT",pk:1,ch:"removed"},{n:"user_id",t:"TEXT",fk:"users",ch:"removed"},
-  {n:"config_yaml",t:"TEXT",ch:"removed"},{n:"updated_at",t:"TEXT",ch:"removed"}
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"key",t:"TEXT",nn:1},{n:"name",t:"TEXT",nn:1},
+  {n:"api_base",t:"TEXT"},{n:"api_key_env",t:"TEXT"},
+  {n:"model_prefix",t:"TEXT"},{n:"is_active",t:"INT",nn:1},
+  {n:"sort_order",t:"INT",nn:1},
+  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
+]},
+{name:"models",cat:"core",s:"unchanged",x:310,y:330,
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"provider_id",t:"TEXT",fk:"providers",nn:1},
+  {n:"litellm_id",t:"TEXT",nn:1},{n:"display_name",t:"TEXT",nn:1},
+  {n:"context_window",t:"INT"},{n:"max_output_tokens",t:"INT"},
+  {n:"skip_params",t:"TEXT"},{n:"is_active",t:"INT",nn:1},
+  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
+]},
+{name:"model_profiles",cat:"core",s:"unchanged",x:310,y:620,
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"model_id",t:"TEXT",fk:"models",nn:1},
+  {n:"name",t:"TEXT",nn:1},{n:"description",t:"TEXT"},
+  {n:"is_default",t:"INT",nn:1},{n:"params_json",t:"TEXT",nn:1},
+  {n:"system_prompt",t:"TEXT"},
+  {n:"prompt_version_id",t:"TEXT",fk:"prompt_versions"},
+  {n:"origin_type",t:"TEXT",nn:1,ck:"manual|param_tuner|..."},
+  {n:"origin_ref",t:"TEXT"},
+  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
+]},
+{name:"prompt_versions",cat:"core",s:"unchanged",x:310,y:980,
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"prompt_text",t:"TEXT",nn:1},{n:"label",t:"TEXT",nn:1},
+  {n:"source",t:"TEXT",nn:1,ck:"manual|prompt_tuner|auto_optimize"},
+  {n:"parent_version_id",t:"TEXT",fk:"prompt_versions"},
+  {n:"model_db_id",t:"TEXT",fk:"models"},
+  {n:"origin_run_id",t:"TEXT"},
+  {n:"created_at",t:"TEXT",nn:1}
 ]},
 
-// ═══ PLATFORM ═══
-{name:"audit_log",cat:"plat",s:"unchanged",x:230,y:720,
+// ═══════════ COLUMN 3: SUITE (x:600) ═══════════
+{name:"tool_suites",cat:"suite",s:"modified",x:600,y:30,
+ note:"v2 MOD: tools_json removed — tool definitions extracted to tool_definitions table.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"name",t:"TEXT",nn:1},{n:"description",t:"TEXT"},
+  {n:"tools_json",t:"TEXT",ch:"removed"},
+  {n:"system_prompt",t:"TEXT"},
+  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
+]},
+{name:"tool_definitions",cat:"suite",s:"new",x:600,y:280,
+ note:"v2 NEW: First-class tool definitions. Extracted from tool_suites.tools_json. Each tool = 1 row with name, description, JSON Schema params.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
+  {n:"name",t:"TEXT",nn:1},{n:"description",t:"TEXT",nn:1},
+  {n:"parameters_schema",t:"TEXT",nn:1},
+  {n:"sort_order",t:"INT",nn:1},
+  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
+]},
+{name:"tool_test_cases",cat:"suite",s:"modified",x:600,y:540,
+ note:"v2 MOD: expected_tool_id FK to tool_definitions. expected_tool renamed to expected_tool_name (denormalized for parallel calls).",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
+  {n:"prompt",t:"TEXT",nn:1},
+  {n:"expected_tool_id",t:"TEXT",fk:"tool_definitions",ch:"new"},
+  {n:"expected_tool_name",t:"TEXT"},
+  {n:"expected_params",t:"TEXT"},
+  {n:"param_scoring",t:"TEXT",nn:1,ck:"exact|fuzzy|..."},
+  {n:"should_call_tool",t:"INT",nn:1},{n:"category",t:"TEXT"},
+  {n:"multi_turn_config",t:"TEXT"},{n:"scoring_config_json",t:"TEXT"},
+  {n:"created_at",t:"TEXT",nn:1}
+]},
+{name:"experiments",cat:"suite",s:"modified",x:600,y:870,
+ note:"v2 MOD: suite_snapshot_json removed. Snapshots should be a suite version mechanism, not per-experiment.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"name",t:"TEXT",nn:1},{n:"description",t:"TEXT"},
+  {n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
+  {n:"suite_snapshot_json",t:"TEXT",ch:"removed"},
+  {n:"baseline_eval_id",t:"TEXT",fk:"tool_eval_runs"},
+  {n:"baseline_score",t:"REAL"},
+  {n:"best_config_json",t:"TEXT"},{n:"best_score",t:"REAL"},
+  {n:"best_source",t:"TEXT"},{n:"best_source_id",t:"TEXT"},
+  {n:"status",t:"TEXT",nn:1,ck:"active|archived"},
+  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
+]},
+
+// ═══════════ COLUMN 4: EXECUTION (x:910) ═══════════
+{name:"tool_eval_runs",cat:"exec",s:"modified",x:910,y:30,
+ note:"v2 MOD: THE atomic execution unit. Blobs removed (models_json, results_json, summary_json, config_json). Orchestrator columns added. Results in case_results table.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
+  {n:"temperature",t:"REAL"},
+  {n:"tool_choice",t:"TEXT",nn:1,ch:"new"},
+  {n:"system_prompt_config",t:"TEXT",ch:"new"},
+  {n:"provider_params_json",t:"TEXT",ch:"new"},
+  {n:"models_json",t:"TEXT",ch:"removed"},
+  {n:"results_json",t:"TEXT",ch:"removed"},
+  {n:"summary_json",t:"TEXT",ch:"removed"},
+  {n:"config_json",t:"TEXT",ch:"removed"},
+  {n:"profiles_json",t:"TEXT",ch:"removed"},
+  {n:"judge_explanations_json",t:"TEXT",ch:"removed"},
+  {n:"orchestrator_type",t:"TEXT",ch:"new",ck:"standalone|param_tune|..."},
+  {n:"orchestrator_run_id",t:"TEXT",ch:"new"},
+  {n:"experiment_id",t:"TEXT",fk:"experiments"},
+  {n:"timestamp",t:"TEXT",nn:1}
+]},
+{name:"case_results",cat:"exec",s:"new",x:910,y:460,
+ note:"v2 NEW: THE atomic execution record. One row = one model + one test case + one eval run. Extracted from tool_eval_runs.results_json. Enables per-case SQL analytics.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},
+  {n:"eval_run_id",t:"TEXT",fk:"tool_eval_runs",nn:1},
+  {n:"test_case_id",t:"TEXT",fk:"tool_test_cases",nn:1},
+  {n:"model_id",t:"TEXT",fk:"models",nn:1},
+  {n:"tool_selection_score",t:"REAL",nn:1},
+  {n:"param_accuracy",t:"REAL"},
+  {n:"overall_score",t:"REAL",nn:1},
+  {n:"irrelevance_score",t:"REAL"},
+  {n:"actual_tool",t:"TEXT"},{n:"actual_params",t:"TEXT"},
+  {n:"success",t:"INT",nn:1},{n:"error",t:"TEXT"},
+  {n:"latency_ms",t:"INT"},
+  {n:"format_compliance",t:"TEXT",ck:"PASS|FAIL|NORMALIZED"},
+  {n:"error_type",t:"TEXT"},
+  {n:"raw_request",t:"TEXT"},{n:"raw_response",t:"TEXT"},
+  {n:"created_at",t:"TEXT",nn:1}
+]},
+
+// ═══════════ COLUMN 4 (lower): JUDGE ═══════════
+{name:"judge_reports",cat:"judge",s:"modified",x:910,y:880,
+ note:"v2 MOD: verdicts_json removed — verdicts in judge_verdicts table. instructions_json replaced by custom_instructions TEXT. report_json kept (LLM narrative).",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"eval_run_id",t:"TEXT",fk:"tool_eval_runs"},
+  {n:"eval_run_id_b",t:"TEXT",fk:"tool_eval_runs"},
+  {n:"judge_model_id",t:"TEXT",fk:"models"},
+  {n:"mode",t:"TEXT",nn:1,ck:"post_eval|live_inline|comparative"},
+  {n:"verdicts_json",t:"TEXT",ch:"removed"},
+  {n:"instructions_json",t:"TEXT",ch:"removed"},
+  {n:"custom_instructions",t:"TEXT",ch:"new"},
+  {n:"report_json",t:"TEXT"},
+  {n:"overall_grade",t:"TEXT"},{n:"overall_score",t:"REAL"},
+  {n:"status",t:"TEXT",nn:1,ck:"running|completed|..."},
+  {n:"parent_report_id",t:"TEXT"},{n:"version",t:"INT",nn:1},
+  {n:"experiment_id",t:"TEXT",fk:"experiments"},
+  {n:"timestamp",t:"TEXT",nn:1}
+]},
+{name:"judge_verdicts",cat:"judge",s:"new",x:910,y:1300,
+ note:"v2 NEW: Per-case judge assessment. Extracted from judge_reports.verdicts_json. FK to case_results = verdict tied to specific execution, not just test case.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},
+  {n:"judge_report_id",t:"TEXT",fk:"judge_reports",nn:1},
+  {n:"case_result_id",t:"TEXT",fk:"case_results",nn:1},
+  {n:"quality_score",t:"INT",nn:1},
+  {n:"verdict",t:"TEXT",nn:1},{n:"summary",t:"TEXT",nn:1},
+  {n:"reasoning",t:"TEXT",nn:1},
+  {n:"tool_selection_assessment",t:"TEXT"},
+  {n:"param_assessment",t:"TEXT"},
+  {n:"judge_override_score",t:"REAL"},{n:"override_reason",t:"TEXT"},
+  {n:"created_at",t:"TEXT",nn:1}
+]},
+
+// ═══════════ COLUMN 5: ORCHESTRATORS (x:1260) ═══════════
+{name:"param_tune_runs",cat:"tune",s:"modified",x:1260,y:30,
+ note:"v2 MOD: models_json, results_json, judge_scores_json removed. Combo results in param_tune_combos, each linking to an eval run. n_trials added.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
+  {n:"optimization_mode",t:"TEXT",nn:1,ck:"grid|random|bayesian"},
+  {n:"search_space_json",t:"TEXT",nn:1},
+  {n:"n_trials",t:"INT",ch:"new"},
+  {n:"models_json",t:"TEXT",ch:"removed"},
+  {n:"results_json",t:"TEXT",ch:"removed"},
+  {n:"judge_scores_json",t:"TEXT",ch:"removed"},
+  {n:"total_combos",t:"INT",nn:1},{n:"completed_combos",t:"INT"},
+  {n:"status",t:"TEXT",nn:1,ck:"running|completed|..."},
+  {n:"best_score",t:"REAL"},{n:"best_config_json",t:"TEXT"},
+  {n:"best_profile_id",t:"TEXT",fk:"model_profiles"},
+  {n:"duration_s",t:"REAL"},
+  {n:"experiment_id",t:"TEXT",fk:"experiments"},
+  {n:"timestamp",t:"TEXT",nn:1}
+]},
+{name:"param_tune_combos",cat:"tune",s:"new",x:1260,y:460,
+ note:"v2 NEW: One row per param combination tested. Links to the eval run created for that combination. Extracted from param_tune_runs.results_json.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},
+  {n:"tune_run_id",t:"TEXT",fk:"param_tune_runs",nn:1},
+  {n:"combo_index",t:"INT",nn:1},
+  {n:"model_id",t:"TEXT",fk:"models",nn:1},
+  {n:"config_json",t:"TEXT",nn:1},
+  {n:"eval_run_id",t:"TEXT",fk:"tool_eval_runs"},
+  {n:"overall_score",t:"REAL"},{n:"tool_accuracy_pct",t:"REAL"},
+  {n:"param_accuracy_pct",t:"REAL"},{n:"latency_avg_ms",t:"INT"},
+  {n:"cases_passed",t:"INT"},{n:"cases_total",t:"INT"},
+  {n:"adjustments_json",t:"TEXT"},
+  {n:"created_at",t:"TEXT",nn:1}
+]},
+{name:"prompt_tune_runs",cat:"tune",s:"modified",x:1260,y:820,
+ note:"v2 MOD: target_models_json, config_json, generations_json removed. Config decomposed to atomic columns. mode gains 'auto_optimize'. Generations in child tables.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
+  {n:"mode",t:"TEXT",nn:1,ck:"quick|evolutionary|auto_optimize",ch:"changed"},
+  {n:"meta_model_id",t:"TEXT",fk:"models"},
+  {n:"base_prompt",t:"TEXT"},
+  {n:"target_models_json",t:"TEXT",ch:"removed"},
+  {n:"config_json",t:"TEXT",ch:"removed"},
+  {n:"generations_json",t:"TEXT",ch:"removed"},
+  {n:"population_size",t:"INT",nn:1,ch:"new"},
+  {n:"generations",t:"INT",nn:1,ch:"new"},
+  {n:"selection_ratio",t:"REAL",nn:1,ch:"new"},
+  {n:"eval_temperature",t:"REAL",ch:"new"},
+  {n:"eval_tool_choice",t:"TEXT",ch:"new"},
+  {n:"total_prompts",t:"INT"},{n:"completed_prompts",t:"INT"},
+  {n:"status",t:"TEXT",nn:1,ck:"running|completed|..."},
+  {n:"best_score",t:"REAL"},
+  {n:"best_prompt_version_id",t:"TEXT",fk:"prompt_versions"},
+  {n:"best_prompt_origin_json",t:"TEXT"},
+  {n:"best_profile_id",t:"TEXT",fk:"model_profiles",ch:"new"},
+  {n:"duration_s",t:"REAL"},
+  {n:"experiment_id",t:"TEXT",fk:"experiments"},
+  {n:"timestamp",t:"TEXT",nn:1}
+]},
+{name:"prompt_tune_generations",cat:"tune",s:"new",x:1260,y:1300,
+ note:"v2 NEW: Generation-level tracking for prompt tuning. Extracted from prompt_tune_runs.generations_json. Each generation has N candidates.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},
+  {n:"tune_run_id",t:"TEXT",fk:"prompt_tune_runs",nn:1},
+  {n:"generation_number",t:"INT",nn:1},
+  {n:"best_score",t:"REAL"},{n:"best_candidate_index",t:"INT"},
+  {n:"created_at",t:"TEXT",nn:1}
+]},
+{name:"prompt_tune_candidates",cat:"tune",s:"new",x:1260,y:1520,
+ note:"v2 NEW: Per-prompt candidate per generation. Links to eval run + prompt version. Extracted from generations_json[].prompts[].",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},
+  {n:"generation_id",t:"TEXT",fk:"prompt_tune_generations",nn:1},
+  {n:"candidate_index",t:"INT",nn:1},
+  {n:"prompt_version_id",t:"TEXT",fk:"prompt_versions"},
+  {n:"prompt_text",t:"TEXT",nn:1},
+  {n:"style",t:"TEXT"},{n:"mutation_type",t:"TEXT"},
+  {n:"parent_candidate_id",t:"TEXT",fk:"prompt_tune_candidates"},
+  {n:"avg_score",t:"REAL"},{n:"survived",t:"INT",nn:1},
+  {n:"eval_run_id",t:"TEXT",fk:"tool_eval_runs"},
+  {n:"created_at",t:"TEXT",nn:1}
+]},
+
+// ═══════════ COLUMN 6: BENCH + PLATFORM (x:1580) ═══════════
+{name:"benchmark_runs",cat:"bench",s:"modified",x:1580,y:30,
+ note:"v2 MOD: results_json removed. Per-model results in benchmark_results table.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"timestamp",t:"TEXT",nn:1},{n:"prompt",t:"TEXT"},
+  {n:"context_tiers",t:"TEXT"},
+  {n:"results_json",t:"TEXT",ch:"removed"},
+  {n:"metadata",t:"TEXT"},{n:"max_tokens",t:"INT"},
+  {n:"temperature",t:"REAL"},{n:"warmup",t:"INT"},
+  {n:"config_json",t:"TEXT"}
+]},
+{name:"benchmark_results",cat:"bench",s:"new",x:1580,y:330,
+ note:"v2 NEW: Per-model-per-run throughput record. Extracted from benchmark_runs.results_json. Each LLM call = 1 row.",
+ cols:[
+  {n:"id",t:"TEXT",pk:1},
+  {n:"run_id",t:"TEXT",fk:"benchmark_runs",nn:1},
+  {n:"model_id",t:"TEXT",fk:"models",nn:1},
+  {n:"run_number",t:"INT",nn:1},
+  {n:"context_tokens",t:"INT",nn:1},
+  {n:"ttft_ms",t:"REAL"},{n:"total_time_s",t:"REAL"},
+  {n:"output_tokens",t:"INT"},{n:"input_tokens",t:"INT"},
+  {n:"tokens_per_second",t:"REAL"},
+  {n:"input_tokens_per_second",t:"REAL"},
+  {n:"cost",t:"REAL"},
+  {n:"success",t:"INT",nn:1},{n:"error",t:"TEXT"},
+  {n:"created_at",t:"TEXT",nn:1}
+]},
+{name:"schedules",cat:"bench",s:"unchanged",x:1580,y:680,
+ cols:[
+  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
+  {n:"name",t:"TEXT",nn:1},
+  {n:"prompt_version_id",t:"TEXT",fk:"prompt_versions"},
+  {n:"prompt",t:"TEXT"},
+  {n:"models_json",t:"TEXT",nn:1},
+  {n:"max_tokens",t:"INT"},{n:"temperature",t:"REAL"},
+  {n:"interval_hours",t:"INT",nn:1,ck:">0"},
+  {n:"enabled",t:"INT"},{n:"last_run",t:"TEXT"},
+  {n:"next_run",t:"TEXT",nn:1},{n:"created",t:"TEXT",nn:1}
+]},
+{name:"public_leaderboard",cat:"pub",s:"unchanged",x:1580,y:1000,
+ cols:[
+  {n:"id",t:"TEXT",pk:1},
+  {n:"model_db_id",t:"TEXT",fk:"models",nn:1},
+  {n:"tool_accuracy_pct",t:"REAL"},{n:"param_accuracy_pct",t:"REAL"},
+  {n:"irrel_accuracy_pct",t:"REAL"},{n:"throughput_tps",t:"REAL"},
+  {n:"ttft_ms",t:"REAL"},{n:"sample_count",t:"INT",nn:1},
+  {n:"last_updated",t:"TEXT",nn:1}
+]},
+{name:"audit_log",cat:"plat",s:"unchanged",x:1580,y:1240,
  cols:[
   {n:"id",t:"INT",pk:1},{n:"timestamp",t:"TEXT",nn:1},
   {n:"user_id",t:"TEXT",fk:"users"},{n:"username",t:"TEXT",nn:1},
@@ -233,7 +482,7 @@ const T=[
   {n:"resource_id",t:"TEXT"},{n:"detail",t:"TEXT"},
   {n:"ip_address",t:"TEXT"},{n:"user_agent",t:"TEXT"}
 ]},
-{name:"jobs",cat:"plat",s:"unchanged",x:230,y:1010,
+{name:"jobs",cat:"plat",s:"unchanged",x:1580,y:1520,
  cols:[
   {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
   {n:"job_type",t:"TEXT",nn:1,ck:"8 types"},
@@ -246,237 +495,99 @@ const T=[
   {n:"completed_at",t:"TEXT"},{n:"timeout_at",t:"TEXT"}
 ]},
 
-// ═══ BENCHMARKS ═══
-{name:"benchmark_runs",cat:"bench",s:"modified",x:50,y:1010,
- note:"N4 MOD: results_json kept as snapshot but per-model metrics now also written to run_results. prompt stays inline (point-in-time snapshot).",
+// ═══════════ DROPPED ═══════════
+{name:"run_results",cat:"exec",s:"dropped",x:30,y:1200,
+ note:"v2 DROPPED: Was a Phase 4 dual-write shim for per-model metrics. Replaced by case_results (tool eval) and benchmark_results (throughput). Proper per-case granularity now.",
  cols:[
-  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
-  {n:"timestamp",t:"TEXT",nn:1},{n:"prompt",t:"TEXT"},
-  {n:"context_tiers",t:"TEXT"},
-  {n:"results_json",t:"TEXT",nn:1},
-  {n:"metadata",t:"TEXT"},{n:"max_tokens",t:"INT"},
-  {n:"temperature",t:"REAL"},{n:"warmup",t:"INT"},
-  {n:"config_json",t:"TEXT"}
-]},
-{name:"schedules",cat:"bench",s:"modified",x:50,y:1330,
- note:"N1+N3 MOD: models_json stores model table IDs. prompt_version_id FK replaces raw prompt text for managed prompts.",
- cols:[
-  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
-  {n:"name",t:"TEXT",nn:1},
-  {n:"prompt_version_id",t:"TEXT",fk:"prompt_versions",ch:"new"},
-  {n:"prompt",t:"TEXT",ch:"removed"},
-  {n:"models_json",t:"TEXT",nn:1,ch:"changed"},
-  {n:"max_tokens",t:"INT"},{n:"temperature",t:"REAL"},
-  {n:"interval_hours",t:"INT",nn:1,ck:">0"},
-  {n:"enabled",t:"INT"},{n:"last_run",t:"TEXT"},
-  {n:"next_run",t:"TEXT",nn:1},{n:"created",t:"TEXT",nn:1}
-]},
-
-// ═══ TOOL EVAL ═══
-{name:"tool_suites",cat:"eval",s:"unchanged",x:830,y:30,
- cols:[
-  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
-  {n:"name",t:"TEXT",nn:1},{n:"description",t:"TEXT"},
-  {n:"tools_json",t:"TEXT",nn:1},{n:"system_prompt",t:"TEXT"},
-  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
-]},
-{name:"tool_test_cases",cat:"eval",s:"unchanged",x:830,y:290,
- note:"Unchanged: prompt stays inline — it's the test input, a point-in-time snapshot.",
- cols:[
-  {n:"id",t:"TEXT",pk:1},{n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
-  {n:"prompt",t:"TEXT",nn:1},{n:"expected_tool",t:"TEXT"},
-  {n:"expected_params",t:"TEXT"},
-  {n:"param_scoring",t:"TEXT",nn:1,ck:"exact|fuzzy|..."},
-  {n:"should_call_tool",t:"INT",nn:1},{n:"category",t:"TEXT"},
-  {n:"multi_turn_config",t:"TEXT"},{n:"scoring_config_json",t:"TEXT"},
-  {n:"created_at",t:"TEXT",nn:1}
-]},
-{name:"experiments",cat:"eval",s:"unchanged",x:1120,y:30,
- cols:[
-  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
-  {n:"name",t:"TEXT",nn:1},{n:"description",t:"TEXT"},
-  {n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
-  {n:"suite_snapshot_json",t:"TEXT"},
-  {n:"baseline_eval_id",t:"TEXT"},{n:"baseline_score",t:"REAL"},
-  {n:"best_config_json",t:"TEXT"},{n:"best_score",t:"REAL"},
-  {n:"best_source",t:"TEXT"},{n:"best_source_id",t:"TEXT"},
-  {n:"status",t:"TEXT",nn:1,ck:"active|archived"},
-  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
-]},
-{name:"tool_eval_runs",cat:"eval",s:"modified",x:1120,y:430,
- note:"N2+N4+N5 MOD: suite_name dropped (join suite_id). models_json stores model IDs. results_json kept as snapshot; per-model scores also in run_results. profile_id links to model_profiles used.",
- cols:[
-  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
-  {n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
-  {n:"suite_name",t:"TEXT",ch:"removed"},
-  {n:"models_json",t:"TEXT",nn:1,ch:"changed"},
-  {n:"results_json",t:"TEXT",nn:1},
-  {n:"summary_json",t:"TEXT",nn:1},
-  {n:"temperature",t:"REAL"},{n:"config_json",t:"TEXT"},
-  {n:"experiment_id",t:"TEXT",fk:"experiments"},
-  {n:"profiles_json",t:"TEXT",ch:"removed"},
-  {n:"judge_explanations_json",t:"TEXT"},
-  {n:"timestamp",t:"TEXT",nn:1}
-]},
-
-// ═══ MODEL CHILDREN ═══
-{name:"model_profiles",cat:"eval",s:"modified",x:460,y:560,
- note:"N1+N5 MOD: model_id string → FK to models. Now Model 1:N Profiles. Referenced by run_results.profile_id for traceability.",
- cols:[
-  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
-  {n:"model_id",t:"TEXT",fk:"models",nn:1,ch:"changed"},
-  {n:"name",t:"TEXT",nn:1},{n:"description",t:"TEXT"},
-  {n:"is_default",t:"INT",nn:1},{n:"params_json",t:"TEXT",nn:1},
-  {n:"system_prompt",t:"TEXT"},
-  {n:"prompt_version_id",t:"TEXT",fk:"prompt_versions"},
-  {n:"origin_type",t:"TEXT",nn:1,ck:"manual|param_tuner|..."},
-  {n:"origin_ref",t:"TEXT"},
-  {n:"created_at",t:"TEXT",nn:1},{n:"updated_at",t:"TEXT",nn:1}
-]},
-{name:"prompt_versions",cat:"eval",s:"modified",x:460,y:870,
- note:"N1+N3 MOD: Added model_id FK (nullable — universal prompts have no model). Now Model 1:N Prompts. Referenced by schedules, model_profiles, prompt_tune_runs.",
- cols:[
-  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
-  {n:"model_id",t:"TEXT",fk:"models",ch:"new"},
-  {n:"prompt_text",t:"TEXT",nn:1},{n:"label",t:"TEXT",nn:1},
-  {n:"source",t:"TEXT",nn:1,ck:"manual|prompt_tuner|auto_optimize"},
-  {n:"parent_version_id",t:"TEXT",fk:"prompt_versions"},
-  {n:"origin_run_id",t:"TEXT"},
-  {n:"created_at",t:"TEXT",nn:1}
-]},
-
-// ═══ TUNING & JUDGE ═══
-{name:"param_tune_runs",cat:"tune",s:"modified",x:1480,y:30,
- note:"N1+N2+N4+N5 MOD: suite_name dropped. models_json stores model IDs. best_config_json → best_profile_id FK. Per-combo results also in run_results.",
- cols:[
-  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
-  {n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
-  {n:"suite_name",t:"TEXT",ch:"removed"},
-  {n:"models_json",t:"TEXT",nn:1,ch:"changed"},
-  {n:"search_space_json",t:"TEXT",nn:1},
-  {n:"results_json",t:"TEXT",nn:1},
-  {n:"best_profile_id",t:"TEXT",fk:"model_profiles",ch:"new"},
-  {n:"best_config_json",t:"TEXT",ch:"removed"},
-  {n:"best_score",t:"REAL"},
-  {n:"total_combos",t:"INT",nn:1},{n:"completed_combos",t:"INT"},
-  {n:"status",t:"TEXT",nn:1,ck:"running|completed|..."},
-  {n:"optimization_mode",t:"TEXT",nn:1,ck:"grid|random|bayesian"},
-  {n:"duration_s",t:"REAL"},
-  {n:"experiment_id",t:"TEXT",fk:"experiments"},
-  {n:"judge_scores_json",t:"TEXT"},
-  {n:"timestamp",t:"TEXT",nn:1}
-]},
-{name:"prompt_tune_runs",cat:"tune",s:"modified",x:1480,y:470,
- note:"N1+N2+N3 MOD: suite_name dropped. meta_model→meta_model_id FK. meta_provider_key dropped (derivable). best_prompt→best_prompt_version_id FK. target_models_json stores model IDs.",
- cols:[
-  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
-  {n:"suite_id",t:"TEXT",fk:"tool_suites",nn:1},
-  {n:"suite_name",t:"TEXT",ch:"removed"},
-  {n:"mode",t:"TEXT",nn:1,ck:"quick|evolutionary"},
-  {n:"target_models_json",t:"TEXT",nn:1,ch:"changed"},
-  {n:"meta_model_id",t:"TEXT",fk:"models",nn:1,ch:"new"},
-  {n:"meta_model",t:"TEXT",ch:"removed"},
-  {n:"meta_provider_key",t:"TEXT",ch:"removed"},
-  {n:"base_prompt",t:"TEXT"},
-  {n:"config_json",t:"TEXT",nn:1},
-  {n:"generations_json",t:"TEXT",nn:1},
-  {n:"best_prompt_version_id",t:"TEXT",fk:"prompt_versions",ch:"new"},
-  {n:"best_prompt",t:"TEXT",ch:"removed"},
-  {n:"best_score",t:"REAL"},
-  {n:"best_prompt_origin_json",t:"TEXT"},
-  {n:"status",t:"TEXT",nn:1,ck:"running|completed|..."},
-  {n:"total_prompts",t:"INT"},{n:"completed_prompts",t:"INT"},
-  {n:"duration_s",t:"REAL"},
-  {n:"experiment_id",t:"TEXT",fk:"experiments"},
-  {n:"timestamp",t:"TEXT",nn:1}
-]},
-{name:"judge_reports",cat:"tune",s:"modified",x:1480,y:1080,
- note:"N1 MOD: judge_model string → judge_model_id FK to models.",
- cols:[
-  {n:"id",t:"TEXT",pk:1},{n:"user_id",t:"TEXT",fk:"users",nn:1},
-  {n:"eval_run_id",t:"TEXT",fk:"tool_eval_runs"},
-  {n:"eval_run_id_b",t:"TEXT",fk:"tool_eval_runs"},
-  {n:"judge_model_id",t:"TEXT",fk:"models",nn:1,ch:"new"},
-  {n:"judge_model",t:"TEXT",ch:"removed"},
-  {n:"mode",t:"TEXT",nn:1,ck:"post_eval|live_inline|comparative"},
-  {n:"verdicts_json",t:"TEXT",nn:1},{n:"report_json",t:"TEXT"},
-  {n:"overall_grade",t:"TEXT"},{n:"overall_score",t:"REAL"},
-  {n:"status",t:"TEXT",nn:1,ck:"running|completed|..."},
-  {n:"experiment_id",t:"TEXT",fk:"experiments"},
-  {n:"parent_report_id",t:"TEXT"},
-  {n:"version",t:"INT",nn:1},{n:"instructions_json",t:"TEXT"},
-  {n:"timestamp",t:"TEXT",nn:1}
-]},
-
-// ═══ PUBLIC ═══
-{name:"public_leaderboard",cat:"pub",s:"modified",x:830,y:1080,
- note:"N1 MOD: model_name+provider strings → model_id FK. Provider derivable via join. Leaner, no drift.",
- cols:[
-  {n:"id",t:"TEXT",pk:1},
-  {n:"model_id",t:"TEXT",fk:"models",nn:1,ch:"new"},
-  {n:"model_name",t:"TEXT",ch:"removed"},
-  {n:"provider",t:"TEXT",ch:"removed"},
-  {n:"tool_accuracy_pct",t:"REAL"},{n:"param_accuracy_pct",t:"REAL"},
-  {n:"irrel_accuracy_pct",t:"REAL"},{n:"throughput_tps",t:"REAL"},
-  {n:"ttft_ms",t:"REAL"},{n:"sample_count",t:"INT",nn:1},
-  {n:"last_updated",t:"TEXT",nn:1}
+  {n:"id",t:"TEXT",pk:1,ch:"removed"},
+  {n:"run_id",t:"TEXT",ch:"removed"},{n:"run_type",t:"TEXT",ch:"removed"},
+  {n:"model_id",t:"TEXT",ch:"removed"},{n:"profile_id",t:"TEXT",ch:"removed"},
+  {n:"tool_accuracy_pct",t:"REAL",ch:"removed"},{n:"param_accuracy_pct",t:"REAL",ch:"removed"},
+  {n:"throughput_tps",t:"REAL",ch:"removed"},{n:"ttft_ms",t:"REAL",ch:"removed"},
+  {n:"score",t:"REAL",ch:"removed"},{n:"created_at",t:"TEXT",ch:"removed"}
 ]}
 ];
 
-// ═══════ RELATIONSHIPS ═══════
+// ═══════════ RELATIONSHIPS ═══════════
 // [from, from_col, to, to_col, isNew]
 const R=[
-  // N1: provider/model core chain
-  ["models","provider_id","providers","id",true],
-  ["user_api_keys","provider_id","providers","id",true],
-  ["model_profiles","model_id","models","id",true],
-  ["prompt_versions","model_id","models","id",true],
-  ["prompt_tune_runs","meta_model_id","models","id",true],
-  ["judge_reports","judge_model_id","models","id",true],
-  ["public_leaderboard","model_id","models","id",true],
-  // N3: prompt_versions FKs
-  ["schedules","prompt_version_id","prompt_versions","id",true],
-  ["prompt_tune_runs","best_prompt_version_id","prompt_versions","id",true],
-  // N4: run_results
-  ["run_results","model_id","models","id",true],
-  ["run_results","profile_id","model_profiles","id",true],
-  // N5: config → profile FK
-  ["param_tune_runs","best_profile_id","model_profiles","id",true],
+  // ── v2 NEW relationships (blob extraction) ──
+  ["tool_definitions","suite_id","tool_suites","id",true],
+  ["tool_test_cases","expected_tool_id","tool_definitions","id",true],
+  ["case_results","eval_run_id","tool_eval_runs","id",true],
+  ["case_results","test_case_id","tool_test_cases","id",true],
+  ["case_results","model_id","models","id",true],
+  ["judge_verdicts","judge_report_id","judge_reports","id",true],
+  ["judge_verdicts","case_result_id","case_results","id",true],
+  ["benchmark_results","run_id","benchmark_runs","id",true],
+  ["benchmark_results","model_id","models","id",true],
+  ["param_tune_combos","tune_run_id","param_tune_runs","id",true],
+  ["param_tune_combos","model_id","models","id",true],
+  ["param_tune_combos","eval_run_id","tool_eval_runs","id",true],
+  ["prompt_tune_generations","tune_run_id","prompt_tune_runs","id",true],
+  ["prompt_tune_candidates","generation_id","prompt_tune_generations","id",true],
+  ["prompt_tune_candidates","prompt_version_id","prompt_versions","id",true],
+  ["prompt_tune_candidates","eval_run_id","tool_eval_runs","id",true],
+  ["prompt_tune_candidates","parent_candidate_id","prompt_tune_candidates","id",true],
+  ["prompt_tune_runs","best_profile_id","model_profiles","id",true],
 
-  // Existing FKs
+  // ── Existing relationships (from v1) ──
+  // Core chain
+  ["providers","user_id","users","id",false],
+  ["models","provider_id","providers","id",false],
+  ["model_profiles","user_id","users","id",false],
+  ["model_profiles","model_id","models","id",false],
+  ["model_profiles","prompt_version_id","prompt_versions","id",false],
+  ["prompt_versions","user_id","users","id",false],
+  ["prompt_versions","parent_version_id","prompt_versions","id",false],
+  ["prompt_versions","model_db_id","models","id",false],
+
+  // Auth
   ["refresh_tokens","user_id","users","id",false],
   ["password_reset_tokens","user_id","users","id",false],
   ["user_api_keys","user_id","users","id",false],
+  ["user_api_keys","provider_id","providers","id",false],
   ["rate_limits","user_id","users","id",false],
   ["rate_limits","updated_by","users","id",false],
-  ["audit_log","user_id","users","id",false],
-  ["benchmark_runs","user_id","users","id",false],
-  ["schedules","user_id","users","id",false],
+
+  // Suite & eval
   ["tool_suites","user_id","users","id",false],
   ["tool_test_cases","suite_id","tool_suites","id",false],
   ["experiments","user_id","users","id",false],
   ["experiments","suite_id","tool_suites","id",false],
+  ["experiments","baseline_eval_id","tool_eval_runs","id",false],
   ["tool_eval_runs","user_id","users","id",false],
   ["tool_eval_runs","suite_id","tool_suites","id",false],
   ["tool_eval_runs","experiment_id","experiments","id",false],
+
+  // Orchestrators
   ["param_tune_runs","user_id","users","id",false],
   ["param_tune_runs","suite_id","tool_suites","id",false],
   ["param_tune_runs","experiment_id","experiments","id",false],
+  ["param_tune_runs","best_profile_id","model_profiles","id",false],
   ["prompt_tune_runs","user_id","users","id",false],
   ["prompt_tune_runs","suite_id","tool_suites","id",false],
   ["prompt_tune_runs","experiment_id","experiments","id",false],
+  ["prompt_tune_runs","meta_model_id","models","id",false],
+  ["prompt_tune_runs","best_prompt_version_id","prompt_versions","id",false],
+
+  // Judge
   ["judge_reports","user_id","users","id",false],
   ["judge_reports","eval_run_id","tool_eval_runs","id",false],
   ["judge_reports","eval_run_id_b","tool_eval_runs","id",false],
+  ["judge_reports","judge_model_id","models","id",false],
   ["judge_reports","experiment_id","experiments","id",false],
+
+  // Bench & platform
+  ["benchmark_runs","user_id","users","id",false],
+  ["schedules","user_id","users","id",false],
+  ["schedules","prompt_version_id","prompt_versions","id",false],
+  ["public_leaderboard","model_db_id","models","id",false],
+  ["audit_log","user_id","users","id",false],
   ["jobs","user_id","users","id",false],
-  ["prompt_versions","user_id","users","id",false],
-  ["prompt_versions","parent_version_id","prompt_versions","id",false],
-  ["model_profiles","user_id","users","id",false],
-  ["model_profiles","prompt_version_id","prompt_versions","id",false],
 ];
 
-// ═══════ RENDER ═══════
+// ═══════════ RENDER ═══════════
 const cv=document.getElementById("cv"),sl=document.getElementById("sl"),cw=document.getElementById("cw"),tt=document.getElementById("tt");
 let zm=1,sL=true;const te={};
 

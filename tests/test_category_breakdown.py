@@ -237,19 +237,23 @@ class TestCategoryInImportAndResults:
             })
         assert run_resp.status_code == 200
 
+        # ERD v2: results are in child table, fetch via detail endpoint
         history_resp = await app_client.get("/api/tool-eval/history", headers=auth_headers)
         assert history_resp.status_code == 200
         runs = history_resp.json().get("runs", [])
         if runs:
-            results = json.loads(runs[0].get("results_json", "[]"))
-            if results:
-                for r in results:
-                    assert "category" in r, f"category missing from result: {r.keys()}"
+            detail_resp = await app_client.get(
+                f"/api/tool-eval/history/{runs[0]['id']}", headers=auth_headers
+            )
+            assert detail_resp.status_code == 200
+            results = detail_resp.json().get("results", [])
+            for r in results:
+                assert "category" in r, f"category missing from result: {r.keys()}"
 
     async def test_eval_summary_has_category_breakdown(
         self, app_client, auth_headers, clear_active_jobs
     ):
-        """Eval summary (summary_json) includes category_breakdown per model."""
+        """Eval summary includes category_breakdown per model."""
         await self._setup_zai_config(app_client, auth_headers)
         from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -289,14 +293,16 @@ class TestCategoryInImportAndResults:
             })
         assert run_resp.status_code == 200
 
+        # ERD v2: summary is in child table, fetch via detail endpoint
         history_resp = await app_client.get("/api/tool-eval/history", headers=auth_headers)
         assert history_resp.status_code == 200
         runs = history_resp.json().get("runs", [])
         if runs:
-            try:
-                summary = json.loads(runs[0].get("summary_json", "[]"))
-            except (json.JSONDecodeError, TypeError):
-                summary = []
+            detail_resp = await app_client.get(
+                f"/api/tool-eval/history/{runs[0]['id']}", headers=auth_headers
+            )
+            assert detail_resp.status_code == 200
+            summary = detail_resp.json().get("summary", [])
             if summary:
                 for model_summary in summary:
                     assert "category_breakdown" in model_summary, (

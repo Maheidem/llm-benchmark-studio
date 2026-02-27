@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 import auth
 import db
-from schemas import BenchmarkRequest
+from schemas import BenchmarkRequest, DirectBenchmarkRequest
 from job_registry import registry as job_registry
 from routers.helpers import (
     _parse_target_selection,
@@ -136,6 +136,73 @@ async def cancel_benchmark(request: Request, user: dict = Depends(auth.get_curre
     return {"status": "ok", "message": "Cancellation requested"}
 
 
+@router.post("/api/benchmark/direct-results")
+async def save_direct_results(request: Request, user: dict = Depends(auth.get_current_user)):
+    """Persist benchmark results collected directly in the browser (Direct Local Access).
+
+    The browser ran benchmarks against local LLMs via fetch(), measured TTFT/throughput
+    with performance.now(), and now sends the results here for DB persistence.
+    """
+    raw = await request.json()
+
+    try:
+        validated = DirectBenchmarkRequest(**raw)
+    except (ValidationError, Exception) as e:
+        raise HTTPException(422, detail=str(e))
+
+    if not validated.results:
+        raise HTTPException(422, detail="No results to save")
+
+    # Build litellm_id -> DB model UUID lookup
+    all_models = await db.get_all_models_for_user(user["id"])
+    model_lookup = {m["litellm_id"]: m["id"] for m in all_models}
+
+    # Create benchmark run
+    context_tiers_str = ",".join(str(t) for t in validated.context_tiers)
+    config_json = json.dumps({"source": "direct_local"})
+
+    run_id = await db.save_benchmark_run(
+        user_id=user["id"],
+        prompt=validated.prompt,
+        context_tiers=context_tiers_str,
+        max_tokens=validated.max_tokens,
+        temperature=validated.temperature,
+        warmup=validated.warmup,
+        config_json=config_json,
+    )
+
+    # Save individual results, resolving litellm_id to DB UUID
+    saved = 0
+    skipped = 0
+    for r in validated.results:
+        db_model_id = model_lookup.get(r.model_id)
+        if not db_model_id:
+            logger.warning("direct-results: unknown model_id '%s', skipping", r.model_id)
+            skipped += 1
+            continue
+
+        await db.save_benchmark_result(
+            run_id=run_id,
+            model_id=db_model_id,
+            run_number=r.run_number,
+            context_tokens=r.context_tokens,
+            ttft_ms=r.ttft_ms,
+            total_time_s=r.total_time_s,
+            output_tokens=r.output_tokens,
+            input_tokens=r.input_tokens,
+            tokens_per_second=r.tokens_per_second,
+            input_tokens_per_second=r.input_tokens_per_second,
+            cost=r.cost,
+            success=r.success,
+            error=r.error,
+        )
+        saved += 1
+
+    logger.info("direct-results: run_id=%s saved=%d skipped=%d", run_id, saved, skipped)
+
+    return {"status": "ok", "run_id": run_id, "saved": saved, "skipped": skipped}
+
+
 @router.get("/api/user/rate-limit")
 async def get_rate_limit(user: dict = Depends(auth.get_current_user)):
     """Return the user's current rate limit status."""
@@ -150,15 +217,7 @@ async def get_rate_limit(user: dict = Depends(auth.get_current_user)):
 async def get_history(user: dict = Depends(auth.get_current_user)):
     """Get the current user's benchmark history from the database."""
     runs = await db.get_user_benchmark_runs(user["id"])
-    # Parse results_json back to objects for the frontend
     for run in runs:
-        if isinstance(run.get("results_json"), str):
-            try:
-                run["results"] = json.loads(run["results_json"])
-            except (json.JSONDecodeError, TypeError):
-                logger.debug("Failed to parse results_json for run")
-                run["results"] = []
-            del run["results_json"]
         if isinstance(run.get("context_tiers"), str):
             try:
                 run["context_tiers"] = json.loads(run["context_tiers"])
@@ -173,13 +232,8 @@ async def get_history_run(run_id: str, user: dict = Depends(auth.get_current_use
     run = await db.get_benchmark_run(run_id, user["id"])
     if not run:
         return JSONResponse({"error": "Run not found"}, status_code=404)
-    if isinstance(run.get("results_json"), str):
-        try:
-            run["results"] = json.loads(run["results_json"])
-        except (json.JSONDecodeError, TypeError):
-            logger.debug("Failed to parse results_json for run %s", run_id)
-            run["results"] = []
-        del run["results_json"]
+    # Fetch results from normalized benchmark_results table
+    run["results"] = await db.get_benchmark_results(run_id)
     if isinstance(run.get("context_tiers"), str):
         try:
             run["context_tiers"] = json.loads(run["context_tiers"])

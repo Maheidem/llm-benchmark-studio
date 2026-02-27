@@ -52,14 +52,14 @@ class ModelConfigUpdate(BaseModel):
 class ToolSuiteCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=256)
     description: Optional[str] = Field(None, max_length=5_000)
-    tools_json: List[dict] = Field(...)
+    tools: List[dict] = Field(...)
     system_prompt: Optional[str] = Field(None, max_length=50_000)
 
 
 class ToolSuiteUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=256)
     description: Optional[str] = Field(None, max_length=5_000)
-    tools_json: Optional[List[dict]] = None
+    tools: Optional[List[dict]] = None
     system_prompt: Optional[str] = Field(None, max_length=50_000)
 
 
@@ -117,8 +117,13 @@ class PromptTuneRequest(BaseModel):
     target_models: List[str] = Field(..., min_length=1)
     meta_model: str = Field(..., min_length=1)
     base_prompt: Optional[str] = Field(None, max_length=50_000)
-    config: Optional[dict] = None
+    population_size: int = Field(default=6, ge=2, le=50)
+    generations: int = Field(default=3, ge=1, le=20)
+    selection_ratio: float = Field(default=0.5, ge=0.1, le=1.0)
+    eval_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    eval_tool_choice: str = Field(default="required")
     experiment_id: Optional[str] = None
+    config: Optional[dict] = None  # deprecated: use explicit fields above
 
 
 class JudgeRequest(BaseModel):
@@ -215,6 +220,31 @@ class ProviderCreate(BaseModel):
     api_base: Optional[str] = None
     model_id_prefix: Optional[str] = Field(None, max_length=64)
     api_key_env: Optional[str] = None
+
+
+class DirectBenchmarkResult(BaseModel):
+    provider: str
+    model_id: str  # litellm_id from browser
+    run_number: int = Field(default=1, ge=1)
+    context_tokens: int = Field(default=0, ge=0)
+    ttft_ms: Optional[float] = None
+    total_time_s: Optional[float] = None
+    output_tokens: Optional[int] = None
+    input_tokens: Optional[int] = None
+    tokens_per_second: Optional[float] = None
+    input_tokens_per_second: Optional[float] = None
+    cost: float = 0
+    success: bool = True
+    error: Optional[str] = None
+
+
+class DirectBenchmarkRequest(BaseModel):
+    results: List[DirectBenchmarkResult] = Field(..., min_length=1)
+    prompt: str = Field(default="", max_length=500_000)
+    max_tokens: int = Field(default=512, ge=1, le=128_000)
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    context_tiers: List[int] = Field(default_factory=lambda: [0])
+    warmup: bool = False
 
 
 class RateLimitUpdate(BaseModel):
@@ -380,3 +410,133 @@ class NormalizedModelResponse(BaseModel):
     is_active: bool = True
     created_at: str
     updated_at: str
+
+
+# ──────────────────── ERD v2 Response Schemas ─────────────────────
+
+class ToolDefinitionResponse(BaseModel):
+    """Response for a tool definition within a suite."""
+    id: str
+    suite_id: str
+    name: str
+    description: str = ""
+    parameters_schema: Any = {}
+    sort_order: int = 0
+    created_at: str
+    updated_at: str
+
+
+class CaseResultResponse(BaseModel):
+    """Response for a single test case result."""
+    id: str
+    eval_run_id: str
+    test_case_id: str
+    model_id: str
+    tool_selection_score: float = 0.0
+    param_accuracy: Optional[float] = None
+    overall_score: float = 0.0
+    irrelevance_score: Optional[float] = None
+    actual_tool: Optional[str] = None
+    actual_params: Optional[str] = None
+    success: bool = True
+    error: str = ""
+    latency_ms: int = 0
+    format_compliance: str = "PASS"
+    error_type: Optional[str] = None
+    raw_request: Optional[str] = None
+    raw_response: Optional[str] = None
+    created_at: str
+
+
+class CaseResultSummaryResponse(BaseModel):
+    """Aggregated case results per model."""
+    model_id: str
+    model_litellm_id: Optional[str] = None
+    model_display_name: Optional[str] = None
+    total_cases: int = 0
+    cases_passed: int = 0
+    tool_accuracy_pct: float = 0.0
+    param_accuracy_pct: Optional[float] = None
+    overall_score_pct: float = 0.0
+    irrelevance_accuracy_pct: Optional[float] = None
+    avg_latency_ms: int = 0
+
+
+class JudgeVerdictResponse(BaseModel):
+    """Response for a single judge verdict on a case result."""
+    id: str
+    judge_report_id: str
+    case_result_id: str
+    quality_score: int = 0
+    verdict: str = "fail"
+    summary: str = ""
+    reasoning: str = ""
+    tool_selection_assessment: str = "unknown"
+    param_assessment: str = "unknown"
+    judge_override_score: Optional[float] = None
+    override_reason: Optional[str] = None
+    created_at: str
+
+
+class BenchmarkResultResponse(BaseModel):
+    """Response for a single benchmark result row."""
+    id: str
+    run_id: str
+    model_id: str
+    run_number: int
+    context_tokens: int = 0
+    ttft_ms: Optional[float] = None
+    total_time_s: Optional[float] = None
+    output_tokens: Optional[int] = None
+    input_tokens: Optional[int] = None
+    tokens_per_second: Optional[float] = None
+    input_tokens_per_second: Optional[float] = None
+    cost: Optional[float] = None
+    success: bool = True
+    error: Optional[str] = None
+    created_at: str
+
+
+class ParamTuneComboResponse(BaseModel):
+    """Response for a single param tune combination."""
+    id: str
+    tune_run_id: str
+    combo_index: int
+    model_id: str
+    config_json: str  # JSON string
+    eval_run_id: Optional[str] = None
+    overall_score: float = 0.0
+    tool_accuracy_pct: float = 0.0
+    param_accuracy_pct: float = 0.0
+    latency_avg_ms: int = 0
+    cases_passed: int = 0
+    cases_total: int = 0
+    adjustments_json: Optional[str] = None
+    created_at: str
+
+
+class PromptTuneCandidateResponse(BaseModel):
+    """Response for a single prompt tune candidate."""
+    id: str
+    generation_id: str
+    candidate_index: int
+    prompt_text: str
+    style: str = "variation"
+    mutation_type: Optional[str] = None
+    parent_candidate_id: Optional[str] = None
+    avg_score: float = 0.0
+    survived: bool = False
+    eval_run_id: Optional[str] = None
+    prompt_version_id: Optional[str] = None
+    created_at: str
+
+
+class PromptTuneGenerationResponse(BaseModel):
+    """Response for a prompt tune generation with its candidates."""
+    id: str
+    tune_run_id: str
+    generation_number: int
+    best_score: float = 0.0
+    best_candidate_index: Optional[int] = None
+    candidates: List[PromptTuneCandidateResponse] = []
+    created_at: str

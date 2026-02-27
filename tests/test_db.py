@@ -384,14 +384,11 @@ class TestToolTestCasesCrud:
 class TestParamTuneRunsCrud:
     @pytest.mark.asyncio
     async def test_save_and_get_run(self, test_user):
-        tools = json.dumps([])
-        suite_id = await db.create_tool_suite(test_user["id"], "Suite", "", tools)
+        suite_id = await db.create_tool_suite(test_user["id"], "Suite", "")
 
         run_id = await db.save_param_tune_run(
             user_id=test_user["id"],
             suite_id=suite_id,
-
-            models_json='["gpt-4o"]',
             search_space_json='{"temperature": {"min": 0, "max": 1, "step": 0.5}}',
             total_combos=3,
         )
@@ -402,20 +399,16 @@ class TestParamTuneRunsCrud:
 
     @pytest.mark.asyncio
     async def test_update_run(self, test_user):
-        tools = json.dumps([])
-        suite_id = await db.create_tool_suite(test_user["id"], "Suite", "", tools)
+        suite_id = await db.create_tool_suite(test_user["id"], "Suite", "")
 
         run_id = await db.save_param_tune_run(
             user_id=test_user["id"],
             suite_id=suite_id,
-
-            models_json='["gpt-4o"]',
             search_space_json='{}',
             total_combos=2,
         )
         await db.update_param_tune_run(
             run_id, test_user["id"],
-            results_json='[{"score": 0.9}]',
             completed_combos=2,
             status="completed",
             duration_s=10.5,
@@ -429,14 +422,11 @@ class TestParamTuneRunsCrud:
 
     @pytest.mark.asyncio
     async def test_delete_run(self, test_user):
-        tools = json.dumps([])
-        suite_id = await db.create_tool_suite(test_user["id"], "Suite", "", tools)
+        suite_id = await db.create_tool_suite(test_user["id"], "Suite", "")
 
         run_id = await db.save_param_tune_run(
             user_id=test_user["id"],
             suite_id=suite_id,
-
-            models_json='["gpt-4o"]',
             search_space_json='{}',
             total_combos=1,
         )
@@ -446,15 +436,12 @@ class TestParamTuneRunsCrud:
 
     @pytest.mark.asyncio
     async def test_list_runs(self, test_user):
-        tools = json.dumps([])
-        suite_id = await db.create_tool_suite(test_user["id"], "Suite", "", tools)
+        suite_id = await db.create_tool_suite(test_user["id"], "Suite", "")
 
         for _ in range(3):
             await db.save_param_tune_run(
                 user_id=test_user["id"],
                 suite_id=suite_id,
-    
-                models_json='["gpt-4o"]',
                 search_space_json='{}',
                 total_combos=1,
             )
@@ -572,14 +559,11 @@ class TestAuditLog:
 class TestCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_stale_param_tune_runs(self, test_user):
-        tools = json.dumps([])
-        suite_id = await db.create_tool_suite(test_user["id"], "Suite", "", tools)
+        suite_id = await db.create_tool_suite(test_user["id"], "Suite", "")
 
         run_id = await db.save_param_tune_run(
             user_id=test_user["id"],
             suite_id=suite_id,
-
-            models_json='["gpt-4o"]',
             search_space_json='{}',
             total_combos=1,
         )

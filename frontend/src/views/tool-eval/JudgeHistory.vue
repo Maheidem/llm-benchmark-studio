@@ -388,15 +388,8 @@ async function deleteReport(report) {
 
 function openRerunModal(report) {
   // Pre-fill with parent report's instructions if available
-  let existingInstructions = ''
-  if (report.instructions_json) {
-    try {
-      const parsed = typeof report.instructions_json === 'string'
-        ? JSON.parse(report.instructions_json)
-        : report.instructions_json
-      existingInstructions = parsed.custom_instructions || ''
-    } catch { /* ignore */ }
-  }
+  // custom_instructions is a plain string field from the API
+  const existingInstructions = report.custom_instructions || ''
 
   rerunModal.visible = true
   rerunModal.loading = false
