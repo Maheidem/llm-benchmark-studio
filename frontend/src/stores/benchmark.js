@@ -16,6 +16,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
   const runs = ref(1)
   const prompt = ref('')
   const warmup = ref(false)
+  const timeout = ref(120)
   const promptTemplates = ref([])
 
   // ── Execution state ──
@@ -373,6 +374,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
       prompt: prompt.value,
       context_tiers: Array.from(contextTiers.value).sort((a, b) => a - b),
       warmup: warmup.value,
+      timeout: timeout.value,
     }
     lastBenchmarkBody.value = body
 
@@ -641,6 +643,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
       contextTiers.value = new Set(run.context_tiers)
     }
     if (run.warmup != null) warmup.value = run.warmup
+    if (run.timeout != null) timeout.value = run.timeout
   }
 
   // ── Initialize selectedModels to all ──
@@ -666,6 +669,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     runs,
     prompt,
     warmup,
+    timeout,
     promptTemplates,
     isRunning,
     activeJobId,

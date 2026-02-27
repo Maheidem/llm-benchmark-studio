@@ -121,6 +121,7 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
     prompt = params.get("prompt", "")
     context_tiers = params.get("context_tiers", [0])
     warmup = params.get("warmup", True)
+    timeout = params.get("timeout", 120)
     provider_params = params.get("provider_params")
     profiles_map = params.get("profiles")  # {"model_id": "profile_id"} or None
 
@@ -258,7 +259,7 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
                 if warmup:
                     await async_run_single(
                         bench_target, prompt, max_tokens, temperature, tier,
-                        provider_params=bench_provider_params,
+                        timeout=timeout, provider_params=bench_provider_params,
                     )
 
                 for r in range(runs):
@@ -282,7 +283,7 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
 
                     result = await async_run_single(
                         bench_target, prompt, max_tokens, temperature, tier,
-                        provider_params=bench_provider_params,
+                        timeout=timeout, provider_params=bench_provider_params,
                     )
                     await results_queue.put({
                         "type": "result",

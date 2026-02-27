@@ -51,6 +51,23 @@
       />
     </div>
 
+    <!-- Timeout -->
+    <div>
+      <div class="flex items-center justify-between mb-2">
+        <label class="text-xs text-zinc-500 font-body">Timeout (seconds)</label>
+        <span class="text-xs font-mono text-zinc-400">{{ store.timeout }}s</span>
+      </div>
+      <input
+        type="range"
+        :value="store.timeout"
+        min="30"
+        max="600"
+        step="30"
+        class="w-full"
+        @input="store.timeout = parseInt($event.target.value)"
+      />
+    </div>
+
     <!-- Context Tiers -->
     <div>
       <label class="text-xs text-zinc-500 font-body block mb-2">Context Tiers</label>

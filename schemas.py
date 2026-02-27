@@ -25,6 +25,7 @@ class BenchmarkRequest(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     context_tiers: List[int] = Field(default_factory=lambda: [0])
     runs: int = Field(default=1, ge=1, le=20)
+    timeout: int = Field(default=120, ge=10, le=600)
     profiles: Optional[dict] = None  # {"model_id": "profile_id"}
 
     @model_validator(mode="after")
