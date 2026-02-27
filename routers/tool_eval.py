@@ -641,8 +641,16 @@ async def create_tool_suite(request: Request, user: dict = Depends(auth.get_curr
 
 @router.post("/api/tool-eval/import")
 async def import_tool_suite(request: Request, user: dict = Depends(auth.get_current_user)):
-    """Import a complete tool suite (tools + test cases) from JSON."""
+    """Import a tool suite from JSON. Auto-detects standard vs BFCL format."""
     body = await request.json()
+    # Auto-detect BFCL format and handle it transparently
+    if _is_bfcl_format(body):
+        entries = body if isinstance(body, list) else [body]
+        suite_name = request.headers.get("X-Suite-Name") or f"Imported Suite {len(entries)} cases"
+        try:
+            return await _process_bfcl_import(entries, suite_name, user["id"])
+        except HTTPException as exc:
+            return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
     name = body.get("name", "").strip()
     if not name:
         return JSONResponse({"error": "name is required"}, status_code=400)
@@ -920,33 +928,16 @@ async def export_tool_suite_bfcl(suite_id: str, user: dict = Depends(auth.get_cu
     return JSONResponse(content=bfcl_entries, headers=headers)
 
 
-@router.post("/api/tool-eval/import/bfcl")
-async def import_bfcl_suite(request: Request, user: dict = Depends(auth.get_current_user)):
-    """T4: Import a BFCL V3-compatible JSON file as a tool suite."""
-    try:
-        body = await request.json()
-    except Exception:
-        # Fallback: try JSONL (one JSON object per line)
-        try:
-            raw = (await request.body()).decode("utf-8")
-            body = [json.loads(line) for line in raw.splitlines() if line.strip()]
-        except Exception:
-            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+async def _process_bfcl_import(entries: list[dict], suite_name: str, user_id: str) -> dict:
+    """Shared BFCL import logic used by both the unified and dedicated endpoints.
 
-    # Support both single entry and array
-    if isinstance(body, dict):
-        entries = [body]
-    elif isinstance(body, list):
-        entries = body
-    else:
-        return JSONResponse({"error": "Expected JSON array or object"}, status_code=400)
-
+    Returns dict with status, suite_id, test_cases_created on success.
+    Raises HTTPException on validation errors.
+    """
     if not entries:
-        return JSONResponse({"error": "No entries found"}, status_code=400)
+        raise HTTPException(400, detail="No entries found")
 
-    # Extract suite name from request or generate from first entry
-    suite_name = request.headers.get("X-Suite-Name") or f"BFCL Import {len(entries)} cases"
-    suite_name = suite_name.strip()[:256]
+    suite_name = (suite_name or f"BFCL Import {len(entries)} cases").strip()[:256]
 
     # Collect unique function definitions from all entries
     seen_funcs: dict[str, dict] = {}
@@ -973,7 +964,7 @@ async def import_bfcl_suite(request: Request, user: dict = Depends(auth.get_curr
     if tools:
         err = _validate_tools(tools)
         if err:
-            return JSONResponse({"error": f"Invalid tools: {err}"}, status_code=400)
+            raise HTTPException(400, detail=f"Invalid tools: {err}")
 
     # Build cases list for atomic batch insert (CRIT-5)
     cases = []
@@ -1007,21 +998,29 @@ async def import_bfcl_suite(request: Request, user: dict = Depends(auth.get_curr
                         json.dumps(params) if params else None,
                     ))
 
-        # Path 2: ground_truth call strings (raw HuggingFace format)
+        # Path 2: ground_truth (structured dicts OR call strings)
         elif not parsed_calls:
             gt = entry.get("ground_truth")
             if gt:
                 gt_list = gt if isinstance(gt, list) else [gt]
-                for call_str in gt_list:
-                    if not isinstance(call_str, str):
-                        continue
-                    parsed = _parse_ground_truth_call(call_str)
-                    if parsed:
-                        for tool_name, params in parsed.items():
-                            parsed_calls.append((
-                                _serialize_expected_tool(tool_name),
-                                json.dumps(params) if params else None,
-                            ))
+                for gt_item in gt_list:
+                    if isinstance(gt_item, dict) and gt_item.get("name"):
+                        # Structured format: {"name": "tool", "arguments": {...}}
+                        tool_name = gt_item["name"]
+                        params = gt_item.get("arguments") or gt_item.get("params") or {}
+                        parsed_calls.append((
+                            _serialize_expected_tool(tool_name),
+                            json.dumps(params) if params else None,
+                        ))
+                    elif isinstance(gt_item, str):
+                        # Raw HuggingFace format: "func(a=1, b=2)"
+                        parsed = _parse_ground_truth_call(gt_item)
+                        if parsed:
+                            for tool_name, params in parsed.items():
+                                parsed_calls.append((
+                                    _serialize_expected_tool(tool_name),
+                                    json.dumps(params) if params else None,
+                                ))
 
         # Path 3: irrelevance — no answer and no ground_truth
         if not parsed_calls:
@@ -1055,9 +1054,47 @@ async def import_bfcl_suite(request: Request, user: dict = Depends(auth.get_curr
                 })
 
     suite_id = await db.create_suite_with_cases(
-        user["id"], suite_name, "", tools, cases
+        user_id, suite_name, "", tools, cases
     )
     return {"status": "ok", "suite_id": suite_id, "test_cases_created": len(cases)}
+
+
+def _is_bfcl_format(body) -> bool:
+    """Detect whether parsed JSON body is BFCL format."""
+    if isinstance(body, list):
+        return True
+    if isinstance(body, dict) and ("function" in body or "question" in body):
+        return True
+    return False
+
+
+@router.post("/api/tool-eval/import/bfcl")
+async def import_bfcl_suite(request: Request, user: dict = Depends(auth.get_current_user)):
+    """T4: Import a BFCL V3-compatible JSON file as a tool suite."""
+    try:
+        body = await request.json()
+    except Exception:
+        # Fallback: try JSONL (one JSON object per line)
+        try:
+            raw = (await request.body()).decode("utf-8")
+            body = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    # Support both single entry and array
+    if isinstance(body, dict):
+        entries = [body]
+    elif isinstance(body, list):
+        entries = body
+    else:
+        return JSONResponse({"error": "Expected JSON array or object"}, status_code=400)
+
+    suite_name = request.headers.get("X-Suite-Name") or f"BFCL Import {len(entries)} cases"
+
+    try:
+        return await _process_bfcl_import(entries, suite_name, user["id"])
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
 
 
 @router.get("/api/tool-eval/import/example")

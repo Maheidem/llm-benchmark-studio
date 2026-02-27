@@ -180,6 +180,22 @@ export const useToolEvalStore = defineStore('toolEval', () => {
     return await res.json()
   }
 
+  async function smartImport(data, filename) {
+    // Auto-detect format: BFCL if array or has function/question keys, standard otherwise
+    const isBfcl = Array.isArray(data) ||
+      (data && typeof data === 'object' && ('function' in data || 'question' in data))
+    if (isBfcl) {
+      const suiteName = (filename || '').replace(/\.json$/i, '') || 'BFCL Import'
+      const entries = Array.isArray(data) ? data : [data]
+      return await importBfclSuite(entries, suiteName)
+    }
+    // Standard format: must have name
+    if (!data || !data.name || typeof data.name !== 'string') {
+      throw new Error('Unrecognized format: expected a standard suite (with "name") or BFCL format (with "function"/"question")')
+    }
+    return await importSuite(data)
+  }
+
   async function downloadImportExample() {
     const res = await apiFetch('/api/tool-eval/import/example')
     if (!res.ok) throw new Error('Failed to download example')
@@ -461,6 +477,7 @@ export const useToolEvalStore = defineStore('toolEval', () => {
     exportSuite,
     importSuite,
     importBfclSuite,
+    smartImport,
     downloadImportExample,
     createTestCase,
     updateTestCase,
