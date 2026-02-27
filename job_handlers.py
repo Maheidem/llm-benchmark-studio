@@ -1056,6 +1056,12 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                 "Auto-judge skipped: avg_score=%.2f > threshold=%.2f eval_id=%s",
                 avg_score_for_autojudge, auto_judge_threshold, eval_id,
             )
+            await _ws_send({
+                "type": "auto_judge_skipped",
+                "job_id": job_id,
+                "reason": "score_above_threshold",
+                "detail": f"Average score {avg_score_for_autojudge:.0%} is above the {auto_judge_threshold:.0%} threshold",
+            })
         else:
             try:
                 # Load user's judge settings for default model
@@ -1081,6 +1087,12 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                     )
                 else:
                     logger.debug("Auto-judge skipped: no default_judge_model configured for user=%s", user_id)
+                    await _ws_send({
+                        "type": "auto_judge_skipped",
+                        "job_id": job_id,
+                        "reason": "no_judge_model",
+                        "detail": "No default judge model configured. Set one in Settings > Judge.",
+                    })
             except Exception as e:
                 logger.warning("Auto-judge submission failed: %s", e)
 

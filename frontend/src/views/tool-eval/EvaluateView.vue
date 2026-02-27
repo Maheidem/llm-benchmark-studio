@@ -529,6 +529,13 @@ function handleWsMessage(msg) {
     case 'job_failed':
       errorBanner.value = msg.error || msg.error_msg || 'Eval failed'
       break
+    case 'auto_judge_skipped':
+      if (msg.reason === 'no_judge_model') {
+        showToast('Auto-judge skipped: no judge model configured. Set one in Settings > Judge.', 'error')
+      } else if (msg.reason === 'score_above_threshold') {
+        showToast(msg.detail || 'Auto-judge skipped: scores above threshold', '')
+      }
+      break
     case 'job_cancelled':
       progressLabel.value = 'Cancelled'
       showToast('Eval cancelled', '')
