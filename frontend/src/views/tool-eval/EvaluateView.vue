@@ -289,13 +289,13 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useToolEvalStore } from '../../stores/toolEval.js'
 import { useProfilesStore } from '../../stores/profiles.js'
+import { useNotificationsStore } from '../../stores/notifications.js'
 import { useToast } from '../../composables/useToast.js'
 import { useSharedContext } from '../../composables/useSharedContext.js'
-import { useWebSocket } from '../../composables/useWebSocket.js'
-import { apiFetch, getToken } from '../../utils/api.js'
+import { apiFetch } from '../../utils/api.js'
 import { getColor } from '../../utils/constants.js'
 import SystemPromptEditor from '../../components/tool-eval/SystemPromptEditor.vue'
 import EvalResultsTable from '../../components/tool-eval/EvalResultsTable.vue'
@@ -303,6 +303,7 @@ import ModelDetailModal from '../../components/tool-eval/ModelDetailModal.vue'
 
 const store = useToolEvalStore()
 const profilesStore = useProfilesStore()
+const notifStore = useNotificationsStore()
 const { showToast } = useToast()
 const { context, setSuite, setModels, setConfig } = useSharedContext()
 
@@ -390,7 +391,14 @@ onMounted(async () => {
     store.isEvaluating = true
   }
 
-  connectWebSocket()
+  // Subscribe to eval events via global WS (same pattern as ParamTunerRun)
+  unsubscribe = notifStore.onMessage(handleWsMessage)
+})
+
+let unsubscribe = null
+
+onUnmounted(() => {
+  if (unsubscribe) unsubscribe()
 })
 
 function buildProviderGroups(config) {
@@ -463,20 +471,7 @@ const showIrrelevanceWarning = computed(() => {
   return testCases.some(c => c.should_call_tool === false)
 })
 
-// --- WebSocket ---
-
-function connectWebSocket() {
-  const token = getToken()
-  if (!token) return
-
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const wsUrl = `${proto}//${location.host}/ws?token=${token}`
-
-  const { connect } = useWebSocket(wsUrl, {
-    onMessage: handleWsMessage,
-  })
-  connect()
-}
+// --- WebSocket message handler (receives messages via notifStore.onMessage) ---
 
 function handleWsMessage(msg) {
   // Handle judge_complete regardless of job_id (auto-judge runs as separate job)
