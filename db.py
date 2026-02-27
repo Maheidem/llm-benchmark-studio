@@ -1529,11 +1529,15 @@ async def save_case_results_batch(eval_run_id: str, results: list[dict]) -> int:
 async def get_case_results(eval_run_id: str, model_id: str | None = None) -> list[dict]:
     """Get case results for an eval run, optionally filtered by model.
 
-    Joins with tool_test_cases to include category and prompt fields.
+    Joins with tool_test_cases for prompt/expected_tool and models for display name.
     """
-    base = """SELECT cr.*, tc.category, tc.prompt AS test_case_prompt
+    base = """SELECT cr.*,
+            tc.category, tc.prompt AS test_case_prompt,
+            tc.expected_tool, tc.expected_params,
+            m.display_name AS model_display_name, m.litellm_id AS model_litellm_id
         FROM case_results cr
         LEFT JOIN tool_test_cases tc ON cr.test_case_id = tc.id
+        LEFT JOIN models m ON cr.model_id = m.id
         WHERE cr.eval_run_id = ?"""
     if model_id:
         return await _db.fetch_all(

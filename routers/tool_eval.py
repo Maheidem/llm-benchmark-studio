@@ -1343,8 +1343,45 @@ async def get_tool_eval_run(eval_id: str, user: dict = Depends(auth.get_current_
     if not run:
         return JSONResponse({"error": "Eval run not found"}, status_code=404)
     # Fetch case results and summary from normalized tables
-    run["results"] = await db.get_case_results(eval_id)
-    run["summary"] = await db.get_case_results_summary(eval_id)
+    raw_results = await db.get_case_results(eval_id)
+    raw_summary = await db.get_case_results_summary(eval_id)
+
+    # Transform results to match frontend field expectations
+    results = []
+    for r in raw_results:
+        r["prompt"] = r.get("prompt") or r.get("test_case_prompt") or ""
+        r["model_name"] = r.get("model_display_name") or r.get("model_litellm_id") or r.get("model_id") or ""
+        # Parse expected_tool if stored as JSON string
+        if r.get("expected_tool"):
+            r["expected_tool"] = _parse_expected_tool(r["expected_tool"])
+        if r.get("expected_params") and isinstance(r["expected_params"], str):
+            try:
+                r["expected_params"] = json.loads(r["expected_params"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if r.get("actual_params") and isinstance(r["actual_params"], str):
+            try:
+                r["actual_params"] = json.loads(r["actual_params"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        results.append(r)
+    run["results"] = results
+
+    # Transform summary: array → dict keyed by model display name
+    summary = {}
+    for s in raw_summary:
+        key = s.get("model_display_name") or s.get("model_litellm_id") or s.get("model_id") or "unknown"
+        summary[key] = {
+            "tool_selection_score": (s.get("tool_accuracy_pct") or 0) / 100,
+            "param_accuracy_score": (s.get("param_accuracy_pct") or 0) / 100,
+            "overall_score": (s.get("overall_score_pct") or 0) / 100,
+            "total_cases": s.get("total_cases", 0),
+            "cases_passed": s.get("cases_passed", 0),
+            "avg_latency_ms": s.get("avg_latency_ms", 0),
+            "irrelevance_accuracy_pct": s.get("irrelevance_accuracy_pct"),
+            "category_breakdown": s.get("category_breakdown"),
+        }
+    run["summary"] = summary
     return run
 
 

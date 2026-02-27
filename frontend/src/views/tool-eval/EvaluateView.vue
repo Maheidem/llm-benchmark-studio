@@ -223,7 +223,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(r, i) in store.evalResults" :key="i">
+            <tr v-for="(r, i) in store.evalResults" :key="i" @click="showDetail(r.model_id)" class="cursor-pointer hover:bg-white/[0.02]">
               <td class="px-5 py-2 text-xs font-mono text-zinc-300">{{ r.model_name || r.model_id || '' }}</td>
               <td class="px-5 py-2 text-xs font-body text-zinc-400">
                 {{ truncate(r.prompt || r.test_case_id || '', 40) }}

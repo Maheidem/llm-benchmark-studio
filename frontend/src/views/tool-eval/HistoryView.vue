@@ -246,6 +246,7 @@
                     </td>
                     <td class="px-3 py-2 text-zinc-500 font-body" style="max-width:180px;">
                       {{ truncate(r.prompt || r.test_case_id || '', 50) }}
+                      <span v-if="r.error" class="text-[9px] ml-1 px-1 py-0.5 rounded-sm" style="color:var(--coral);background:rgba(255,59,92,0.08);border:1px solid rgba(255,59,92,0.15);" :title="r.error">ERR</span>
                     </td>
                     <td class="px-3 py-2 font-mono text-zinc-600 text-[10px]">
                       {{ formatTool(r.expected_tool) }}
