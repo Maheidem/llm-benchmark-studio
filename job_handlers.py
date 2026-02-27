@@ -2221,11 +2221,20 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
     """
     user_id = params["user_id"]
     eval_run_id = params["eval_run_id"]
-    judge_model_id = params["judge_model"]
+    judge_model_raw = params["judge_model"]
     judge_provider_key = params.get("judge_provider_key")
     custom_instructions = params.get("custom_instructions", "")
     concurrency = int(params.get("concurrency", 4))
     experiment_id = params.get("experiment_id")
+
+    # Parse compound key (e.g. "zai::GLM-4.5-Air") from settings dropdown
+    if "::" in str(judge_model_raw):
+        parts = judge_model_raw.split("::", 1)
+        judge_model_id = parts[1]
+        if not judge_provider_key:
+            judge_provider_key = parts[0]
+    else:
+        judge_model_id = judge_model_raw
 
     # Tuner analysis params (optional -- for analyzing winning configs)
     tune_run_id = params.get("tune_run_id")
@@ -2349,11 +2358,25 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
     tools = _tool_defs_to_openai(tool_defs)
     tool_defs_text = _build_tool_definitions_text(tools)
 
+    # Helper to send WebSocket messages (defined early so error paths can use it)
+    async def _ws_send(payload: dict):
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, payload)
+
     # Build judge target
     config = await _get_user_config(user_id)
     all_targets = build_targets(config)
     judge_targets = _find_target(all_targets, judge_model_id, judge_provider_key)
     if not judge_targets:
+        logger.warning(
+            "Judge target not found: model_id=%s provider_key=%s job_id=%s",
+            judge_model_id, judge_provider_key, job_id,
+        )
+        await _ws_send({
+            "type": "job_failed",
+            "job_id": job_id,
+            "error": f"Judge model '{judge_model_id}' not found in your config. Check Settings > Judge.",
+        })
         return None
     judge_target = judge_targets[0]
 
@@ -2367,11 +2390,6 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
         judge_target.model_id, judge_target.api_base,
         bool(judge_target.api_key),
     )
-
-    # Helper to send WebSocket messages
-    async def _ws_send(payload: dict):
-        if ws_manager:
-            await ws_manager.send_to_user(user_id, payload)
 
     # Resolve DB model ID for judge FK
     _judge_db = await db.get_model_by_litellm_id(user_id, judge_model_id)
@@ -2524,10 +2542,19 @@ async def judge_compare_handler(job_id: str, params: dict, cancel_event, progres
     user_id = params["user_id"]
     eval_run_id_a = params["eval_run_id_a"]
     eval_run_id_b = params["eval_run_id_b"]
-    judge_model_id = params["judge_model"]
+    judge_model_raw = params["judge_model"]
     judge_provider_key = params.get("judge_provider_key")
     concurrency = int(params.get("concurrency", 4))
     experiment_id = params.get("experiment_id")
+
+    # Parse compound key (e.g. "zai::GLM-4.5-Air") from settings dropdown
+    if "::" in str(judge_model_raw):
+        parts = judge_model_raw.split("::", 1)
+        judge_model_id = parts[1]
+        if not judge_provider_key:
+            judge_provider_key = parts[0]
+    else:
+        judge_model_id = judge_model_raw
 
     logger.info(
         "Judge compare started: job_id=%s user_id=%s run_a=%s run_b=%s",
@@ -2595,11 +2622,25 @@ async def judge_compare_handler(job_id: str, params: dict, cancel_event, progres
     tools = _tool_defs_to_openai(tool_defs)
     tool_defs_text = _build_tool_definitions_text(tools)
 
+    # Helper to send WebSocket messages (defined early so error paths can use it)
+    async def _ws_send(payload: dict):
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, payload)
+
     # Build judge target
     config = await _get_user_config(user_id)
     all_targets = build_targets(config)
     judge_targets = _find_target(all_targets, judge_model_id, judge_provider_key)
     if not judge_targets:
+        logger.warning(
+            "Judge compare target not found: model_id=%s provider_key=%s job_id=%s",
+            judge_model_id, judge_provider_key, job_id,
+        )
+        await _ws_send({
+            "type": "job_failed",
+            "job_id": job_id,
+            "error": f"Judge model '{judge_model_id}' not found in your config. Check Settings > Judge.",
+        })
         return None
     judge_target = judge_targets[0]
 
@@ -2607,11 +2648,6 @@ async def judge_compare_handler(job_id: str, params: dict, cancel_event, progres
         encrypted = await db.get_user_key_for_provider(user_id, judge_target.provider_key)
         if encrypted:
             judge_target = inject_user_keys([judge_target], {judge_target.provider_key: encrypted})[0]
-
-    # Helper to send WebSocket messages
-    async def _ws_send(payload: dict):
-        if ws_manager:
-            await ws_manager.send_to_user(user_id, payload)
 
     # Determine model names from enriched case results
     model_ids_a = list(dict.fromkeys(r["model_id"] for r in results_a))  # preserve order, unique
