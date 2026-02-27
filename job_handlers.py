@@ -167,6 +167,12 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
                 total += runs
 
     if total == 0:
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, {
+                "type": "job_failed",
+                "job_id": job_id,
+                "error": "No benchmark targets matched the selected configuration",
+            })
         return None
 
     # Build config_json for re-run support
@@ -457,6 +463,12 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
     targets = inject_user_keys(targets, user_keys_cache)
 
     if not targets:
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, {
+                "type": "job_failed",
+                "job_id": job_id,
+                "error": "No models matched the selected targets. Check your model configuration.",
+            })
         return None
 
     # Judge setup (opt-in)
@@ -619,6 +631,11 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                         mt_config = json.loads(case["multi_turn_config"]) if isinstance(case["multi_turn_config"], str) else case["multi_turn_config"]
                     except (json.JSONDecodeError, TypeError):
                         logger.debug("Failed to parse multi_turn_config in tool eval handler")
+                        await _ws_send({
+                            "type": "eval_warning",
+                            "job_id": job_id,
+                            "detail": "Multi-turn config could not be parsed — running as single-turn",
+                        })
                         mt_config = None
 
                 if mt_config and mt_config.get("multi_turn"):
@@ -731,6 +748,11 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                 case_result_db_ids[cr_key] = case_result_id
         except Exception as e:
             logger.warning("Failed to save case_result: %s", e)
+            await _ws_send({
+                "type": "eval_warning",
+                "job_id": job_id,
+                "detail": f"Failed to save result for case {item.get('test_case_id', '?')}: {e}",
+            })
 
         # Live inline judge: fire concurrent judge task per result (with semaphore)
         if judge_queue and judge_target:
@@ -886,6 +908,11 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                                 )
                         except Exception as ve:
                             logger.warning("Failed to save judge verdict: %s", ve)
+                            await _ws_send({
+                                "type": "eval_warning",
+                                "job_id": job_id,
+                                "detail": f"Failed to save judge verdict: {ve}",
+                            })
                 except Exception:
                     # Cancel remaining judge tasks to avoid orphaned "Task exception was never retrieved"
                     for bt in judge_batch:
@@ -924,6 +951,11 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
             logger.exception("Post-eval judge failed: job_id=%s", job_id)
             if judge_report_id:
                 await db.update_judge_report(judge_report_id, status="error")
+            await _ws_send({
+                "type": "judge_failed",
+                "job_id": job_id,
+                "detail": f"Post-eval judge failed: {je}",
+            })
 
     # --- Live inline judge: save report ---
     elif judge_enabled and judge_mode == "live_inline" and judge_verdicts:
@@ -973,6 +1005,11 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                             )
                     except Exception as ve:
                         logger.warning("Failed to save live inline judge verdict: %s", ve)
+                        await _ws_send({
+                            "type": "eval_warning",
+                            "job_id": job_id,
+                            "detail": f"Failed to save judge verdict: {ve}",
+                        })
 
             # Derive overall grade/score from the best model's report
             if all_li_reports:
@@ -1011,7 +1048,12 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                 complete_evt["delta"] = round(avg_score - exp["baseline_score"], 4)
                 complete_evt["baseline_score"] = exp["baseline_score"]
         except Exception:
-            logger.debug("Failed to compute delta for experiment %s", experiment_id)
+            logger.warning("Failed to compute delta for experiment %s", experiment_id)
+            await _ws_send({
+                "type": "eval_warning",
+                "job_id": job_id,
+                "detail": "Failed to compute baseline comparison delta",
+            })
     await _ws_send(complete_evt)
 
     logger.info(
@@ -1043,6 +1085,11 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                 )
         except Exception:
             logger.exception("Leaderboard contribution failed: eval_id=%s", eval_id)
+            await _ws_send({
+                "type": "eval_warning",
+                "job_id": job_id,
+                "detail": "Leaderboard update failed — eval results saved normally",
+            })
 
     # --- Auto-judge: submit a separate judge job if explicitly requested ---
     auto_judge = params.get("auto_judge", False)
@@ -1095,6 +1142,12 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                     })
             except Exception as e:
                 logger.warning("Auto-judge submission failed: %s", e)
+                await _ws_send({
+                    "type": "auto_judge_skipped",
+                    "job_id": job_id,
+                    "reason": "submission_failed",
+                    "detail": f"Auto-judge failed to start: {e}",
+                })
 
     # --- Judge Wiring: auto-trigger judge on low accuracy and store explanations ---
     # Runs when no explicit judge was already used and avg accuracy is below threshold.
@@ -1556,6 +1609,11 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
                 )
         except Exception as e:
             logger.warning("Failed to save param_tune_combo: %s", e)
+            await _ws_send({
+                "type": "eval_warning",
+                "job_id": job_id,
+                "detail": f"Failed to save combo result: {e}",
+            })
 
         # Update parent run progress
         await db.update_param_tune_run(
@@ -1700,6 +1758,11 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
                 )
         except Exception:
             logger.exception("Auto-promote failed for param tune: tune_id=%s", tune_id)
+            await _ws_send({
+                "type": "eval_warning",
+                "job_id": job_id,
+                "detail": "Auto-promote to experiment failed — results saved but experiment not updated",
+            })
 
     return tune_id
 
@@ -2089,6 +2152,11 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
             logger.info("Auto-saved best prompt as version %s: tune_id=%s", best_pv_id, tune_id)
         except Exception:
             logger.exception("Failed to auto-save prompt version: tune_id=%s", tune_id)
+            await _ws_send({
+                "type": "eval_warning",
+                "job_id": job_id,
+                "detail": "Best prompt auto-save to library failed — you can save manually from results",
+            })
 
     await db.update_prompt_tune_run(
         tune_id, user_id,
@@ -2755,10 +2823,22 @@ async def prompt_auto_optimize_handler(job_id: str, params: dict, cancel_event, 
     suite = await db.get_tool_suite(suite_id, user_id)
     if not suite:
         logger.error("Auto-optimize: suite not found suite_id=%s", suite_id)
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, {
+                "type": "job_failed",
+                "job_id": job_id,
+                "error": "Suite not found — it may have been deleted",
+            })
         return None
     cases = await db.get_test_cases(suite_id)
     if not cases:
         logger.error("Auto-optimize: no test cases in suite suite_id=%s", suite_id)
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, {
+                "type": "job_failed",
+                "job_id": job_id,
+                "error": "Suite has no test cases to evaluate",
+            })
         return None
 
     # ERD v2: Load tools from tool_definitions table
@@ -2774,9 +2854,21 @@ async def prompt_auto_optimize_handler(job_id: str, params: dict, cancel_event, 
 
     if not meta_targets:
         logger.error("Auto-optimize: meta model not found meta_model_id=%s", meta_model_id)
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, {
+                "type": "job_failed",
+                "job_id": job_id,
+                "error": "Optimization model not found in your configuration",
+            })
         return None
     if not eval_targets:
         logger.error("Auto-optimize: no eval targets found")
+        if ws_manager:
+            await ws_manager.send_to_user(user_id, {
+                "type": "job_failed",
+                "job_id": job_id,
+                "error": "No evaluation models matched the selected targets",
+            })
         return None
 
     # Inject user API keys

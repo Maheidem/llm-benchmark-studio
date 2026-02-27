@@ -347,7 +347,7 @@ const selectedModelsList = computed(() => {
 onMounted(async () => {
   // Load suites if not loaded
   if (store.suites.length === 0) {
-    try { await store.loadSuites() } catch { /* ignore */ }
+    try { await store.loadSuites() } catch { showToast('Failed to load suites', 'error') }
   }
 
   // Load model config
@@ -373,7 +373,7 @@ onMounted(async () => {
   if (context.systemPrompts) systemPrompts.value = { ...context.systemPrompts }
 
   // Load profiles
-  try { await profilesStore.fetchProfiles() } catch { /* non-fatal */ }
+  try { await profilesStore.fetchProfiles() } catch { showToast('Failed to load model profiles', 'error') }
 
   // Load judge settings to get default auto_judge value
   try {
@@ -535,6 +535,12 @@ function handleWsMessage(msg) {
       } else if (msg.reason === 'score_above_threshold') {
         showToast(msg.detail || 'Auto-judge skipped: scores above threshold', '')
       }
+      break
+    case 'eval_warning':
+      showToast(msg.detail || 'Warning during evaluation', '')
+      break
+    case 'judge_failed':
+      showToast(msg.detail || 'Judge analysis failed', 'error')
       break
     case 'job_cancelled':
       progressLabel.value = 'Cancelled'

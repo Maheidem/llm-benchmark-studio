@@ -161,7 +161,7 @@ async function loadDiscovery(providerKey) {
     if (data.models) {
       discoveredModelsCache.value[providerKey] = data.models
     }
-  } catch { /* silent */ }
+  } catch { showToast('Model discovery failed — check provider connection', 'error') }
 }
 
 async function fetchModels(providerKey) {
@@ -197,16 +197,23 @@ async function fetchModels(providerKey) {
 
 async function onDiscoveryAdd(models) {
   const pk = discoveryDialog.value.providerKey
+  let failed = 0
   for (const m of models) {
-    await apiFetch('/api/config/model', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider_key: pk, id: m.id, display_name: m.display_name }),
-    })
+    try {
+      await apiFetch('/api/config/model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider_key: pk, id: m.id, display_name: m.display_name }),
+      })
+    } catch { failed++ }
   }
   discoveryDialog.value.visible = false
   await loadConfig()
-  showToast(`Added ${models.length} model(s)`, 'success')
+  if (failed > 0) {
+    showToast(`Added ${models.length - failed} model(s), ${failed} failed`, 'error')
+  } else {
+    showToast(`Added ${models.length} model(s)`, 'success')
+  }
 }
 
 onMounted(loadConfig)

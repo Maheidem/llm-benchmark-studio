@@ -272,7 +272,7 @@ const canStart = computed(() => {
 // --- Load ---
 onMounted(async () => {
   if (teStore.suites.length === 0) {
-    try { await teStore.loadSuites() } catch { /* ignore */ }
+    try { await teStore.loadSuites() } catch { showToast('Failed to load suites', 'error') }
   }
 
   try {
@@ -354,7 +354,7 @@ function formatDuration(s) {
 async function openLibraryPicker() {
   showLibraryPicker.value = !showLibraryPicker.value
   if (showLibraryPicker.value && libraryStore.versions.length === 0) {
-    try { await libraryStore.loadVersions() } catch { /* non-fatal */ }
+    try { await libraryStore.loadVersions() } catch { showToast('Failed to load prompt library', 'error') }
   }
 }
 

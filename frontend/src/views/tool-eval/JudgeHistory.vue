@@ -290,7 +290,7 @@ onMounted(async () => {
 
       if (msg.type === 'judge_complete' || msg.type === 'job_completed') {
         showToast('Judge complete!', 'success')
-        jgStore.loadReports().catch(() => {})
+        jgStore.loadReports().catch(() => { showToast('Failed to refresh judge reports', 'error') })
       }
     }
   })

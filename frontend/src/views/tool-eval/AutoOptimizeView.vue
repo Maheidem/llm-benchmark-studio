@@ -306,11 +306,11 @@ let unsubscribe = null
 
 onMounted(async () => {
   if (teStore.suites.length === 0) {
-    try { await teStore.loadSuites() } catch { /* ignore */ }
+    try { await teStore.loadSuites() } catch { showToast('Failed to load suites', 'error') }
   }
   try {
     await configStore.loadConfig()
-  } catch { /* ignore */ }
+  } catch { showToast('Failed to load model configuration', 'error') }
 
   // Subscribe to WS messages
   unsubscribe = notifStore.onMessage((msg) => {
@@ -375,6 +375,12 @@ function handleWsMessage(msg) {
       showToast(msg.error || 'Auto-optimize failed', 'error')
       break
 
+    case 'eval_warning':
+      showToast(msg.detail || 'Warning during evaluation', '')
+      break
+    case 'judge_failed':
+      showToast(msg.detail || 'Judge analysis failed', 'error')
+      break
     case 'job_cancelled':
       isRunning.value = false
       showToast('Run cancelled', '')
@@ -470,7 +476,7 @@ async function autoSaveBest() {
     const prompt = bestVariant.value.prompt_text || bestVariant.value.prompt
     await libraryStore.saveVersion(prompt, null, 'auto_optimize')
     savedToLibrary.value = true
-  } catch { /* non-fatal */ }
+  } catch { showToast('Auto-save to library failed — save manually from results', 'error') }
 }
 
 function viewActiveRun() {

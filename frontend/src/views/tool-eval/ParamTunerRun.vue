@@ -262,6 +262,12 @@ onMounted(() => {
         showToast(msg.error || 'Tuning failed', 'error')
       }
     }
+    if (msg.type === 'eval_warning') {
+      showToast(msg.detail || 'Warning', '')
+    }
+    if (msg.type === 'judge_failed') {
+      showToast(msg.detail || 'Judge analysis failed', 'error')
+    }
   })
 
   // If we have an active run, try to load partial results

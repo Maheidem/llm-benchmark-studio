@@ -261,7 +261,7 @@ const matrixModels = computed(() => {
 // --- Load ---
 onMounted(async () => {
   if (teStore.suites.length === 0) {
-    try { await teStore.loadSuites() } catch { /* ignore */ }
+    try { await teStore.loadSuites() } catch { showToast('Failed to load suites', 'error') }
   }
 
   try {
