@@ -302,9 +302,9 @@ class TestCategoryInImportAndResults:
                 f"/api/tool-eval/history/{runs[0]['id']}", headers=auth_headers
             )
             assert detail_resp.status_code == 200
-            summary = detail_resp.json().get("summary", [])
+            summary = detail_resp.json().get("summary", {})
             if summary:
-                for model_summary in summary:
+                for model_key, model_summary in summary.items():
                     assert "category_breakdown" in model_summary, (
-                        f"category_breakdown missing from summary: {model_summary.keys()}"
+                        f"category_breakdown missing from summary for {model_key}: {model_summary.keys()}"
                     )
