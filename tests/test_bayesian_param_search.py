@@ -326,6 +326,8 @@ class TestOptimizationModeAPI:
         self, app_client, auth_headers, clear_active_jobs
     ):
         """optimization_mode is stored on the param_tune_run record."""
+        import asyncio
+        await asyncio.sleep(0.5)  # Let background jobs from prior tests settle (CI flaky fix)
         await self._setup_zai_config(app_client, auth_headers)
         suite_id = await self._create_suite(app_client, auth_headers, "Mode Storage Suite")
 
