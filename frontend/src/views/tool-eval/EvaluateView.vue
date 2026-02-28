@@ -539,6 +539,19 @@ function handleWsMessage(msg) {
     case 'eval_warning':
       showToast(msg.detail || 'Warning during evaluation', '')
       break
+    case 'param_adjustments':
+      if (msg.models) {
+        for (const m of msg.models) {
+          const descs = (m.adjustments || []).map(a =>
+            a.action === 'drop' ? `${a.param} dropped` :
+            a.action === 'clamp' ? `${a.param} clamped ${a.original}→${a.adjusted}` :
+            a.action === 'rename' ? `${a.param} renamed` :
+            `${a.param} ${a.action}`
+          )
+          if (descs.length) showToast(`${m.model_id}: ${descs.join(', ')}`, '')
+        }
+      }
+      break
     case 'judge_failed':
       showToast(msg.detail || 'Judge analysis failed', 'error')
       break

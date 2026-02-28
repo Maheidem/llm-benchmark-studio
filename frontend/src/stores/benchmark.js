@@ -28,6 +28,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
   const providerProgress = reactive({})
   const skippedModels = ref([])
   const errorBanner = ref(null)
+  const paramWarnings = ref([])  // [{model_id, provider, adjustments: [...]}]
 
   const session = useActiveSession()
 
@@ -336,6 +337,11 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
         isRunning.value = false
         session.resetTracking()
         break
+
+      case 'param_adjustments':
+        // Store param warnings so the UI can display them
+        paramWarnings.value = msg.models || []
+        break
     }
   }
 
@@ -365,6 +371,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     currentResults.value = []
     skippedModels.value = []
     errorBanner.value = null
+    paramWarnings.value = []
     session.startTracking()
 
     const body = overrideBody || {
@@ -687,6 +694,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     providerProgress,
     skippedModels,
     errorBanner,
+    paramWarnings,
     localRunning,
     providerParams,
     // Computed

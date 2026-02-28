@@ -55,6 +55,17 @@
         </button>
       </div>
 
+      <!-- Param adjustment warnings -->
+      <div v-if="benchmarkStore.paramWarnings.length > 0" class="param-warn-banner mb-6">
+        <div class="text-xs font-body text-amber-300 mb-1">Parameter adjustments applied:</div>
+        <div v-for="m in benchmarkStore.paramWarnings" :key="m.model_id" class="text-xs font-mono text-amber-200/80 ml-2 mb-0.5">
+          <span class="text-zinc-400">{{ m.model_id }}:</span>
+          <span v-for="(adj, i) in m.adjustments" :key="adj.param">
+            {{ adj.param }} {{ adj.action === 'drop' ? 'dropped' : adj.action === 'clamp' ? `clamped ${adj.original}→${adj.adjusted}` : adj.action === 'rename' ? `renamed → ${adj.param}` : adj.action }}{{ i < m.adjustments.length - 1 ? ', ' : '' }}
+          </span>
+        </div>
+      </div>
+
       <!-- Progress section -->
       <div v-if="benchmarkStore.isRunning" class="mb-6">
         <BenchmarkProgress />

@@ -722,6 +722,31 @@ def build_litellm_kwargs(
     # Validate and resolve
     result = validate_params(provider, target.model_id, params_to_validate)
     resolved = result["resolved_params"]
+    adjustments = result.get("adjustments", [])
+    warnings = result.get("warnings", [])
+
+    # Log param adjustments so they are NEVER silent
+    model_label = target.model_id
+    for adj in adjustments:
+        action = adj.get("action", "")
+        param = adj.get("param", "?")
+        reason = adj.get("reason", "")
+        if action == "drop":
+            logger.warning("Param dropped for %s [%s]: %s — %s", model_label, provider, param, reason)
+        elif action == "clamp":
+            logger.warning(
+                "Param clamped for %s [%s]: %s %s→%s — %s",
+                model_label, provider, param, adj.get("original"), adj.get("adjusted"), reason,
+            )
+        elif action == "rename":
+            logger.warning(
+                "Param renamed for %s [%s]: %s → %s — %s",
+                model_label, provider, adj.get("original_param", param), param, reason,
+            )
+        elif action == "warn":
+            logger.warning("Param warning for %s [%s]: %s — %s", model_label, provider, param, reason)
+    for w in warnings:
+        logger.info("Provider note for %s [%s]: %s", model_label, provider, w)
 
     # Apply skip_params
     for p in skip_params:

@@ -102,6 +102,67 @@ async def _resolve_model_db_id(user_id: str, litellm_id: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Helper: Pre-validate params per target and emit WS warnings
+# ---------------------------------------------------------------------------
+
+async def _emit_param_adjustments(
+    user_id: str,
+    job_id: str,
+    targets: list,
+    provider_params: dict | None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+):
+    """Run validate_params() once per target BEFORE execution starts.
+
+    Emits a 'param_adjustments' WebSocket event if any params are dropped,
+    clamped, or renamed for any target.  This gives the user a heads-up
+    instead of silently modifying their request.
+    """
+    if not ws_manager:
+        return
+    if not provider_params and temperature is None and max_tokens is None:
+        return
+
+    all_adjustments = []  # [{model_id, provider, adjustments: [...]}]
+
+    for target in targets:
+        provider = identify_provider(target.model_id, getattr(target, "provider_key", None))
+
+        # Build the same param dict that build_litellm_kwargs would
+        params_to_check: dict = {}
+        if temperature is not None:
+            params_to_check["temperature"] = temperature
+        if max_tokens is not None:
+            params_to_check["max_tokens"] = max_tokens
+        if provider_params:
+            for k, v in provider_params.items():
+                if k != "passthrough" and v is not None:
+                    params_to_check[k] = v
+
+        if not params_to_check:
+            continue
+
+        result = validate_params(provider, target.model_id, params_to_check)
+        # Filter to actionable adjustments (drop, clamp, rename, warn — skip passthrough)
+        meaningful = [a for a in result.get("adjustments", []) if a.get("action") != "passthrough"]
+        if meaningful:
+            all_adjustments.append({
+                "model_id": target.model_id,
+                "provider": provider,
+                "provider_key": getattr(target, "provider_key", None),
+                "adjustments": meaningful,
+            })
+
+    if all_adjustments:
+        await ws_manager.send_to_user(user_id, {
+            "type": "param_adjustments",
+            "job_id": job_id,
+            "models": all_adjustments,
+        })
+
+
+# ---------------------------------------------------------------------------
 # Benchmark Handler
 # ---------------------------------------------------------------------------
 
@@ -230,6 +291,12 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
             "max_tokens": max_tokens,
         },
     })
+
+    # Pre-validate params and warn user about drops/clamps BEFORE execution starts
+    await _emit_param_adjustments(
+        user_id, job_id, targets, provider_params,
+        temperature=temperature, max_tokens=max_tokens,
+    )
 
     async def run_provider(prov_targets):
         """Run all benchmarks for one provider sequentially."""
@@ -470,6 +537,12 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                 "error": "No models matched the selected targets. Check your model configuration.",
             })
         return None
+
+    # Pre-validate params and warn user about drops/clamps BEFORE execution starts
+    await _emit_param_adjustments(
+        user_id, job_id, targets, provider_params,
+        temperature=temperature,
+    )
 
     # Judge setup (opt-in)
     judge_enabled = False
@@ -1448,6 +1521,32 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
         "models": model_ids,
         "suite_name": suite["name"],
     })
+
+    # Emit param adjustment warnings (aggregate unique adjustments per model)
+    _adj_models = []
+    for t in targets:
+        tkey = _target_key(t)
+        seen_adj_keys: set[str] = set()
+        unique_adj: list[dict] = []
+        for _combo, _resolved, combo_adjustments in validated_target_combos.get(tkey, []):
+            for adj in combo_adjustments:
+                adj_key = f"{adj.get('param')}:{adj.get('action')}"
+                if adj_key not in seen_adj_keys and adj.get("action") != "passthrough":
+                    seen_adj_keys.add(adj_key)
+                    unique_adj.append(adj)
+        if unique_adj:
+            _adj_models.append({
+                "model_id": t.model_id,
+                "provider": identify_provider(t.model_id, getattr(t, "provider_key", None)),
+                "provider_key": getattr(t, "provider_key", None),
+                "adjustments": unique_adj,
+            })
+    if _adj_models:
+        await _ws_send({
+            "type": "param_adjustments",
+            "job_id": job_id,
+            "models": _adj_models,
+        })
 
     start_time = time.perf_counter()
     all_results = []

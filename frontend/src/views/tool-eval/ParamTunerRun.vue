@@ -265,6 +265,17 @@ onMounted(() => {
     if (msg.type === 'eval_warning') {
       showToast(msg.detail || 'Warning', '')
     }
+    if (msg.type === 'param_adjustments' && msg.models) {
+      for (const m of msg.models) {
+        const descs = (m.adjustments || []).map(a =>
+          a.action === 'drop' ? `${a.param} dropped` :
+          a.action === 'clamp' ? `${a.param} clamped ${a.original}→${a.adjusted}` :
+          a.action === 'rename' ? `${a.param} renamed` :
+          `${a.param} ${a.action}`
+        )
+        if (descs.length) showToast(`${m.model_id}: ${descs.join(', ')}`, '')
+      }
+    }
     if (msg.type === 'judge_failed') {
       showToast(msg.detail || 'Judge analysis failed', 'error')
     }
