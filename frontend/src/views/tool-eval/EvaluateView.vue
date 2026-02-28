@@ -481,6 +481,18 @@ function handleWsMessage(msg) {
     return
   }
 
+  // Handle auto_judge_skipped outside the job_id guard — arrives after job_completed clears activeJobId
+  if (msg.type === 'auto_judge_skipped') {
+    if (msg.reason === 'no_judge_model') {
+      showToast('Auto-judge skipped: no judge model configured. Set one in Settings > Judge.', 'error')
+    } else if (msg.reason === 'score_above_threshold') {
+      showToast(msg.detail || 'Auto-judge skipped: scores above threshold', '')
+    } else if (msg.reason === 'submission_failed') {
+      showToast(msg.detail || 'Auto-judge failed to start', 'error')
+    }
+    return
+  }
+
   if (!store.activeJobId) return
   if (msg.job_id !== store.activeJobId) return
 
@@ -528,13 +540,6 @@ function handleWsMessage(msg) {
       break
     case 'job_failed':
       errorBanner.value = msg.error || msg.error_msg || 'Eval failed'
-      break
-    case 'auto_judge_skipped':
-      if (msg.reason === 'no_judge_model') {
-        showToast('Auto-judge skipped: no judge model configured. Set one in Settings > Judge.', 'error')
-      } else if (msg.reason === 'score_above_threshold') {
-        showToast(msg.detail || 'Auto-judge skipped: scores above threshold', '')
-      }
       break
     case 'eval_warning':
       showToast(msg.detail || 'Warning during evaluation', '')
