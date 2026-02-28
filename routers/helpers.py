@@ -1246,7 +1246,7 @@ def _parse_judge_json(text: str) -> dict:
                 return data
         except json.JSONDecodeError:
             pass
-    logger.debug("_parse_judge_json: all parse strategies failed, returning empty dict")
+    logger.warning("_parse_judge_json: all parse strategies failed, returning empty dict. Raw (first 500 chars): %s", text[:500])
     return {}
 
 

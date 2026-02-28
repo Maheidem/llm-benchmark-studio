@@ -377,8 +377,13 @@ async def _judge_crosscase(
     )
     if extra_context:
         prompt += "\n\n" + extra_context
-    report = await _call_judge_model(judge_target, prompt)
+    try:
+        report = await _call_judge_model(judge_target, prompt)
+    except Exception as e:
+        logger.warning("Cross-case analysis LLM call failed for model=%s: %s", model_name, e)
+        report = {}
     if not report:
+        logger.warning("Cross-case analysis returned empty/unparseable response for model=%s (%d verdicts)", model_name, len(verdicts))
         return {
             "overall_grade": "?",
             "overall_score": 0,
