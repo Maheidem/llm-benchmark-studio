@@ -160,8 +160,7 @@ class JudgeRerunRequest(BaseModel):
 
 
 class JudgeSettingsUpdate(BaseModel):
-    default_judge_model: Optional[str] = Field(None, max_length=256)
-    default_judge_provider_key: Optional[str] = Field(None, max_length=64)
+    default_judge_model_id: Optional[str] = Field(None, max_length=64)  # FK to models.id
     default_mode: Optional[Literal["post_eval", "live_inline"]] = None
     custom_instructions_template: Optional[str] = Field(None, max_length=10_000)
     score_override_policy: Optional[Literal["always_allow", "require_confirmation", "never"]] = None

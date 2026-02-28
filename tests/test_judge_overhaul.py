@@ -431,19 +431,20 @@ class TestJudgeTunerFields:
 
 
 class TestJudgeSettings:
-    """GET and PUT /api/settings/judge endpoint behaviour."""
+    """GET and PUT /api/settings/judge endpoint behaviour (normalized table)."""
 
     async def test_get_judge_settings_returns_defaults_when_none_saved(self, app_client, auth_headers):
         """GET /api/settings/judge returns full default settings object."""
         resp = await app_client.get("/api/settings/judge", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
-        assert "default_judge_model" in data
+        assert "default_judge_model_id" in data
         assert "default_mode" in data
         assert "score_override_policy" in data
         assert "auto_judge_after_eval" in data
         assert "concurrency" in data
         # Check defaults
+        assert data["default_judge_model_id"] is None
         assert data["default_mode"] == "post_eval"
         assert data["score_override_policy"] == "always_allow"
         assert data["auto_judge_after_eval"] is False
@@ -465,19 +466,6 @@ class TestJudgeSettings:
         # Verify persisted
         get_resp = await app_client.get("/api/settings/judge", headers=auth_headers)
         assert get_resp.json()["concurrency"] == 8
-
-    async def test_put_judge_settings_saves_default_model(self, app_client, auth_headers):
-        """PUT /api/settings/judge saves default_judge_model."""
-        resp = await app_client.put("/api/settings/judge", headers=auth_headers, json={
-            "default_judge_model": "gpt-4o",
-            "default_judge_provider_key": "openai",
-        })
-        assert resp.status_code == 200
-
-        get_resp = await app_client.get("/api/settings/judge", headers=auth_headers)
-        data = get_resp.json()
-        assert data["default_judge_model"] == "gpt-4o"
-        assert data["default_judge_provider_key"] == "openai"
 
     async def test_put_judge_settings_partial_update_preserves_other_fields(self, app_client, auth_headers):
         """Partial PUT only updates specified fields, leaving others unchanged."""
@@ -517,11 +505,15 @@ class TestJudgeSettings:
         })
         assert resp.status_code == 422
 
-    async def test_put_judge_settings_saves_all_fields(self, app_client, auth_headers):
-        """PUT /api/settings/judge accepts a full settings object."""
+    async def test_put_judge_settings_saves_all_fields(self, app_client, auth_headers, test_user, _patch_db_path):
+        """PUT /api/settings/judge accepts a full settings object with valid model FK."""
+        # Create a model in DB to reference
+        user, _ = test_user
+        provider_id = await db.create_provider(user["id"], "judge_test_prov", "Judge Test Provider")
+        model_id = await db.create_model(provider_id, litellm_id="judge_test/model-1", display_name="Judge Test Model 1")
+
         resp = await app_client.put("/api/settings/judge", headers=auth_headers, json={
-            "default_judge_model": "claude-opus-4",
-            "default_judge_provider_key": "anthropic",
+            "default_judge_model_id": model_id,
             "default_mode": "post_eval",
             "custom_instructions_template": "Be strict about parameter names.",
             "score_override_policy": "never",
@@ -532,7 +524,7 @@ class TestJudgeSettings:
 
         get_resp = await app_client.get("/api/settings/judge", headers=auth_headers)
         data = get_resp.json()
-        assert data["default_judge_model"] == "claude-opus-4"
+        assert data["default_judge_model_id"] == model_id
         assert data["score_override_policy"] == "never"
         assert data["auto_judge_after_eval"] is True
         assert data["concurrency"] == 2
@@ -553,6 +545,26 @@ class TestJudgeSettings:
             "concurrency": 21,
         })
         assert resp.status_code == 422
+
+    async def test_put_judge_settings_nonexistent_model_id_rejected(self, app_client, auth_headers):
+        """PUT /api/settings/judge returns 400 for a non-existent model ID."""
+        resp = await app_client.put("/api/settings/judge", headers=auth_headers, json={
+            "default_judge_model_id": "nonexistent-model-id-12345",
+        })
+        assert resp.status_code == 400
+        data = resp.json()
+        assert "error" in data
+
+    async def test_put_judge_settings_clear_model_with_empty_string(self, app_client, auth_headers):
+        """PUT /api/settings/judge clears model selection with empty string."""
+        resp = await app_client.put("/api/settings/judge", headers=auth_headers, json={
+            "default_judge_model_id": "",
+        })
+        assert resp.status_code == 200
+
+        get_resp = await app_client.get("/api/settings/judge", headers=auth_headers)
+        data = get_resp.json()
+        assert data["default_judge_model_id"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -588,3 +600,40 @@ class TestJudgeRerunEndpoint:
             json={"parent_report_id": "some-id"},
         )
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# C5: _parse_compound_key helper
+# ---------------------------------------------------------------------------
+
+
+class TestParseCompoundKey:
+    """Tests for the _parse_compound_key helper in routers/helpers.py."""
+
+    async def test_compound_key_with_separator(self):
+        """'zai::zai/glm-4.7' → ('zai', 'zai/glm-4.7')."""
+        from routers.helpers import _parse_compound_key
+        pk, model_id = _parse_compound_key("zai::zai/glm-4.7")
+        assert pk == "zai"
+        assert model_id == "zai/glm-4.7"
+
+    async def test_bare_model_id_no_separator(self):
+        """'gpt-4o' → (None, 'gpt-4o')."""
+        from routers.helpers import _parse_compound_key
+        pk, model_id = _parse_compound_key("gpt-4o")
+        assert pk is None
+        assert model_id == "gpt-4o"
+
+    async def test_compound_key_with_multiple_separators(self):
+        """'a::b::c' → ('a', 'b::c') — only first :: is split."""
+        from routers.helpers import _parse_compound_key
+        pk, model_id = _parse_compound_key("a::b::c")
+        assert pk == "a"
+        assert model_id == "b::c"
+
+    async def test_empty_string(self):
+        """'' → (None, '')."""
+        from routers.helpers import _parse_compound_key
+        pk, model_id = _parse_compound_key("")
+        assert pk is None
+        assert model_id == ""

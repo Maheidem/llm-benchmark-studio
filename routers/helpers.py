@@ -306,6 +306,17 @@ def _target_key(target: Target) -> str:
     return f"{target.provider_key or ''}::{target.model_id}"
 
 
+def _parse_compound_key(compound_key: str) -> tuple[str | None, str]:
+    """Parse 'provider_key::model_id' into (provider_key, model_id).
+
+    If no '::' separator, returns (None, compound_key) unchanged.
+    """
+    if "::" in str(compound_key):
+        parts = compound_key.split("::", 1)
+        return parts[0], parts[1]
+    return None, compound_key
+
+
 def _find_target(all_targets: list[Target], model_id: str,
                  provider_key: str | None = None) -> list[Target]:
     """Find targets by model_id, optionally qualified by provider_key."""

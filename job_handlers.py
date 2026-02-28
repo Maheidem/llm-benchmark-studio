@@ -1184,29 +1184,38 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
             })
         else:
             try:
-                # Load user's judge settings for default model
-                user_cfg = await _get_user_config(user_id)
-                judge_settings = user_cfg.get("judge_settings", {})
+                # Load user's judge settings from normalized table
+                judge_settings = await db.get_user_judge_settings(user_id)
+                model_id = judge_settings.get("default_judge_model_id") if judge_settings else None
 
-                default_judge_model = judge_settings.get("default_judge_model")
-                if default_judge_model:
-                    judge_params = {
-                        "user_id": user_id,
-                        "user_email": params.get("user_email", ""),
-                        "eval_run_id": eval_id,
-                        "judge_model": default_judge_model,
-                        "judge_provider_key": judge_settings.get("default_judge_provider_key"),
-                        "custom_instructions": judge_settings.get("custom_instructions_template", ""),
-                        "concurrency": judge_settings.get("concurrency", 4),
-                        "experiment_id": experiment_id,
-                    }
-                    await job_registry.submit("judge", user_id, judge_params)
-                    logger.info(
-                        "Auto-judge submitted: eval_id=%s judge_model=%s avg_score=%.2f threshold=%.2f",
-                        eval_id, default_judge_model, avg_score_for_autojudge, auto_judge_threshold,
-                    )
+                if model_id:
+                    model = await db.get_model(model_id)
+                    if model:
+                        judge_params = {
+                            "user_id": user_id,
+                            "user_email": params.get("user_email", ""),
+                            "eval_run_id": eval_id,
+                            "judge_model": model["litellm_id"],
+                            "judge_provider_key": model.get("provider_key"),
+                            "custom_instructions": (judge_settings or {}).get("custom_instructions_template", ""),
+                            "concurrency": (judge_settings or {}).get("concurrency", 4),
+                            "experiment_id": experiment_id,
+                        }
+                        await job_registry.submit("judge", user_id, judge_params)
+                        logger.info(
+                            "Auto-judge submitted: eval_id=%s judge_model=%s avg_score=%.2f threshold=%.2f",
+                            eval_id, model["litellm_id"], avg_score_for_autojudge, auto_judge_threshold,
+                        )
+                    else:
+                        logger.warning("Auto-judge skipped: model_id=%s not found in DB", model_id)
+                        await _ws_send({
+                            "type": "auto_judge_skipped",
+                            "job_id": job_id,
+                            "reason": "no_judge_model",
+                            "detail": "Configured judge model no longer exists. Update in Settings > Judge.",
+                        })
                 else:
-                    logger.debug("Auto-judge skipped: no default_judge_model configured for user=%s", user_id)
+                    logger.info("Auto-judge skipped: no default_judge_model configured for user=%s", user_id)
                     await _ws_send({
                         "type": "auto_judge_skipped",
                         "job_id": job_id,
@@ -1230,20 +1239,26 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
             LOW_ACCURACY_THRESHOLD = 0.70  # 70%
 
             if avg_score < LOW_ACCURACY_THRESHOLD:
-                # Load judge settings to find a judge model
-                _user_cfg = await _get_user_config(user_id)
-                _judge_settings = _user_cfg.get("judge_settings", {})
+                # Load judge settings from normalized table
+                _judge_settings = await db.get_user_judge_settings(user_id)
 
-                _auto_judge_after_eval = _judge_settings.get("auto_judge_after_eval", False)
-                _default_judge_model = _judge_settings.get("default_judge_model")
+                _auto_judge_after_eval = bool((_judge_settings or {}).get("auto_judge_after_eval", False))
+                _default_model_id = (_judge_settings or {}).get("default_judge_model_id")
 
-                if _auto_judge_after_eval and _default_judge_model:
-                    logger.info(
-                        "Low accuracy (%.0f%% < %.0f%%) -- auto-triggering judge: eval_id=%s model=%s",
-                        avg_score * 100, LOW_ACCURACY_THRESHOLD * 100, eval_id, _default_judge_model,
-                    )
+                if _auto_judge_after_eval and _default_model_id:
+                    _model_row = await db.get_model(_default_model_id)
+                    _default_judge_model = _model_row["litellm_id"] if _model_row else None
+                    _judge_provider_key = _model_row.get("provider_key") if _model_row else None
+
+                    if not _default_judge_model:
+                        logger.warning("Low-accuracy judge skipped: model_id=%s not found", _default_model_id)
+                    else:
+                        logger.info(
+                            "Low accuracy (%.0f%% < %.0f%%) -- auto-triggering judge: eval_id=%s model=%s",
+                            avg_score * 100, LOW_ACCURACY_THRESHOLD * 100, eval_id, _default_judge_model,
+                        )
                     # Resolve judge target
-                    _jt_list = _find_target(all_targets, _default_judge_model, _judge_settings.get("default_judge_provider_key"))
+                    _jt_list = _find_target(all_targets, _default_judge_model, _judge_provider_key) if _default_judge_model else []
                     _jt = _jt_list[0] if _jt_list else None
                     if _jt:
                         # Inject API key
@@ -1286,8 +1301,7 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                             # ERD v2: Explanations are stored as judge verdicts in a separate report
                             # Create a lightweight judge report for low-accuracy explanations
                             try:
-                                _expl_judge_db = await db.get_model_by_litellm_id(user_id, _default_judge_model)
-                                _expl_judge_db_id = _expl_judge_db["id"] if _expl_judge_db else None
+                                _expl_judge_db_id = _default_model_id
                                 _expl_report_id = await db.save_judge_report(
                                     user_id=user_id,
                                     mode="post_eval",

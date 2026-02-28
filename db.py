@@ -672,6 +672,23 @@ async def init_db():
             )
         """)
 
+        # --- User Judge Settings (normalized, replaces JSON blob in user_configs) ---
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_judge_settings (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                user_id TEXT UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                default_judge_model_id TEXT REFERENCES models(id) ON DELETE SET NULL,
+                default_mode TEXT NOT NULL DEFAULT 'post_eval',
+                custom_instructions_template TEXT NOT NULL DEFAULT '',
+                score_override_policy TEXT NOT NULL DEFAULT 'always_allow',
+                auto_judge_after_eval INTEGER NOT NULL DEFAULT 0,
+                concurrency INTEGER NOT NULL DEFAULT 4,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.commit()
+
         # --- Public Leaderboard ---
         await db.execute("""
             CREATE TABLE IF NOT EXISTS public_leaderboard (
@@ -3220,3 +3237,57 @@ async def seed_providers_for_new_user(user_id: str):
                      json.dumps(model.get("skip_params", []))),
                 )
         await conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# User Judge Settings (normalized)
+# ---------------------------------------------------------------------------
+
+async def get_user_judge_settings(user_id: str) -> dict | None:
+    """Get judge settings for a user, with model + provider display info via JOIN."""
+    return await _db.fetch_one(
+        "SELECT s.*, "
+        "m.litellm_id AS judge_litellm_id, m.display_name AS judge_model_display_name, "
+        "p.key AS judge_provider_key, p.name AS judge_provider_name, p.api_base AS judge_api_base, "
+        "p.api_key_env AS judge_api_key_env "
+        "FROM user_judge_settings s "
+        "LEFT JOIN models m ON s.default_judge_model_id = m.id "
+        "LEFT JOIN providers p ON m.provider_id = p.id "
+        "WHERE s.user_id = ?",
+        (user_id,),
+    )
+
+
+async def upsert_user_judge_settings(user_id: str, **updates) -> None:
+    """Insert or update judge settings for a user. Only non-None kwargs are applied."""
+    allowed = {
+        "default_judge_model_id", "default_mode", "custom_instructions_template",
+        "score_override_policy", "auto_judge_after_eval", "concurrency",
+    }
+    filtered = {k: v for k, v in updates.items() if k in allowed}
+    existing = await get_user_judge_settings(user_id)
+    if existing:
+        if not filtered:
+            return
+        set_parts = []
+        values = []
+        for k, v in filtered.items():
+            set_parts.append(f"{k} = ?")
+            values.append(v)
+        set_parts.append("updated_at = datetime('now')")
+        await _db.execute(
+            f"UPDATE user_judge_settings SET {', '.join(set_parts)} WHERE user_id = ?",
+            tuple(values) + (user_id,),
+        )
+    else:
+        # Insert with defaults + overrides
+        cols = ["user_id"]
+        vals = [user_id]
+        for k, v in filtered.items():
+            cols.append(k)
+            vals.append(v)
+        placeholders = ", ".join("?" for _ in cols)
+        await _db.execute(
+            f"INSERT INTO user_judge_settings ({', '.join(cols)}) VALUES ({placeholders})",
+            tuple(vals),
+        )

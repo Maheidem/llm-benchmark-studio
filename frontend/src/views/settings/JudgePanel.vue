@@ -8,25 +8,15 @@
           <span class="section-label">Judge Model</span>
         </div>
         <div class="px-5 py-4 space-y-4">
-          <!-- Default Judge Model selector -->
+          <!-- Default Judge Model selector (DB-backed) -->
           <div>
             <label class="field-label">Default Judge Model</label>
-            <select v-model="judge.default_judge_model" @change="debounceSave" class="settings-select">
+            <select v-model="judge.default_judge_model_id" @change="debounceSave" class="settings-select">
               <option value="">-- Select a model --</option>
-              <option v-for="m in allModels" :key="m.value" :value="m.value">{{ m.label }}</option>
+              <option v-for="m in allModels" :key="m.id" :value="m.id">
+                {{ m.display_name }} ({{ m.provider_name || m.provider_key }})
+              </option>
             </select>
-          </div>
-
-          <!-- Default Judge Provider Key -->
-          <div>
-            <label class="field-label">Default Judge Provider Key</label>
-            <input
-              v-model="judge.default_judge_provider_key"
-              type="text"
-              @change="debounceSave"
-              class="settings-input"
-              placeholder="e.g. openai, anthropic, lm_studio"
-            >
           </div>
 
           <!-- Mode -->
@@ -103,8 +93,7 @@ const saveOk = ref(true)
 let saveTimer = null
 
 const judge = reactive({
-  default_judge_model: '',
-  default_judge_provider_key: '',
+  default_judge_model_id: '',
   default_mode: 'post_eval',
   custom_instructions_template: '',
   score_override_policy: 'always_allow',
@@ -117,28 +106,17 @@ const allModels = ref([])
 async function loadSettings() {
   loading.value = true
   try {
-    // Load config for model list
-    const configRes = await apiFetch('/api/config')
-    const configData = await configRes.json()
-
-    // Build model list
-    const models = []
-    for (const [provName, provData] of Object.entries(configData.providers || {})) {
-      const pk = provData.provider_key || provName
-      const provModels = Array.isArray(provData) ? provData : (provData.models || [])
-      for (const m of provModels) {
-        const ck = pk + '::' + m.model_id
-        models.push({ value: ck, label: `${m.display_name || m.model_id} (${provName})` })
-      }
+    // Load models from normalized DB endpoint
+    const modelsRes = await apiFetch('/api/v2/models')
+    if (modelsRes.ok) {
+      allModels.value = await modelsRes.json()
     }
-    allModels.value = models
 
-    // Load judge settings from correct endpoint
+    // Load judge settings from normalized endpoint
     const settingsRes = await apiFetch('/api/settings/judge')
     if (settingsRes.ok) {
       const s = await settingsRes.json()
-      judge.default_judge_model = s.default_judge_model || ''
-      judge.default_judge_provider_key = s.default_judge_provider_key || ''
+      judge.default_judge_model_id = s.default_judge_model_id || ''
       judge.default_mode = s.default_mode || 'post_eval'
       judge.custom_instructions_template = s.custom_instructions_template || ''
       judge.score_override_policy = s.score_override_policy || 'always_allow'
@@ -159,8 +137,7 @@ function debounceSave() {
 
 async function save() {
   const data = {
-    default_judge_model: judge.default_judge_model || null,
-    default_judge_provider_key: judge.default_judge_provider_key || null,
+    default_judge_model_id: judge.default_judge_model_id || null,
     default_mode: judge.default_mode,
     custom_instructions_template: judge.custom_instructions_template,
     score_override_policy: judge.score_override_policy,
@@ -179,7 +156,8 @@ async function save() {
       saveOk.value = true
       setTimeout(() => { saveMsg.value = '' }, 3000)
     } else {
-      saveMsg.value = 'Failed to save'
+      const body = await res.json().catch(() => ({}))
+      saveMsg.value = body.error || 'Failed to save'
       saveOk.value = false
     }
   } catch {

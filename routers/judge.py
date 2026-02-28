@@ -20,6 +20,7 @@ from routers.helpers import (
     _get_user_config,
     _save_user_config,
     _find_target,
+    _parse_compound_key,
     _check_rate_limit,
     _get_user_cancel,
     _parse_judge_json,
@@ -34,18 +35,54 @@ ws_manager = None
 
 
 # ---------------------------------------------------------------------------
-# Judge settings defaults
+# Judge settings defaults (used when no row exists yet)
 # ---------------------------------------------------------------------------
 
-JUDGE_DEFAULTS = {
-    "default_judge_model": None,
-    "default_judge_provider_key": None,
+_JUDGE_SETTINGS_DEFAULTS = {
+    "default_judge_model_id": None,
     "default_mode": "post_eval",
     "custom_instructions_template": "",
     "score_override_policy": "always_allow",
     "auto_judge_after_eval": False,
     "concurrency": 4,
 }
+
+
+async def _lazy_migrate_judge_settings(user_id: str) -> dict | None:
+    """Migrate legacy judge_settings JSON blob to normalized table.
+
+    Returns the new row if migration happened, None if no legacy data.
+    """
+    config = await _get_user_config(user_id)
+    legacy = config.get("judge_settings")
+    if not legacy:
+        return None
+
+    # Resolve legacy compound key → models.id FK
+    model_id = None
+    legacy_model = legacy.get("default_judge_model")
+    if legacy_model:
+        # Strip compound key prefix if present (e.g. "zai::zai/glm-4.7" → "zai/glm-4.7")
+        bare_model = legacy_model.split("::", 1)[-1] if "::" in str(legacy_model) else legacy_model
+        model_row = await db.get_model_by_litellm_id(user_id, bare_model)
+        if model_row:
+            model_id = model_row["id"]
+
+    await db.upsert_user_judge_settings(
+        user_id,
+        default_judge_model_id=model_id,
+        default_mode=legacy.get("default_mode", "post_eval"),
+        custom_instructions_template=legacy.get("custom_instructions_template", ""),
+        score_override_policy=legacy.get("score_override_policy", "always_allow"),
+        auto_judge_after_eval=1 if legacy.get("auto_judge_after_eval") else 0,
+        concurrency=legacy.get("concurrency", 4),
+    )
+
+    # Remove legacy blob from user_configs
+    del config["judge_settings"]
+    await _save_user_config(user_id, config)
+
+    return await db.get_user_judge_settings(user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -55,24 +92,54 @@ JUDGE_DEFAULTS = {
 
 @router.get("/api/settings/judge")
 async def get_judge_settings(user: dict = Depends(auth.get_current_user)):
-    """Get judge default settings for current user."""
-    config = await _get_user_config(user["id"])
-    stored = config.get("judge_settings", {})
-    return {**JUDGE_DEFAULTS, **stored}
+    """Get judge default settings for current user (normalized table)."""
+    row = await db.get_user_judge_settings(user["id"])
+
+    # Lazy-migrate from legacy JSON blob if no row yet
+    if not row:
+        row = await _lazy_migrate_judge_settings(user["id"])
+
+    if not row:
+        return {**_JUDGE_SETTINGS_DEFAULTS}
+
+    return {
+        "default_judge_model_id": row.get("default_judge_model_id"),
+        "default_mode": row.get("default_mode", "post_eval"),
+        "custom_instructions_template": row.get("custom_instructions_template", ""),
+        "score_override_policy": row.get("score_override_policy", "always_allow"),
+        "auto_judge_after_eval": bool(row.get("auto_judge_after_eval")),
+        "concurrency": row.get("concurrency", 4),
+        # Display info from JOIN (for UI convenience)
+        "judge_litellm_id": row.get("judge_litellm_id"),
+        "judge_model_display_name": row.get("judge_model_display_name"),
+        "judge_provider_key": row.get("judge_provider_key"),
+        "judge_provider_name": row.get("judge_provider_name"),
+    }
 
 
 @router.put("/api/settings/judge")
 async def save_judge_settings(body: JudgeSettingsUpdate, user: dict = Depends(auth.get_current_user)):
-    """Save judge default settings (partial update -- only non-None fields are merged)."""
-    config = await _get_user_config(user["id"])
-    current = config.get("judge_settings", {})
-
-    # Merge only fields that were explicitly provided (non-None)
+    """Save judge default settings (partial update, validated FK)."""
     updates = body.model_dump(exclude_none=True)
-    current.update(updates)
-    config["judge_settings"] = current
 
-    await _save_user_config(user["id"], config)
+    # Validate model FK if provided
+    model_id = updates.get("default_judge_model_id")
+    if model_id is not None:
+        if model_id == "":
+            # Empty string means "clear selection"
+            updates["default_judge_model_id"] = None
+        else:
+            model = await db.get_model(model_id)
+            if not model:
+                return JSONResponse({"error": "Model not found"}, status_code=400)
+            if model.get("user_id") != user["id"]:
+                return JSONResponse({"error": "Model does not belong to you"}, status_code=400)
+
+    # Convert bool to int for SQLite
+    if "auto_judge_after_eval" in updates:
+        updates["auto_judge_after_eval"] = 1 if updates["auto_judge_after_eval"] else 0
+
+    await db.upsert_user_judge_settings(user["id"], **updates)
     return {"status": "ok"}
 
 
@@ -356,8 +423,10 @@ async def run_judge_post_eval(request: Request, user: dict = Depends(auth.get_cu
         raise HTTPException(422, detail=str(e))
 
     eval_run_id = validated.eval_run_id
-    judge_model_id = validated.judge_model
-    judge_provider_key = body.get("judge_provider_key")
+    raw_judge_model = validated.judge_model
+    # Parse compound key (e.g. "zai::zai/glm-4.7" → provider_key="zai", model_id="zai/glm-4.7")
+    parsed_pk, judge_model_id = _parse_compound_key(raw_judge_model)
+    judge_provider_key = body.get("judge_provider_key") or parsed_pk
     custom_instructions = body.get("custom_instructions", "")
     concurrency = body.get("concurrency", 4)
 
@@ -431,8 +500,9 @@ async def run_judge_compare(request: Request, user: dict = Depends(auth.get_curr
 
     eval_run_id_a = validated.eval_run_id_a
     eval_run_id_b = validated.eval_run_id_b
-    judge_model_id = validated.judge_model
-    judge_provider_key = body.get("judge_provider_key")
+    # Parse compound key
+    parsed_pk, judge_model_id = _parse_compound_key(validated.judge_model)
+    judge_provider_key = body.get("judge_provider_key") or parsed_pk
     concurrency = body.get("concurrency", 4)
 
     # Load both runs (validate before submitting job)
@@ -558,9 +628,9 @@ async def rerun_judge(request: Request, user: dict = Depends(auth.get_current_us
     next_version = max_version + 1
 
     # Determine judge model (use parent's if not overridden)
-    # After migration 600, judge_model TEXT is dropped; use JOIN-resolved field or FK
-    judge_model_id = validated.judge_model or parent.get("judge_model") or parent.get("judge_model_id", "")
-    judge_provider_key = validated.judge_provider_key
+    raw_judge = validated.judge_model or parent.get("judge_model") or parent.get("judge_model_id", "")
+    parsed_pk, judge_model_id = _parse_compound_key(raw_judge)
+    judge_provider_key = validated.judge_provider_key or parsed_pk
     custom_instructions = validated.custom_instructions or ""
     concurrency = validated.concurrency
 
