@@ -18,6 +18,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
   const warmup = ref(false)
   const timeout = ref(120)
   const promptTemplates = ref([])
+  const providerParams = reactive({})  // Tier 2/3 params (top_p, frequency_penalty, etc.)
 
   // ── Execution state ──
   const isRunning = ref(false)
@@ -376,6 +377,14 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
       warmup: warmup.value,
       timeout: timeout.value,
     }
+    // Include provider_params if any are set (non-empty, non-null values)
+    if (!overrideBody) {
+      const pp = {}
+      for (const [k, v] of Object.entries(providerParams)) {
+        if (v != null && v !== '') pp[k] = v
+      }
+      if (Object.keys(pp).length > 0) body.provider_params = pp
+    }
     lastBenchmarkBody.value = body
 
     initProviderProgress(body)
@@ -679,6 +688,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     skippedModels,
     errorBanner,
     localRunning,
+    providerParams,
     // Computed
     selectedCount,
     isStressMode,
