@@ -1001,6 +1001,7 @@ async def async_run_single(
     }
     if extra:
         kwargs.update(extra)
+        logger.info("Benchmark params for %s: %s", target.model_id, {k: v for k, v in extra.items() if k != "api_key"})
     else:
         kwargs["max_tokens"] = max_tokens
         kwargs["temperature"] = temperature

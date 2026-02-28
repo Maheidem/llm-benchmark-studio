@@ -176,6 +176,7 @@ async def run_single_eval(
     # Apply validated params from build_litellm_kwargs
     if extra:
         kwargs.update(extra)
+        logger.info("Eval params for %s: %s", target.model_id, {k: v for k, v in extra.items() if k != "api_key"})
     else:
         # Fallback: no provider_params, apply directly (backward compat)
         if "temperature" not in (target.skip_params or []):
@@ -414,6 +415,7 @@ async def run_multi_turn_eval(
     # Apply validated params from build_litellm_kwargs
     if extra:
         base_kwargs.update(extra)
+        logger.info("Multi-turn eval params for %s: %s", target.model_id, {k: v for k, v in extra.items() if k != "api_key"})
     else:
         # Fallback: no provider_params, apply directly (backward compat)
         if "temperature" not in (target.skip_params or []):
