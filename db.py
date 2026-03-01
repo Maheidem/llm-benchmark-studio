@@ -799,6 +799,22 @@ async def init_db():
         except Exception:
             pass  # Column already exists
 
+        # --- Migration 702: Add max_tokens + default_judge_profile_id to user_judge_settings ---
+        try:
+            await db.execute("ALTER TABLE user_judge_settings ADD COLUMN max_tokens INTEGER NOT NULL DEFAULT 4096")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute("ALTER TABLE user_judge_settings ADD COLUMN default_judge_profile_id TEXT REFERENCES model_profiles(id) ON DELETE SET NULL")
+            await db.execute(
+                "INSERT OR IGNORE INTO schema_version (version, description) "
+                "VALUES (702, 'Add max_tokens and default_judge_profile_id to user_judge_settings')"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
 
 # --- User CRUD ---
 
