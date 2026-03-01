@@ -166,6 +166,8 @@ class JudgeSettingsUpdate(BaseModel):
     score_override_policy: Optional[Literal["always_allow", "require_confirmation", "never"]] = None
     auto_judge_after_eval: Optional[bool] = None
     concurrency: Optional[int] = Field(None, ge=1, le=20)
+    max_tokens: Optional[int] = Field(None, ge=256, le=32_000)
+    default_judge_profile_id: Optional[str] = Field(None, max_length=64)
 
 
 class ScheduleCreate(BaseModel):

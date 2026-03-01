@@ -899,6 +899,23 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
         except Exception:
             logger.exception("Experiment update failed: experiment_id=%s", experiment_id)
 
+    # --- Resolve inline judge max_tokens from user settings / profile ---
+    _inline_judge_max_tokens = 4096
+    if judge_enabled:
+        _ijs = await db.get_user_judge_settings(user_id)
+        if _ijs:
+            _inline_judge_max_tokens = _ijs.get("max_tokens", 4096)
+            _ijp_id = _ijs.get("default_judge_profile_id")
+            if _ijp_id:
+                _ijp = await db.get_profile(_ijp_id, user_id)
+                if _ijp and _ijp.get("params_json"):
+                    try:
+                        _ijpp = json.loads(_ijp["params_json"]) if isinstance(_ijp["params_json"], str) else _ijp["params_json"]
+                        if _ijpp.get("max_tokens"):
+                            _inline_judge_max_tokens = int(_ijpp["max_tokens"])
+                    except Exception:
+                        pass
+
     # --- Post-eval judge mode ---
     judge_report_id = None
     if judge_enabled and judge_mode == "post_eval" and judge_target and all_results:
@@ -997,7 +1014,7 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
 
                 tgt = target_map.get(mid)
                 mname = tgt.display_name if tgt else mid
-                pe_report_data = await _judge_crosscase(judge_target, mname, model_vds)
+                pe_report_data = await _judge_crosscase(judge_target, mname, model_vds, max_tokens=_inline_judge_max_tokens)
                 pe_report_data["model_id"] = mid
                 pe_report_data["model_name"] = mname
                 all_pe_reports.append(pe_report_data)
@@ -1052,7 +1069,7 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
             for mid, mvds in model_results_j.items():
                 tgt = target_map.get(mid)
                 mname = tgt.display_name if tgt else mid
-                li_report_data = await _judge_crosscase(judge_target, mname, mvds)
+                li_report_data = await _judge_crosscase(judge_target, mname, mvds, max_tokens=_inline_judge_max_tokens)
                 li_report_data["model_id"] = mid
                 li_report_data["model_name"] = mname
                 all_li_reports.append(li_report_data)
@@ -1191,6 +1208,18 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                 if model_id:
                     model = await db.get_model(model_id)
                     if model:
+                        # Resolve effective max_tokens: profile overrides standalone setting
+                        _aj_max_tokens = (judge_settings or {}).get("max_tokens", 4096)
+                        _aj_profile_id = (judge_settings or {}).get("default_judge_profile_id")
+                        if _aj_profile_id:
+                            _aj_profile = await db.get_profile(_aj_profile_id, user_id)
+                            if _aj_profile and _aj_profile.get("params_json"):
+                                try:
+                                    _ajpp = json.loads(_aj_profile["params_json"]) if isinstance(_aj_profile["params_json"], str) else _aj_profile["params_json"]
+                                    if _ajpp.get("max_tokens"):
+                                        _aj_max_tokens = int(_ajpp["max_tokens"])
+                                except Exception:
+                                    pass
                         judge_params = {
                             "user_id": user_id,
                             "user_email": params.get("user_email", ""),
@@ -1199,6 +1228,8 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                             "judge_provider_key": model.get("provider_key"),
                             "custom_instructions": (judge_settings or {}).get("custom_instructions_template", ""),
                             "concurrency": (judge_settings or {}).get("concurrency", 4),
+                            "max_tokens": _aj_max_tokens,
+                            "default_judge_profile_id": _aj_profile_id,
                             "experiment_id": experiment_id,
                         }
                         await job_registry.submit("judge", user_id, judge_params)
@@ -2338,7 +2369,20 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
     judge_provider_key = params.get("judge_provider_key")
     custom_instructions = params.get("custom_instructions", "")
     concurrency = int(params.get("concurrency", 4))
+    judge_max_tokens = int(params.get("max_tokens", 4096))
     experiment_id = params.get("experiment_id")
+
+    # Profile override: if a profile is referenced, extract max_tokens from its params
+    _judge_profile_id = params.get("default_judge_profile_id")
+    if _judge_profile_id:
+        _jp = await db.get_profile(_judge_profile_id, user_id)
+        if _jp and _jp.get("params_json"):
+            try:
+                _jpp = json.loads(_jp["params_json"]) if isinstance(_jp["params_json"], str) else _jp["params_json"]
+                if _jpp.get("max_tokens"):
+                    judge_max_tokens = int(_jpp["max_tokens"])
+            except Exception:
+                pass
 
     # Parse compound key (e.g. "zai::GLM-4.5-Air") from settings dropdown
     if "::" in str(judge_model_raw):
@@ -2606,7 +2650,7 @@ async def judge_handler(job_id: str, params: dict, cancel_event, progress_cb) ->
         # Cross-case analysis per model
         tgt = target_map.get(model_id)
         mname = tgt.display_name if tgt else model_id
-        report_data = await _judge_crosscase(judge_target, mname, model_verdicts, extra_context=tuner_analysis_context)
+        report_data = await _judge_crosscase(judge_target, mname, model_verdicts, extra_context=tuner_analysis_context, max_tokens=judge_max_tokens)
         report_data["model_id"] = model_id
         report_data["model_name"] = mname
         all_model_reports.append(report_data)

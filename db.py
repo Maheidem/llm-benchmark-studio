@@ -683,6 +683,8 @@ async def init_db():
                 score_override_policy TEXT NOT NULL DEFAULT 'always_allow',
                 auto_judge_after_eval INTEGER NOT NULL DEFAULT 0,
                 concurrency INTEGER NOT NULL DEFAULT 4,
+                max_tokens INTEGER NOT NULL DEFAULT 4096,
+                default_judge_profile_id TEXT REFERENCES model_profiles(id) ON DELETE SET NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
@@ -3249,10 +3251,12 @@ async def get_user_judge_settings(user_id: str) -> dict | None:
         "SELECT s.*, "
         "m.litellm_id AS judge_litellm_id, m.display_name AS judge_model_display_name, "
         "p.key AS judge_provider_key, p.name AS judge_provider_name, p.api_base AS judge_api_base, "
-        "p.api_key_env AS judge_api_key_env "
+        "p.api_key_env AS judge_api_key_env, "
+        "mp.name AS judge_profile_name, mp.params_json AS judge_profile_params_json "
         "FROM user_judge_settings s "
         "LEFT JOIN models m ON s.default_judge_model_id = m.id "
         "LEFT JOIN providers p ON m.provider_id = p.id "
+        "LEFT JOIN model_profiles mp ON s.default_judge_profile_id = mp.id "
         "WHERE s.user_id = ?",
         (user_id,),
     )
@@ -3262,7 +3266,8 @@ async def upsert_user_judge_settings(user_id: str, **updates) -> None:
     """Insert or update judge settings for a user. Only non-None kwargs are applied."""
     allowed = {
         "default_judge_model_id", "default_mode", "custom_instructions_template",
-        "score_override_policy", "auto_judge_after_eval", "concurrency",
+        "score_override_policy", "auto_judge_after_eval", "concurrency", "max_tokens",
+        "default_judge_profile_id",
     }
     filtered = {k: v for k, v in updates.items() if k in allowed}
     existing = await get_user_judge_settings(user_id)

@@ -1223,14 +1223,22 @@ def _mask_value(val: str) -> str:
 
 
 def _parse_judge_json(text: str) -> dict:
-    """Parse a JSON object from judge model response."""
+    """Parse a JSON object from judge model response.
+
+    Strategies (in order):
+    1. Direct JSON parse
+    2. Strip markdown code fences, then parse
+    3. Extract first '{' to last '}' substring, then parse
+    """
     text = text.strip()
+    # Strategy 1: direct parse
     try:
         data = json.loads(text)
         if isinstance(data, dict):
             return data
     except json.JSONDecodeError:
         pass
+    # Strategy 2: strip markdown code fences
     stripped = re.sub(r'```(?:json)?\s*', '', text).strip()
     try:
         data = json.loads(stripped)
@@ -1238,10 +1246,13 @@ def _parse_judge_json(text: str) -> dict:
             return data
     except json.JSONDecodeError:
         pass
-    match = re.search(r'\{[\s\S]*\}', stripped)
-    if match:
+    # Strategy 3: extract from first '{' to last '}' (handles trailing text)
+    first = stripped.find('{')
+    last = stripped.rfind('}')
+    if first != -1 and last > first:
+        candidate = stripped[first:last + 1]
         try:
-            data = json.loads(match.group())
+            data = json.loads(candidate)
             if isinstance(data, dict):
                 return data
         except json.JSONDecodeError:

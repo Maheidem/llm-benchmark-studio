@@ -40,11 +40,13 @@ ws_manager = None
 
 _JUDGE_SETTINGS_DEFAULTS = {
     "default_judge_model_id": None,
+    "default_judge_profile_id": None,
     "default_mode": "post_eval",
     "custom_instructions_template": "",
     "score_override_policy": "always_allow",
     "auto_judge_after_eval": False,
     "concurrency": 4,
+    "max_tokens": 4096,
 }
 
 
@@ -104,16 +106,20 @@ async def get_judge_settings(user: dict = Depends(auth.get_current_user)):
 
     return {
         "default_judge_model_id": row.get("default_judge_model_id"),
+        "default_judge_profile_id": row.get("default_judge_profile_id"),
         "default_mode": row.get("default_mode", "post_eval"),
         "custom_instructions_template": row.get("custom_instructions_template", ""),
         "score_override_policy": row.get("score_override_policy", "always_allow"),
         "auto_judge_after_eval": bool(row.get("auto_judge_after_eval")),
         "concurrency": row.get("concurrency", 4),
+        "max_tokens": row.get("max_tokens", 4096),
         # Display info from JOIN (for UI convenience)
         "judge_litellm_id": row.get("judge_litellm_id"),
         "judge_model_display_name": row.get("judge_model_display_name"),
         "judge_provider_key": row.get("judge_provider_key"),
         "judge_provider_name": row.get("judge_provider_name"),
+        "judge_profile_name": row.get("judge_profile_name"),
+        "judge_profile_params_json": row.get("judge_profile_params_json"),
     }
 
 
@@ -134,6 +140,16 @@ async def save_judge_settings(body: JudgeSettingsUpdate, user: dict = Depends(au
                 return JSONResponse({"error": "Model not found"}, status_code=400)
             if model.get("user_id") != user["id"]:
                 return JSONResponse({"error": "Model does not belong to you"}, status_code=400)
+
+    # Validate profile FK if provided
+    profile_id = updates.get("default_judge_profile_id")
+    if profile_id is not None:
+        if profile_id == "":
+            updates["default_judge_profile_id"] = None
+        else:
+            profile = await db.get_profile(profile_id, user["id"])
+            if not profile:
+                return JSONResponse({"error": "Profile not found"}, status_code=400)
 
     # Convert bool to int for SQLite
     if "auto_judge_after_eval" in updates:
@@ -251,6 +267,7 @@ async def _call_judge_model(
     judge_target: Target,
     prompt: str,
     *,
+    max_tokens: int = 2048,
     _max_retries: int = 3,
     _base_delay: float = 2.0,
 ) -> dict:
@@ -272,7 +289,7 @@ async def _call_judge_model(
         kwargs["api_key"] = judge_target.api_key
     # Use build_litellm_kwargs for provider-aware param handling (skip_params, clamping)
     extra = build_litellm_kwargs(
-        judge_target, temperature=0.0, max_tokens=2048,
+        judge_target, temperature=0.0, max_tokens=max_tokens,
     )
     if extra:
         kwargs.update(extra)
@@ -280,7 +297,7 @@ async def _call_judge_model(
         # Fallback: no provider_params resolved -- apply judge defaults directly
         if "temperature" not in (judge_target.skip_params or []):
             kwargs["temperature"] = 0.0  # AD-6: reproducible judge assessments
-        kwargs["max_tokens"] = 2048
+        kwargs["max_tokens"] = max_tokens
 
     logger.debug("Judge call: model=%s api_base=%s prompt_len=%d", judge_target.model_id, judge_target.api_base, len(prompt))
 
@@ -355,6 +372,7 @@ async def _judge_crosscase(
     model_name: str,
     verdicts: list[dict],
     extra_context: str = "",
+    max_tokens: int = 4096,
 ) -> dict:
     """Generate cross-case analysis report from verdicts.
 
@@ -378,7 +396,7 @@ async def _judge_crosscase(
     if extra_context:
         prompt += "\n\n" + extra_context
     try:
-        report = await _call_judge_model(judge_target, prompt)
+        report = await _call_judge_model(judge_target, prompt, max_tokens=max_tokens)
     except Exception as e:
         logger.warning("Cross-case analysis LLM call failed for model=%s: %s", model_name, e)
         report = {}

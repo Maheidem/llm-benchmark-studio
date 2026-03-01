@@ -439,16 +439,20 @@ class TestJudgeSettings:
         assert resp.status_code == 200
         data = resp.json()
         assert "default_judge_model_id" in data
+        assert "default_judge_profile_id" in data
         assert "default_mode" in data
         assert "score_override_policy" in data
         assert "auto_judge_after_eval" in data
         assert "concurrency" in data
+        assert "max_tokens" in data
         # Check defaults
         assert data["default_judge_model_id"] is None
+        assert data["default_judge_profile_id"] is None
         assert data["default_mode"] == "post_eval"
         assert data["score_override_policy"] == "always_allow"
         assert data["auto_judge_after_eval"] is False
         assert data["concurrency"] == 4
+        assert data["max_tokens"] == 4096
 
     async def test_get_judge_settings_requires_auth(self, app_client):
         """GET /api/settings/judge returns 401 without authorization."""
@@ -506,28 +510,39 @@ class TestJudgeSettings:
         assert resp.status_code == 422
 
     async def test_put_judge_settings_saves_all_fields(self, app_client, auth_headers, test_user, _patch_db_path):
-        """PUT /api/settings/judge accepts a full settings object with valid model FK."""
-        # Create a model in DB to reference
+        """PUT /api/settings/judge accepts a full settings object with valid model + profile FKs."""
+        # Create a model and profile in DB to reference
         user, _ = test_user
         provider_id = await db.create_provider(user["id"], "judge_test_prov", "Judge Test Provider")
         model_id = await db.create_model(provider_id, litellm_id="judge_test/model-1", display_name="Judge Test Model 1")
+        profile_id = await db.create_profile(
+            user_id=user["id"],
+            model_id="judge_test/model-1",
+            name="Judge Profile",
+            params_json='{"max_tokens": 8192, "temperature": 0.1}',
+        )
 
         resp = await app_client.put("/api/settings/judge", headers=auth_headers, json={
             "default_judge_model_id": model_id,
+            "default_judge_profile_id": profile_id,
             "default_mode": "post_eval",
             "custom_instructions_template": "Be strict about parameter names.",
             "score_override_policy": "never",
             "auto_judge_after_eval": True,
             "concurrency": 2,
+            "max_tokens": 8192,
         })
         assert resp.status_code == 200
 
         get_resp = await app_client.get("/api/settings/judge", headers=auth_headers)
         data = get_resp.json()
         assert data["default_judge_model_id"] == model_id
+        assert data["default_judge_profile_id"] == profile_id
         assert data["score_override_policy"] == "never"
         assert data["auto_judge_after_eval"] is True
         assert data["concurrency"] == 2
+        assert data["max_tokens"] == 8192
+        assert data["judge_profile_name"] == "Judge Profile"
 
     async def test_put_judge_settings_requires_auth(self, app_client):
         """PUT /api/settings/judge returns 401 without authorization."""
@@ -565,6 +580,47 @@ class TestJudgeSettings:
         get_resp = await app_client.get("/api/settings/judge", headers=auth_headers)
         data = get_resp.json()
         assert data["default_judge_model_id"] is None
+
+    async def test_put_judge_settings_nonexistent_profile_id_rejected(self, app_client, auth_headers):
+        """PUT /api/settings/judge returns 400 for a non-existent profile ID."""
+        resp = await app_client.put("/api/settings/judge", headers=auth_headers, json={
+            "default_judge_profile_id": "nonexistent-profile-id-12345",
+        })
+        assert resp.status_code == 400
+        assert "Profile not found" in resp.json()["error"]
+
+    async def test_put_judge_settings_clear_profile_with_empty_string(self, app_client, auth_headers):
+        """PUT /api/settings/judge clears profile selection with empty string."""
+        resp = await app_client.put("/api/settings/judge", headers=auth_headers, json={
+            "default_judge_profile_id": "",
+        })
+        assert resp.status_code == 200
+
+        get_resp = await app_client.get("/api/settings/judge", headers=auth_headers)
+        data = get_resp.json()
+        assert data["default_judge_profile_id"] is None
+
+    async def test_put_judge_settings_saves_max_tokens(self, app_client, auth_headers):
+        """PUT /api/settings/judge saves max_tokens field."""
+        resp = await app_client.put("/api/settings/judge", headers=auth_headers, json={
+            "max_tokens": 8192,
+        })
+        assert resp.status_code == 200
+
+        get_resp = await app_client.get("/api/settings/judge", headers=auth_headers)
+        assert get_resp.json()["max_tokens"] == 8192
+
+    async def test_put_judge_settings_invalid_max_tokens_rejected(self, app_client, auth_headers):
+        """PUT /api/settings/judge rejects max_tokens outside 256-32000 range."""
+        resp = await app_client.put("/api/settings/judge", headers=auth_headers, json={
+            "max_tokens": 100,
+        })
+        assert resp.status_code == 422
+
+        resp = await app_client.put("/api/settings/judge", headers=auth_headers, json={
+            "max_tokens": 50000,
+        })
+        assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
