@@ -269,15 +269,17 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToolEvalStore } from '../../stores/toolEval.js'
+import { useNotificationsStore } from '../../stores/notifications.js'
 import { useToast } from '../../composables/useToast.js'
 import { useModal } from '../../composables/useModal.js'
 import { useSharedContext } from '../../composables/useSharedContext.js'
 
 const router = useRouter()
 const store = useToolEvalStore()
+const notifStore = useNotificationsStore()
 const { showToast } = useToast()
 const { confirm } = useModal()
 const { setSuite, setModels, setConfig } = useSharedContext()
@@ -458,6 +460,9 @@ async function deleteRun(run) {
   }
 }
 
+// Auto-refresh history when judge completes so judge_grade column updates
+let unsubscribe = null
+
 onMounted(async () => {
   try {
     await store.loadHistory()
@@ -466,6 +471,15 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+  unsubscribe = notifStore.onMessage((msg) => {
+    if (msg.type === 'judge_complete') {
+      store.loadHistory().catch(() => {})  // silent refresh — grade column updates
+    }
+  })
+})
+
+onUnmounted(() => {
+  if (unsubscribe) unsubscribe()
 })
 </script>
 

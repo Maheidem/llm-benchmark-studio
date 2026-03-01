@@ -250,6 +250,21 @@ class TestParseJudgeJson:
         result = _parse_judge_json("")
         assert result == {}
 
+    def test_truncated_json_partial_recovery(self):
+        """Strategy 4: rescue key fields from truncated JSON (max_tokens cutoff)."""
+        text = '```json\n{"overall_grade": "C-", "overall_score": 70, "strengths": ["good stuff"], "weaknesses": ["bad stu'
+        result = _parse_judge_json(text)
+        assert result["overall_grade"] == "C-"
+        assert result["overall_score"] == 70
+
+    def test_truncated_verdict_partial_recovery(self):
+        """Strategy 4: rescue verdict fields from truncated per-case JSON."""
+        text = '{"quality_score": 4, "verdict": "pass", "summary": "Correct tool selection", "reasoning": "The model correc'
+        result = _parse_judge_json(text)
+        assert result["quality_score"] == 4
+        assert result["verdict"] == "pass"
+        assert result["summary"] == "Correct tool selection"
+
 
 # ── _build_tools_summary ────────────────────────────────────────────
 

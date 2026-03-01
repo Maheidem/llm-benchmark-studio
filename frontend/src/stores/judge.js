@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { apiFetch } from '../utils/api.js'
+import { useNotificationsStore } from './notifications.js'
 
 export const useJudgeStore = defineStore('judge', () => {
   // --- State ---
@@ -11,6 +12,7 @@ export const useJudgeStore = defineStore('judge', () => {
   const progress = ref({ pct: 0, detail: '' })
   const verdicts = ref([])
   const modelReports = ref([])
+  const autoJudgeStatus = ref(null) // { type: 'skipped', reason, detail } | null
 
   // --- Getters ---
   const sortedReports = computed(() => {
@@ -245,8 +247,38 @@ export const useJudgeStore = defineStore('judge', () => {
     isRunning.value = false
     activeJobId.value = null
     progress.value = { pct: 0, detail: '' }
+    autoJudgeStatus.value = null
     clearSession()
   }
+
+  function clearAutoJudgeStatus() {
+    autoJudgeStatus.value = null
+  }
+
+  // --- Auto-subscribe to WS events (runs once at store init) ---
+  const notifStore = useNotificationsStore()
+  notifStore.onMessage((msg) => {
+    // Track skipped events (fires with eval job_id, not judge job_id)
+    if (msg.type === 'auto_judge_skipped') {
+      autoJudgeStatus.value = { type: 'skipped', reason: msg.reason, detail: msg.detail }
+      return
+    }
+
+    // Auto-track new judge jobs via judge_start (picks up auto-judge)
+    if (msg.type === 'judge_start' && !activeJobId.value) {
+      activeJobId.value = msg.job_id
+      autoJudgeStatus.value = null
+    }
+
+    // Filter to active job, forward to existing handleProgress
+    if (!activeJobId.value) return
+    if (msg.job_id && msg.job_id !== activeJobId.value) return
+    const judgeTypes = ['judge_start', 'judge_verdict', 'judge_report', 'judge_complete',
+                        'job_progress', 'job_completed', 'job_failed', 'job_cancelled']
+    if (judgeTypes.includes(msg.type)) {
+      handleProgress(msg)
+    }
+  })
 
   return {
     // State
@@ -257,6 +289,7 @@ export const useJudgeStore = defineStore('judge', () => {
     progress,
     verdicts,
     modelReports,
+    autoJudgeStatus,
 
     // Getters
     sortedReports,
@@ -273,5 +306,6 @@ export const useJudgeStore = defineStore('judge', () => {
     handleProgress,
     reset,
     restoreJob,
+    clearAutoJudgeStatus,
   }
 })

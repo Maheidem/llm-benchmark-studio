@@ -1237,6 +1237,11 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                             "Auto-judge submitted: eval_id=%s judge_model=%s avg_score=%.2f threshold=%.2f",
                             eval_id, model["litellm_id"], avg_score_for_autojudge, auto_judge_threshold,
                         )
+                        await _ws_send({
+                            "type": "auto_judge_submitted",
+                            "job_id": job_id,
+                            "detail": f"Auto-judge started using {model['litellm_id']} — results will appear in Judge History",
+                        })
                     else:
                         logger.warning("Auto-judge skipped: model_id=%s not found in DB", model_id)
                         await _ws_send({

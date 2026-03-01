@@ -258,24 +258,8 @@
       @show-detail="showDetail"
     />
 
-    <!-- Auto-judge completion banner -->
-    <div
-      v-if="judgeReportReady"
-      class="mt-4 px-4 py-3 rounded-sm flex items-center justify-between"
-      style="background:rgba(251,191,36,0.06);border:1px solid rgba(251,191,36,0.25);"
-    >
-      <div class="flex items-center gap-2">
-        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="#FBBF24" stroke-width="2" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-        </svg>
-        <span class="text-xs text-zinc-400 font-body">Judge analysis complete</span>
-      </div>
-      <router-link
-        :to="{ name: 'JudgeHistory' }"
-        class="text-[10px] font-display tracking-wider uppercase px-3 py-1 rounded-sm"
-        style="color:#FBBF24;background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.2);"
-      >View Report →</router-link>
-    </div>
+    <!-- Judge progress (auto-subscribes via store) -->
+    <JudgeProgressCard ref="judgeProgressRef" />
 
     <!-- Model Detail Modal -->
     <ModelDetailModal
@@ -300,11 +284,15 @@ import { getColor } from '../../utils/constants.js'
 import SystemPromptEditor from '../../components/tool-eval/SystemPromptEditor.vue'
 import EvalResultsTable from '../../components/tool-eval/EvalResultsTable.vue'
 import ModelDetailModal from '../../components/tool-eval/ModelDetailModal.vue'
+import JudgeProgressCard from '../../components/ui/JudgeProgressCard.vue'
+import { useJudgeStore } from '../../stores/judge.js'
 
 const store = useToolEvalStore()
 const profilesStore = useProfilesStore()
 const notifStore = useNotificationsStore()
+const jgStore = useJudgeStore()
 const { showToast } = useToast()
+const judgeProgressRef = ref(null)
 const { context, setSuite, setModels, setConfig } = useSharedContext()
 
 // --- State ---
@@ -324,7 +312,6 @@ const errorBanner = ref('')
 
 const detailModalVisible = ref(false)
 const detailModelId = ref('')
-const judgeReportReady = ref(false)
 
 // Profile picker: map of model_id -> selected profile id ('' = no profile)
 const selectedProfiles = ref({})
@@ -474,24 +461,8 @@ const showIrrelevanceWarning = computed(() => {
 // --- WebSocket message handler (receives messages via notifStore.onMessage) ---
 
 function handleWsMessage(msg) {
-  // Handle judge_complete regardless of job_id (auto-judge runs as separate job)
-  if (msg.type === 'judge_complete') {
-    judgeReportReady.value = true
-    showToast('Judge report ready — view in Judge History', 'success')
-    return
-  }
-
-  // Handle auto_judge_skipped outside the job_id guard — arrives after job_completed clears activeJobId
-  if (msg.type === 'auto_judge_skipped') {
-    if (msg.reason === 'no_judge_model') {
-      showToast('Auto-judge skipped: no judge model configured. Set one in Settings > Judge.', 'error')
-    } else if (msg.reason === 'score_above_threshold') {
-      showToast(msg.detail || 'Auto-judge skipped: scores above threshold', '')
-    } else if (msg.reason === 'submission_failed') {
-      showToast(msg.detail || 'Auto-judge failed to start', 'error')
-    }
-    return
-  }
+  // Judge events (judge_complete, auto_judge_skipped, judge_failed) are now
+  // handled by the judge store's auto-subscription — see stores/judge.js
 
   if (!store.activeJobId) return
   if (msg.job_id !== store.activeJobId) return
@@ -557,9 +528,6 @@ function handleWsMessage(msg) {
         }
       }
       break
-    case 'judge_failed':
-      showToast(msg.detail || 'Judge analysis failed', 'error')
-      break
     case 'job_cancelled':
       progressLabel.value = 'Cancelled'
       showToast('Eval cancelled', '')
@@ -584,7 +552,8 @@ async function startEval() {
   progressPct.value = 0
   progressCount.value = '0/0'
   errorBanner.value = ''
-  judgeReportReady.value = false
+  jgStore.clearAutoJudgeStatus()
+  if (judgeProgressRef.value) judgeProgressRef.value.clearCompleted()
 
   // Build request body
   const targets = Array.from(selectedModels.value).map(k => {

@@ -40,10 +40,13 @@ onMounted(async () => {
   if (authStore.isAuthenticated) {
     notifStore.connect()
 
-    // Global judge_complete handler — fires regardless of which tab is active
+    // Global judge event handlers — fire regardless of which tab is active
     notifStore.onMessage((msg) => {
       if (msg.type === 'judge_complete') {
         showToast('Judge report ready — check Judge History', 'success')
+      }
+      if (msg.type === 'auto_judge_submitted') {
+        showToast(msg.detail || 'Auto-judge started — results will appear in Judge History', 'info')
       }
     })
 

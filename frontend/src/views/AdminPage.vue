@@ -66,6 +66,11 @@
       <div v-show="activeTab === 'audit'">
         <AuditLog />
       </div>
+
+      <!-- Logs tab -->
+      <div v-show="activeTab === 'logs'">
+        <LogsViewer />
+      </div>
     </template>
   </div>
 </template>
@@ -80,6 +85,7 @@ import AdminStats from '../components/admin/AdminStats.vue'
 import JobsTable from '../components/admin/JobsTable.vue'
 import UsersTable from '../components/admin/UsersTable.vue'
 import AuditLog from '../components/admin/AuditLog.vue'
+import LogsViewer from '../components/admin/LogsViewer.vue'
 
 const authStore = useAuthStore()
 const { showToast } = useToast()
@@ -90,6 +96,7 @@ const tabs = [
   { id: 'jobs', label: 'Active Jobs' },
   { id: 'users', label: 'Users' },
   { id: 'audit', label: 'Audit Log' },
+  { id: 'logs', label: 'System Logs' },
 ]
 
 const statsRef = ref(null)

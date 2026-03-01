@@ -35,19 +35,8 @@
       </div>
     </div>
 
-    <!-- Running indicator -->
-    <div v-if="jgStore.isRunning" class="card rounded-md p-5 mb-6">
-      <div class="flex items-center justify-between mb-3">
-        <div class="flex items-center gap-3">
-          <div class="pulse-dot"></div>
-          <span class="text-sm text-zinc-400 font-body">{{ jgStore.progress.detail }}</span>
-        </div>
-        <span class="text-xs font-mono text-zinc-600">{{ jgStore.progress.pct }}%</span>
-      </div>
-      <div class="progress-track rounded-full overflow-hidden">
-        <div class="progress-fill" :style="{ width: jgStore.progress.pct + '%' }"></div>
-      </div>
-    </div>
+    <!-- Judge progress (auto-subscribes via store) -->
+    <JudgeProgressCard @judge-complete="onJudgeComplete" />
 
     <div v-if="loading" class="text-xs text-zinc-600 font-body text-center py-8">Loading...</div>
 
@@ -234,17 +223,16 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useJudgeStore } from '../../stores/judge.js'
-import { useNotificationsStore } from '../../stores/notifications.js'
 import { useToast } from '../../composables/useToast.js'
 import { apiFetch } from '../../utils/api.js'
 import JudgeReportView from '../../components/tool-eval/JudgeReportView.vue'
+import JudgeProgressCard from '../../components/ui/JudgeProgressCard.vue'
 
 const router = useRouter()
 const jgStore = useJudgeStore()
-const notifStore = useNotificationsStore()
 const { showToast } = useToast()
 
 const loading = ref(true)
@@ -264,8 +252,6 @@ const rerunModal = reactive({
   custom_instructions: '',
 })
 
-let unsubscribe = null
-
 onMounted(async () => {
   try {
     await jgStore.loadReports()
@@ -279,26 +265,13 @@ onMounted(async () => {
   loadModels()
 
   jgStore.restoreJob()
-
-  unsubscribe = notifStore.onMessage((msg) => {
-    if (!jgStore.activeJobId) return
-    if (msg.job_id && msg.job_id !== jgStore.activeJobId) return
-
-    const judgeTypes = ['judge_start', 'judge_verdict', 'judge_report', 'judge_complete', 'job_progress', 'job_completed', 'job_failed', 'job_cancelled']
-    if (judgeTypes.includes(msg.type)) {
-      jgStore.handleProgress(msg)
-
-      if (msg.type === 'judge_complete' || msg.type === 'job_completed') {
-        showToast('Judge complete!', 'success')
-        jgStore.loadReports().catch(() => { showToast('Failed to refresh judge reports', 'error') })
-      }
-    }
-  })
 })
 
-onUnmounted(() => {
-  if (unsubscribe) unsubscribe()
-})
+// Auto-refresh reports when judge completes (via JudgeProgressCard emit)
+async function onJudgeComplete() {
+  showToast('Judge complete!', 'success')
+  try { await jgStore.loadReports() } catch { showToast('Failed to refresh judge reports', 'error') }
+}
 
 async function loadModels() {
   try {

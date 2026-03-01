@@ -1229,8 +1229,11 @@ def _parse_judge_json(text: str) -> dict:
     1. Direct JSON parse
     2. Strip markdown code fences, then parse
     3. Extract first '{' to last '}' substring, then parse
+    4. Regex extraction of key fields from truncated JSON (partial recovery)
     """
     text = text.strip()
+    if not text:
+        return {}
     # Strategy 1: direct parse
     try:
         data = json.loads(text)
@@ -1257,6 +1260,29 @@ def _parse_judge_json(text: str) -> dict:
                 return data
         except json.JSONDecodeError:
             pass
+    # Strategy 4: partial recovery — extract key fields via regex from truncated JSON
+    # This rescues the grade/score/verdict even when the response was truncated by max_tokens.
+    partial = {}
+    for key, pattern in (
+        ("overall_grade", r'"overall_grade"\s*:\s*"([^"]+)"'),
+        ("overall_score", r'"overall_score"\s*:\s*(\d+(?:\.\d+)?)'),
+        ("quality_score", r'"quality_score"\s*:\s*(\d+(?:\.\d+)?)'),
+        ("verdict", r'"verdict"\s*:\s*"([^"]+)"'),
+        ("summary", r'"summary"\s*:\s*"([^"]*)"'),
+    ):
+        m = re.search(pattern, stripped)
+        if m:
+            val = m.group(1)
+            # Convert numeric fields
+            if key in ("overall_score", "quality_score"):
+                try:
+                    val = int(val) if '.' not in val else float(val)
+                except ValueError:
+                    pass
+            partial[key] = val
+    if partial:
+        logger.info("_parse_judge_json: partial recovery extracted %d fields from truncated response", len(partial))
+        return partial
     logger.warning("_parse_judge_json: all parse strategies failed, returning empty dict. Raw (first 500 chars): %s", text[:500])
     return {}
 
