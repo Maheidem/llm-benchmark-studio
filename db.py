@@ -499,6 +499,7 @@ async def init_db():
                 timestamp TEXT NOT NULL DEFAULT (datetime('now')),
                 experiment_id TEXT,
                 best_profile_id TEXT REFERENCES model_profiles(id) ON DELETE SET NULL,
+                best_model_litellm_id TEXT,
                 FOREIGN KEY (suite_id) REFERENCES tool_suites(id) ON DELETE CASCADE,
                 FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE SET NULL
             )
@@ -837,6 +838,34 @@ async def init_db():
             await db.commit()
         except Exception:
             pass  # Index already exists
+
+        # --- Migration 705: Add best_model_litellm_id to param_tune_runs ---
+        try:
+            await db.execute("ALTER TABLE param_tune_runs ADD COLUMN best_model_litellm_id TEXT")
+            # Backfill from param_tune_combos (best-scoring combo's model)
+            await db.execute(
+                "UPDATE param_tune_runs SET best_model_litellm_id = ("
+                "  SELECT m.litellm_id FROM param_tune_combos c "
+                "  JOIN models m ON m.id = c.model_id "
+                "  WHERE c.tune_run_id = param_tune_runs.id "
+                "  ORDER BY c.overall_score DESC LIMIT 1"
+                ") WHERE best_model_litellm_id IS NULL"
+            )
+            # Backfill from jobs table for runs without combos (pre-normalization)
+            await db.execute(
+                "UPDATE param_tune_runs SET best_model_litellm_id = ("
+                "  SELECT json_extract(j.params_json, '$.models[0]') "
+                "  FROM jobs j WHERE j.result_ref = param_tune_runs.id "
+                "  AND j.job_type = 'param_tune' LIMIT 1"
+                ") WHERE best_model_litellm_id IS NULL"
+            )
+            await db.execute(
+                "INSERT OR IGNORE INTO schema_version (version, description) "
+                "VALUES (705, 'Add best_model_litellm_id to param_tune_runs')"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
 
 
 # --- User CRUD ---
@@ -1714,6 +1743,7 @@ async def update_param_tune_run(
     status: str | None = None,
     duration_s: float | None = None,
     best_profile_id: str | None = None,
+    best_model_litellm_id: str | None = None,
 ) -> bool:
     """Update a param tune run. Only non-None fields are updated."""
     updates = []
@@ -1736,6 +1766,9 @@ async def update_param_tune_run(
     if best_profile_id is not None:
         updates.append("best_profile_id = ?")
         values.append(best_profile_id)
+    if best_model_litellm_id is not None:
+        updates.append("best_model_litellm_id = ?")
+        values.append(best_model_litellm_id)
     if not updates:
         return False
     values.extend([run_id, user_id])
@@ -1752,7 +1785,7 @@ async def get_param_tune_runs(user_id: str, limit: int = 50) -> list[dict]:
         "SELECT r.id, r.suite_id, ts.name AS suite_name, r.total_combos, r.completed_combos, "
         "r.best_score, r.best_config_json, r.status, r.duration_s, r.timestamp, "
         "r.optimization_mode, "
-        "m.litellm_id AS target_model_id, "
+        "COALESCE(m.litellm_id, r.best_model_litellm_id) AS target_model_id, "
         "m.display_name AS target_model_display_name "
         "FROM param_tune_runs r "
         "LEFT JOIN tool_suites ts ON ts.id = r.suite_id "
@@ -1772,7 +1805,7 @@ async def get_param_tune_run(run_id: str, user_id: str) -> dict | None:
     """Get full param tune run. Includes suite_name, target model info via JOINs."""
     return await _db.fetch_one(
         "SELECT r.*, ts.name AS suite_name, "
-        "m.litellm_id AS target_model_id, "
+        "COALESCE(m.litellm_id, r.best_model_litellm_id) AS target_model_id, "
         "m.display_name AS target_model_display_name "
         "FROM param_tune_runs r "
         "LEFT JOIN tool_suites ts ON ts.id = r.suite_id "

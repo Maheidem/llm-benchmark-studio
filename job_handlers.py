@@ -1721,8 +1721,12 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
         if cancel_event.is_set():
             for t in tasks:
                 t.cancel()
-            # Save partial results
+            # Save partial results (including best model for profile saving)
             duration = time.perf_counter() - start_time
+            cancel_best_model = None
+            if all_results:
+                cancel_best = max(all_results, key=lambda r: r.get("overall_score", 0))
+                cancel_best_model = cancel_best.get("model_id")
             await db.update_param_tune_run(
                 tune_id, user_id,
                 completed_combos=completed,
@@ -1730,6 +1734,7 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
                 duration_s=round(duration, 2),
                 best_config_json=json.dumps(_find_best_config(all_results)),
                 best_score=_find_best_score(all_results),
+                best_model_litellm_id=cancel_best_model,
             )
             return None
 
@@ -1791,10 +1796,12 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
 
     # Phase 5: Look up best_profile_id if best result has a model with a matching profile
     best_profile_id = None
+    best_model_litellm_id = None
     if all_results and best_config:
         try:
             best_result = max(all_results, key=lambda r: r.get("overall_score", 0))
             best_model_id = best_result.get("model_id")
+            best_model_litellm_id = best_model_id  # Store litellm ID directly on run
             if best_model_id:
                 # Check if there's a default profile for this model
                 profile = await db.get_default_profile(user_id, best_model_id)
@@ -1811,6 +1818,7 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
         status="completed",
         duration_s=round(duration, 2),
         best_profile_id=best_profile_id,
+        best_model_litellm_id=best_model_litellm_id,
     )
 
     # Send completion event to frontend
