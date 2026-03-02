@@ -1752,7 +1752,7 @@ async def get_param_tune_runs(user_id: str, limit: int = 50) -> list[dict]:
         "SELECT r.id, r.suite_id, ts.name AS suite_name, r.total_combos, r.completed_combos, "
         "r.best_score, r.best_config_json, r.status, r.duration_s, r.timestamp, "
         "r.optimization_mode, "
-        "best_combo.model_id AS target_model_id, "
+        "m.litellm_id AS target_model_id, "
         "m.display_name AS target_model_display_name "
         "FROM param_tune_runs r "
         "LEFT JOIN tool_suites ts ON ts.id = r.suite_id "
@@ -1772,7 +1772,7 @@ async def get_param_tune_run(run_id: str, user_id: str) -> dict | None:
     """Get full param tune run. Includes suite_name, target model info via JOINs."""
     return await _db.fetch_one(
         "SELECT r.*, ts.name AS suite_name, "
-        "best_combo.model_id AS target_model_id, "
+        "m.litellm_id AS target_model_id, "
         "m.display_name AS target_model_display_name "
         "FROM param_tune_runs r "
         "LEFT JOIN tool_suites ts ON ts.id = r.suite_id "
