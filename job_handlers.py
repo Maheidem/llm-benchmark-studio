@@ -1183,7 +1183,10 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
 
     # --- Auto-judge: submit a separate judge job if explicitly requested ---
     auto_judge = params.get("auto_judge", False)
-    auto_judge_threshold = float(params.get("auto_judge_threshold") or 0.70)
+    # Load judge settings to resolve threshold and model (needed even before the else branch)
+    _aj_judge_settings = await db.get_user_judge_settings(user_id)
+    _settings_threshold = float((_aj_judge_settings or {}).get("auto_judge_threshold", 0.80))
+    auto_judge_threshold = float(params.get("auto_judge_threshold") or _settings_threshold)
     if auto_judge and eval_id and not judge_report_id:
         # Only auto-judge if no judge was already run inline/post-eval
         # AND avg score is below the threshold (threshold slider has effect)
@@ -1201,8 +1204,8 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
             })
         else:
             try:
-                # Load user's judge settings from normalized table
-                judge_settings = await db.get_user_judge_settings(user_id)
+                # Reuse judge settings already loaded above
+                judge_settings = _aj_judge_settings
                 model_id = judge_settings.get("default_judge_model_id") if judge_settings else None
 
                 if model_id:

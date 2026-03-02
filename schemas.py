@@ -168,6 +168,7 @@ class JudgeSettingsUpdate(BaseModel):
     concurrency: Optional[int] = Field(None, ge=1, le=20)
     max_tokens: Optional[int] = Field(None, ge=256, le=32_000)
     default_judge_profile_id: Optional[str] = Field(None, max_length=64)
+    auto_judge_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
 
 
 class ScheduleCreate(BaseModel):

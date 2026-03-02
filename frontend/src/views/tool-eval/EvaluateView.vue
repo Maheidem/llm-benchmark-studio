@@ -368,6 +368,7 @@ onMounted(async () => {
     if (jRes.ok) {
       const jSettings = await jRes.json()
       autoJudge.value = !!jSettings.auto_judge_after_eval
+      autoJudgeThreshold.value = Math.round((jSettings.auto_judge_threshold ?? 0.80) * 100)
     }
   } catch { /* non-fatal */ }
 

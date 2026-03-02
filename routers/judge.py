@@ -47,6 +47,7 @@ _JUDGE_SETTINGS_DEFAULTS = {
     "auto_judge_after_eval": False,
     "concurrency": 4,
     "max_tokens": 4096,
+    "auto_judge_threshold": 0.80,
 }
 
 
@@ -113,6 +114,7 @@ async def get_judge_settings(user: dict = Depends(auth.get_current_user)):
         "auto_judge_after_eval": bool(row.get("auto_judge_after_eval")),
         "concurrency": row.get("concurrency", 4),
         "max_tokens": row.get("max_tokens", 4096),
+        "auto_judge_threshold": float(row.get("auto_judge_threshold", 0.80)),
         # Display info from JOIN (for UI convenience)
         "judge_litellm_id": row.get("judge_litellm_id"),
         "judge_model_display_name": row.get("judge_model_display_name"),

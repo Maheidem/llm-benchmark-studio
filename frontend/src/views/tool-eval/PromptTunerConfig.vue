@@ -237,6 +237,7 @@ import { usePromptLibraryStore } from '../../stores/promptLibrary.js'
 import { useConfigStore } from '../../stores/config.js'
 import { useToast } from '../../composables/useToast.js'
 import { useSharedContext } from '../../composables/useSharedContext.js'
+import { apiFetch } from '../../utils/api.js'
 import { getColor } from '../../utils/constants.js'
 
 const router = useRouter()
@@ -283,6 +284,19 @@ onMounted(async () => {
   } finally {
     loadingConfig.value = false
   }
+
+  // Load Phase 10 settings for prompt tuner defaults
+  try {
+    const res = await apiFetch('/api/settings/phase10')
+    if (res.ok) {
+      const data = await res.json()
+      const prt = data.prompt_tuner || {}
+      if (prt.mode) mode.value = prt.mode
+      populationSize.value = prt.population_size ?? 5
+      generations.value = prt.generations ?? 3
+      // TODO: prt.max_api_calls is saved but not yet enforced during tuning runs
+    }
+  } catch { /* ignore — settings are optional, defaults already set */ }
 
   // Restore context
   if (context.suiteId) selectedSuiteId.value = context.suiteId

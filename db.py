@@ -815,6 +815,17 @@ async def init_db():
         except Exception:
             pass  # Column already exists
 
+        # --- Migration 703: Add auto_judge_threshold to user_judge_settings ---
+        try:
+            await db.execute("ALTER TABLE user_judge_settings ADD COLUMN auto_judge_threshold REAL NOT NULL DEFAULT 0.80")
+            await db.execute(
+                "INSERT OR IGNORE INTO schema_version (version, description) "
+                "VALUES (703, 'Add auto_judge_threshold to user_judge_settings')"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
 
 # --- User CRUD ---
 
@@ -3283,7 +3294,7 @@ async def upsert_user_judge_settings(user_id: str, **updates) -> None:
     allowed = {
         "default_judge_model_id", "default_mode", "custom_instructions_template",
         "score_override_policy", "auto_judge_after_eval", "concurrency", "max_tokens",
-        "default_judge_profile_id",
+        "default_judge_profile_id", "auto_judge_threshold",
     }
     filtered = {k: v for k, v in updates.items() if k in allowed}
     existing = await get_user_judge_settings(user_id)

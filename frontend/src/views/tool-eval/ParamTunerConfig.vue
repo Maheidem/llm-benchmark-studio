@@ -221,6 +221,7 @@ const totalCombos = ref(0)
 const presets = ref([])
 const paramDefs = ref([])
 const paramSupport = ref(null)
+const tunerSettings = ref(null)
 const paramsRegistry = ref(null)
 
 // 2A: Search strategy
@@ -285,7 +286,14 @@ onMounted(async () => {
     if (res.ok) {
       const data = await res.json()
       presets.value = data.param_tuner?.presets || []
+      tunerSettings.value = data.param_tuner || null
       paramSupport.value = data.param_support || null
+      // Initialize strategy sample counts from saved max_combinations
+      const maxCombos = data.param_tuner?.max_combinations
+      if (maxCombos) {
+        nTrials.value = maxCombos
+        randomSamples.value = maxCombos
+      }
     }
   } catch { /* ignore */ }
 
@@ -335,9 +343,10 @@ function buildParamDefs() {
     return
   }
 
+  const ts = tunerSettings.value
   const standard = [
-    { name: 'temperature', type: 'float', min: 0, max: 2, step: 0.1 },
-    { name: 'top_p', type: 'float', min: 0, max: 1, step: 0.1 },
+    { name: 'temperature', type: 'float', min: ts?.temp_min ?? 0, max: ts?.temp_max ?? 1, step: ts?.temp_step ?? 0.5 },
+    { name: 'top_p', type: 'float', min: ts?.top_p_min ?? 0, max: ts?.top_p_max ?? 1, step: ts?.top_p_step ?? 0.25 },
     { name: 'top_k', type: 'int', min: 1, max: 100, step: 10 },
     { name: 'tool_choice', type: 'enum', values: ['auto', 'required', 'none'] },
     { name: 'frequency_penalty', type: 'float', min: -2, max: 2, step: 0.1 },

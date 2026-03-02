@@ -54,11 +54,16 @@
           <!-- Auto Judge + Concurrency + Max Tokens row -->
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <!-- Auto Judge After Eval -->
-            <div class="flex items-center gap-3 pt-4">
+            <div class="space-y-2 pt-4">
               <label class="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" v-model="judge.auto_judge_after_eval" @change="debounceSave" class="accent-lime-400">
                 <span class="text-xs font-body text-zinc-300">Auto-judge after eval</span>
               </label>
+              <div v-if="judge.auto_judge_after_eval">
+                <label class="field-label">Score Threshold (%)</label>
+                <input v-model.number="judge.auto_judge_threshold" type="number" min="0" max="100" step="5" @change="debounceSave" class="settings-input">
+                <p class="text-[10px] text-zinc-700 font-body mt-1">Trigger judge when a model scores below this threshold.</p>
+              </div>
             </div>
 
             <!-- Concurrency -->
@@ -118,6 +123,7 @@ const judge = reactive({
   custom_instructions_template: '',
   score_override_policy: 'always_allow',
   auto_judge_after_eval: false,
+  auto_judge_threshold: 80,
   concurrency: 4,
   max_tokens: 4096,
 })
@@ -169,6 +175,7 @@ async function loadSettings() {
       judge.custom_instructions_template = s.custom_instructions_template || ''
       judge.score_override_policy = s.score_override_policy || 'always_allow'
       judge.auto_judge_after_eval = !!s.auto_judge_after_eval
+      judge.auto_judge_threshold = Math.round((s.auto_judge_threshold ?? 0.80) * 100)
       judge.concurrency = s.concurrency || 4
       judge.max_tokens = s.max_tokens || 4096
     }
@@ -192,6 +199,7 @@ async function save() {
     custom_instructions_template: judge.custom_instructions_template,
     score_override_policy: judge.score_override_policy,
     auto_judge_after_eval: judge.auto_judge_after_eval,
+    auto_judge_threshold: (parseInt(judge.auto_judge_threshold) || 80) / 100,
     concurrency: parseInt(judge.concurrency) || 4,
     max_tokens: parseInt(judge.max_tokens) || 4096,
   }
