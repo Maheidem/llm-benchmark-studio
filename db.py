@@ -1716,20 +1716,39 @@ async def get_param_tune_runs(user_id: str, limit: int = 50) -> list[dict]:
     """List user's param tune runs."""
     return await _db.fetch_all(
         "SELECT r.id, r.suite_id, ts.name AS suite_name, r.total_combos, r.completed_combos, "
-        "r.best_score, r.best_config_json, r.status, r.duration_s, r.timestamp "
+        "r.best_score, r.best_config_json, r.status, r.duration_s, r.timestamp, "
+        "r.optimization_mode, "
+        "best_combo.model_id AS target_model_id, "
+        "m.display_name AS target_model_display_name "
         "FROM param_tune_runs r "
         "LEFT JOIN tool_suites ts ON ts.id = r.suite_id "
+        "LEFT JOIN ("
+        "  SELECT tune_run_id, model_id FROM param_tune_combos "
+        "  WHERE (tune_run_id, overall_score) IN ("
+        "    SELECT tune_run_id, MAX(overall_score) FROM param_tune_combos GROUP BY tune_run_id"
+        "  ) GROUP BY tune_run_id"
+        ") best_combo ON best_combo.tune_run_id = r.id "
+        "LEFT JOIN models m ON m.id = best_combo.model_id "
         "WHERE r.user_id = ? ORDER BY r.timestamp DESC LIMIT ?",
         (user_id, limit),
     )
 
 
 async def get_param_tune_run(run_id: str, user_id: str) -> dict | None:
-    """Get full param tune run. Includes suite_name via JOIN."""
+    """Get full param tune run. Includes suite_name, target model info via JOINs."""
     return await _db.fetch_one(
-        "SELECT r.*, ts.name AS suite_name "
+        "SELECT r.*, ts.name AS suite_name, "
+        "best_combo.model_id AS target_model_id, "
+        "m.display_name AS target_model_display_name "
         "FROM param_tune_runs r "
         "LEFT JOIN tool_suites ts ON ts.id = r.suite_id "
+        "LEFT JOIN ("
+        "  SELECT tune_run_id, model_id FROM param_tune_combos "
+        "  WHERE (tune_run_id, overall_score) IN ("
+        "    SELECT tune_run_id, MAX(overall_score) FROM param_tune_combos GROUP BY tune_run_id"
+        "  ) GROUP BY tune_run_id"
+        ") best_combo ON best_combo.tune_run_id = r.id "
+        "LEFT JOIN models m ON m.id = best_combo.model_id "
         "WHERE r.id = ? AND r.user_id = ?",
         (run_id, user_id),
     )

@@ -303,6 +303,10 @@ async function saveAsProfile(run) {
   }
 
   const modelId = run.target_model_id || null
+  if (!modelId) {
+    showToast('No model found for this run — cannot save profile', 'error')
+    return
+  }
 
   const result = await inputModal('Save as Profile', 'Profile name', { confirmLabel: 'Save' })
   if (!result?.value?.trim()) return
