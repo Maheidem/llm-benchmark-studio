@@ -190,14 +190,15 @@ async function saveAsProfile(run) {
   const modelId = run.model_id || run.target?.model_id || null
 
   const result = await inputModal('Save as Profile', 'Profile name', { confirmLabel: 'Save' })
-  if (!result?.value?.trim()) return
+  const profileName = typeof result === 'string' ? result.trim() : result?.value?.trim?.() || ''
+  if (!profileName) return
 
   try {
     await profilesStore.createFromTuner({
       source_type: 'prompt_tuner',
       source_id: run.id,
       model_id: modelId,
-      name: result.value.trim(),
+      name: profileName,
       system_prompt: run.best_prompt,
       params_json: null,
     })

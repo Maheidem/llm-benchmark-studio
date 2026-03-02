@@ -309,14 +309,15 @@ async function saveAsProfile(run) {
   }
 
   const result = await inputModal('Save as Profile', 'Profile name', { confirmLabel: 'Save' })
-  if (!result?.value?.trim()) return
+  const profileName = typeof result === 'string' ? result.trim() : result?.value?.trim?.() || ''
+  if (!profileName) return
 
   try {
     await profilesStore.createFromTuner({
       source_type: 'param_tuner',
       source_id: run.id,
       model_id: modelId,
-      name: result.value.trim(),
+      name: profileName,
       params_json: bestConfig,
       system_prompt: null,
     })
