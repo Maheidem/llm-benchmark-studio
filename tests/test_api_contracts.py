@@ -495,6 +495,13 @@ class TestHistoryEndpoints:
         assert "config" in data, "config field should be present when config_json was stored"
         assert data["config"]["provider_params"]["temperature"] == 0.5
         assert "config_json" not in data, "config_json raw field should be removed from response"
+        # Field-presence assertions for benchmark result fields
+        assert "results" in data, "results field should be present in benchmark run detail"
+        assert isinstance(data["results"], list), "results should be a list"
+        # If results exist, verify avg_* field naming convention
+        for result in data["results"]:
+            assert "avg_tokens_per_second" in result, "avg_tokens_per_second field missing from benchmark result"
+            assert "avg_ttft_ms" in result, "avg_ttft_ms field missing from benchmark result"
 
 
 # =========================================================================
@@ -744,10 +751,22 @@ class TestParamTuneEndpoint:
 class TestToolEvalHistory:
     """Tool eval history endpoints."""
 
-    async def test_list_eval_history(self, app_client, auth_headers):
+    async def test_list_eval_history(self, app_client, auth_headers, test_user):
+        import db
+        user, _ = test_user
+        suite_id = await db.create_tool_suite(user["id"], "EH Field Test Suite", "", "[]")
+        await db.save_tool_eval_run(
+            user_id=user["id"], suite_id=suite_id, temperature=0.0, tool_choice="required",
+        )
         resp = await app_client.get("/api/tool-eval/history", headers=auth_headers)
         assert resp.status_code == 200
-        assert "runs" in resp.json()
+        data = resp.json()
+        assert "runs" in data
+        # Field-presence assertion: models must be a list (even if empty for runs with no case_results)
+        if data["runs"]:
+            run = data["runs"][0]
+            assert "models" in run, "models field missing from eval history"
+            assert isinstance(run["models"], list), "models field should be a list"
 
     async def test_get_eval_run_not_found(self, app_client, auth_headers):
         resp = await app_client.get("/api/tool-eval/history/nonexistent", headers=auth_headers)
@@ -757,15 +776,39 @@ class TestToolEvalHistory:
         resp = await app_client.delete("/api/tool-eval/history/nonexistent", headers=auth_headers)
         assert resp.status_code == 404
 
-    async def test_param_tune_history(self, app_client, auth_headers):
+    async def test_param_tune_history(self, app_client, auth_headers, test_user):
+        import db
+        user, _ = test_user
+        suite_id = await db.create_tool_suite(user["id"], "PT History Field Test", "", "[]")
+        await db.save_param_tune_run(
+            user_id=user["id"], suite_id=suite_id,
+            search_space_json="{}", total_combos=1,
+        )
         resp = await app_client.get("/api/tool-eval/param-tune/history", headers=auth_headers)
         assert resp.status_code == 200
-        assert "runs" in resp.json()
+        data = resp.json()
+        assert "runs" in data
+        # Field-presence assertions: target_model_id must be present in each run row
+        if data["runs"]:
+            run = data["runs"][0]
+            assert "target_model_id" in run, "target_model_id field missing from param_tune history"
 
-    async def test_prompt_tune_history(self, app_client, auth_headers):
+    async def test_prompt_tune_history(self, app_client, auth_headers, test_user):
+        import db
+        user, _ = test_user
+        suite_id = await db.create_tool_suite(user["id"], "PTH Field Test Suite", "", "[]")
+        await db.save_prompt_tune_run(
+            user_id=user["id"], suite_id=suite_id, mode="quick", base_prompt=None, total_prompts=1,
+        )
         resp = await app_client.get("/api/tool-eval/prompt-tune/history", headers=auth_headers)
         assert resp.status_code == 200
-        assert "runs" in resp.json()
+        data = resp.json()
+        assert "runs" in data
+        # Field-presence assertions: best_prompt and meta_model must be present
+        if data["runs"]:
+            run = data["runs"][0]
+            assert "best_prompt" in run, "best_prompt field missing from prompt_tune history"
+            assert "meta_model" in run, "meta_model field missing from prompt_tune history"
 
     async def test_prompt_tune_best_prompt_origin_json_stored(self, app_client, auth_headers, test_user):
         """Phase A: best_prompt_origin_json is stored on a prompt tune run and readable via detail endpoint."""

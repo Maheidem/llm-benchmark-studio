@@ -219,7 +219,7 @@ async function runJudge(run) {
     const res = await apiFetch('/api/settings/judge')
     if (res.ok) {
       const s = await res.json()
-      judgeModel = s.default_judge_model || ''
+      judgeModel = s.judge_litellm_id || ''
     }
   } catch { /* non-fatal */ }
 

@@ -1161,6 +1161,11 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                     provider = summary.get("provider", "")
                     if not model_name:
                         continue
+                    # Resolve litellm model_id to DB UUID for ON CONFLICT upsert
+                    model_litellm_id = summary.get("model_id", "")
+                    if model_litellm_id not in model_db_id_cache:
+                        model_db_id_cache[model_litellm_id] = await _resolve_model_db_id(user_id, model_litellm_id)
+                    resolved_model_db_id = model_db_id_cache.get(model_litellm_id)
                     await db.upsert_leaderboard_entry(
                         model_name=model_name,
                         provider=provider,
@@ -1168,6 +1173,7 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                         param_accuracy_pct=summary.get("param_accuracy_pct", 0.0),
                         irrel_accuracy_pct=summary.get("irrelevance_pct"),
                         sample_count=summary.get("cases_run", 0),
+                        model_db_id=resolved_model_db_id,
                     )
                 logger.info(
                     "Leaderboard updated: user_id=%s models=%d eval_id=%s",

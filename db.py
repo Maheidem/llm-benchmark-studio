@@ -270,7 +270,7 @@ async def init_db():
                 source TEXT NOT NULL DEFAULT 'manual'
                     CHECK(source IN ('manual', 'prompt_tuner', 'auto_optimize', 'import')),
                 parent_version_id TEXT REFERENCES prompt_versions(id) ON DELETE SET NULL,
-                origin_run_id TEXT,
+                origin_run_id TEXT,  -- polymorphic FK: references param_tune_runs.id OR prompt_tune_runs.id; SQLite does not support polymorphic FKs
                 model_db_id TEXT REFERENCES models(id) ON DELETE SET NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
@@ -398,7 +398,7 @@ async def init_db():
                 name TEXT NOT NULL,
                 description TEXT DEFAULT '',
                 suite_id TEXT NOT NULL,
-                baseline_eval_id TEXT,
+                baseline_eval_id TEXT REFERENCES tool_eval_runs(id) ON DELETE SET NULL,
                 baseline_score REAL,
                 best_config_json TEXT,
                 best_score REAL DEFAULT 0.0,
@@ -601,7 +601,7 @@ async def init_db():
                 status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','completed','error','interrupted')),
                 timestamp TEXT NOT NULL DEFAULT (datetime('now')),
                 experiment_id TEXT,
-                parent_report_id TEXT,
+                parent_report_id TEXT REFERENCES judge_reports(id) ON DELETE SET NULL,
                 version INTEGER NOT NULL DEFAULT 1,
                 FOREIGN KEY (eval_run_id) REFERENCES tool_eval_runs(id) ON DELETE SET NULL,
                 FOREIGN KEY (eval_run_id_b) REFERENCES tool_eval_runs(id) ON DELETE SET NULL,
@@ -763,6 +763,7 @@ async def init_db():
         # Judge indexes
         await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_user ON judge_reports(user_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_eval ON judge_reports(eval_run_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_eval_b ON judge_reports(eval_run_id_b)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_ts ON judge_reports(user_id, timestamp DESC)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_experiment ON judge_reports(experiment_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_parent ON judge_reports(parent_report_id)")
@@ -825,6 +826,17 @@ async def init_db():
             await db.commit()
         except Exception:
             pass  # Column already exists
+
+        # --- Migration 704: Add missing index on judge_reports(eval_run_id_b) ---
+        try:
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_judge_reports_eval_b ON judge_reports(eval_run_id_b)")
+            await db.execute(
+                "INSERT OR IGNORE INTO schema_version (version, description) "
+                "VALUES (704, 'Add idx_judge_reports_eval_b index')"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Index already exists
 
 
 # --- User CRUD ---
@@ -1131,9 +1143,28 @@ async def save_benchmark_result(
 
 
 async def get_benchmark_results(run_id: str) -> list[dict]:
-    """Get all results for a benchmark run."""
+    """Get aggregated per-model results for a benchmark run.
+
+    Returns one row per (model, context_tokens) with avg_* fields and
+    provider/model display names for frontend rendering.
+    """
     return await _db.fetch_all(
-        "SELECT * FROM benchmark_results WHERE run_id = ? ORDER BY created_at",
+        "SELECT br.model_id, m.display_name AS model, p.name AS provider, "
+        "br.context_tokens, "
+        "COUNT(*) AS runs, "
+        "ROUND(AVG(CASE WHEN br.success = 1 THEN br.tokens_per_second END), 2) AS avg_tokens_per_second, "
+        "ROUND(AVG(CASE WHEN br.success = 1 THEN br.ttft_ms END), 1) AS avg_ttft_ms, "
+        "ROUND(AVG(CASE WHEN br.success = 1 THEN br.total_time_s END), 3) AS avg_total_time_s, "
+        "ROUND(AVG(CASE WHEN br.success = 1 THEN br.input_tokens_per_second END), 2) AS avg_input_tokens_per_second, "
+        "SUM(CASE WHEN br.success = 1 THEN 1 ELSE 0 END) AS success_count, "
+        "SUM(CASE WHEN br.success = 0 THEN 1 ELSE 0 END) AS error_count, "
+        "MAX(br.error) AS error "
+        "FROM benchmark_results br "
+        "JOIN models m ON m.id = br.model_id "
+        "JOIN providers p ON p.id = m.provider_id "
+        "WHERE br.run_id = ? "
+        "GROUP BY br.model_id, br.context_tokens "
+        "ORDER BY avg_tokens_per_second DESC NULLS LAST, br.context_tokens",
         (run_id,),
     )
 
@@ -1475,11 +1506,14 @@ async def save_tool_eval_run(
 
 
 async def get_tool_eval_runs(user_id: str, limit: int = 50) -> list[dict]:
-    """List user's eval runs with suite name and latest judge info."""
+    """List user's eval runs with suite name, models, and latest judge info."""
     return await _db.fetch_all(
         "SELECT r.id, r.suite_id, ts.name AS suite_name, r.temperature, r.tool_choice, "
         "r.timestamp, r.orchestrator_type, "
-        "j.overall_grade AS judge_grade, j.overall_score AS judge_score "
+        "j.overall_grade AS judge_grade, j.overall_score AS judge_score, "
+        "(SELECT GROUP_CONCAT(DISTINCT m.display_name) "
+        " FROM case_results cr JOIN models m ON m.id = cr.model_id "
+        " WHERE cr.eval_run_id = r.id) AS models_csv "
         "FROM tool_eval_runs r "
         "LEFT JOIN tool_suites ts ON ts.id = r.suite_id "
         "LEFT JOIN ("
@@ -1876,20 +1910,28 @@ async def get_prompt_tune_runs(user_id: str, limit: int = 50) -> list[dict]:
     return await _db.fetch_all(
         "SELECT r.id, r.suite_id, ts.name AS suite_name, r.mode, "
         "r.meta_model_id, r.best_prompt_version_id, "
+        "m.litellm_id AS meta_model, m.display_name AS meta_model_display_name, "
+        "pv.prompt_text AS best_prompt, "
         "r.best_score, r.status, r.total_prompts, r.completed_prompts, r.duration_s, r.timestamp "
         "FROM prompt_tune_runs r "
         "LEFT JOIN tool_suites ts ON ts.id = r.suite_id "
+        "LEFT JOIN models m ON m.id = r.meta_model_id "
+        "LEFT JOIN prompt_versions pv ON pv.id = r.best_prompt_version_id "
         "WHERE r.user_id = ? ORDER BY r.timestamp DESC LIMIT ?",
         (user_id, limit),
     )
 
 
 async def get_prompt_tune_run(run_id: str, user_id: str) -> dict | None:
-    """Get full prompt tune run. Includes suite_name via JOIN."""
+    """Get full prompt tune run. Includes suite_name, meta_model litellm_id, and best_prompt text via JOINs."""
     return await _db.fetch_one(
-        "SELECT r.*, ts.name AS suite_name "
+        "SELECT r.*, ts.name AS suite_name, "
+        "m.litellm_id AS meta_model, m.display_name AS meta_model_display_name, "
+        "pv.prompt_text AS best_prompt "
         "FROM prompt_tune_runs r "
         "LEFT JOIN tool_suites ts ON ts.id = r.suite_id "
+        "LEFT JOIN models m ON m.id = r.meta_model_id "
+        "LEFT JOIN prompt_versions pv ON pv.id = r.best_prompt_version_id "
         "WHERE r.id = ? AND r.user_id = ?",
         (run_id, user_id),
     )

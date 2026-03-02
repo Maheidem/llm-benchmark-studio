@@ -1335,6 +1335,9 @@ async def delete_test_case(suite_id: str, case_id: str, user: dict = Depends(aut
 async def list_tool_eval_runs(user: dict = Depends(auth.get_current_user)):
     """List user's past eval runs."""
     runs = await db.get_tool_eval_runs(user["id"])
+    for run in runs:
+        csv = run.pop("models_csv", None)
+        run["models"] = csv.split(",") if csv else []
     return {"runs": runs}
 
 
