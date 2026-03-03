@@ -105,6 +105,36 @@
       </div>
     </div>
 
+    <!-- Profile Picker (shown when targets selected and profiles exist) -->
+    <div v-if="selectedTargets.size > 0 && profilesStore.profiles.length > 0" class="card rounded-md p-5 mb-6">
+      <span class="section-label block mb-3">Profiles (optional)</span>
+      <p class="text-[10px] text-zinc-600 font-body mb-3">Use a saved profile's params during evaluation. Profile params flow to eval calls (system prompt is tested separately).</p>
+      <div class="flex flex-col gap-2">
+        <div v-for="m in selectedTargetsList" :key="m.model_id" class="flex items-center gap-3">
+          <span class="text-xs font-mono text-zinc-400 w-40 truncate" :title="m.model_id">{{ m.display_name }}</span>
+          <select
+            v-model="selectedProfiles[m.model_id]"
+            class="text-xs font-mono px-2 py-1 rounded-sm flex-1"
+            style="background:var(--surface);border:1px solid var(--border-subtle);color:var(--zinc-200);outline:none;"
+          >
+            <option value="">No Profile</option>
+            <option
+              v-for="p in (profilesStore.profilesByModel[m.model_id] || [])"
+              :key="p.id"
+              :value="p.id"
+            >{{ p.name }}</option>
+          </select>
+          <button
+            v-if="getProfileSystemPrompt(m.model_id)"
+            @click="useProfileAsBasePrompt(m.model_id)"
+            class="text-[10px] font-display tracking-wider uppercase px-2 py-1 rounded-sm whitespace-nowrap"
+            style="background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.2);color:#A855F7;"
+            title="Use this profile's system prompt as the base prompt"
+          >Use as Base</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Base System Prompt -->
     <div class="card rounded-md p-5 mb-6">
       <div class="flex items-center justify-between mb-2">
@@ -234,6 +264,7 @@ import { useRouter } from 'vue-router'
 import { useToolEvalStore } from '../../stores/toolEval.js'
 import { usePromptTunerStore } from '../../stores/promptTuner.js'
 import { usePromptLibraryStore } from '../../stores/promptLibrary.js'
+import { useProfilesStore } from '../../stores/profiles.js'
 import { useConfigStore } from '../../stores/config.js'
 import { useToast } from '../../composables/useToast.js'
 import { useSharedContext } from '../../composables/useSharedContext.js'
@@ -244,6 +275,7 @@ const router = useRouter()
 const teStore = useToolEvalStore()
 const prtStore = usePromptTunerStore()
 const libraryStore = usePromptLibraryStore()
+const profilesStore = useProfilesStore()
 const configStore = useConfigStore()
 const { showToast } = useToast()
 const { context, setSuite } = useSharedContext()
@@ -263,6 +295,21 @@ const selectionRatio = ref(0.4)
 const loadingConfig = ref(true)
 const providerGroups = ref([])
 const estimate = ref(null)
+
+// Profile selection
+const selectedProfiles = ref({})
+
+const selectedTargetsList = computed(() => {
+  const models = []
+  for (const group of providerGroups.value) {
+    for (const m of group.models) {
+      if (selectedTargets.has(m.key)) {
+        models.push({ model_id: m.model_id, display_name: m.display_name || m.model_id })
+      }
+    }
+  }
+  return models
+})
 
 const allModels = computed(() => configStore.allModels || [])
 
@@ -284,6 +331,9 @@ onMounted(async () => {
   } finally {
     loadingConfig.value = false
   }
+
+  // Load profiles
+  try { await profilesStore.fetchProfiles() } catch { /* profiles are optional */ }
 
   // Load Phase 10 settings for prompt tuner defaults
   try {
@@ -388,6 +438,24 @@ async function saveCurrentToLibrary() {
   }
 }
 
+// --- Profile helpers ---
+
+function getProfileSystemPrompt(modelId) {
+  const profileId = selectedProfiles.value[modelId]
+  if (!profileId) return null
+  const profiles = profilesStore.profilesByModel[modelId] || []
+  const profile = profiles.find(p => p.id === profileId)
+  return profile?.system_prompt || null
+}
+
+function useProfileAsBasePrompt(modelId) {
+  const prompt = getProfileSystemPrompt(modelId)
+  if (prompt) {
+    basePrompt.value = prompt
+    showToast('Base prompt set from profile', 'success')
+  }
+}
+
 // --- Start ---
 async function startTuning() {
   if (!canStart.value) return
@@ -415,6 +483,15 @@ async function startTuning() {
       generations: mode.value === 'quick' ? 1 : generations.value,
       selection_ratio: selectionRatio.value,
     },
+  }
+
+  // Profiles — only include models that have a profile selected
+  const profilesMap = {}
+  for (const [modelId, profileId] of Object.entries(selectedProfiles.value)) {
+    if (profileId) profilesMap[modelId] = profileId
+  }
+  if (Object.keys(profilesMap).length > 0) {
+    body.profiles = profilesMap
   }
 
   if (context.experimentId) {

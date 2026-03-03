@@ -75,6 +75,29 @@
       </div>
     </div>
 
+    <!-- Profile Picker (shown when models selected and profiles exist) -->
+    <div v-if="selectedModels.size > 0 && profilesStore.profiles.length > 0" class="card rounded-md p-5 mb-6">
+      <span class="section-label block mb-3">Profiles (optional)</span>
+      <p class="text-[10px] text-zinc-600 font-body mb-3">Anchor tuning with a saved profile's system prompt and baseline params. Combo params override profile params.</p>
+      <div class="flex flex-col gap-2">
+        <div v-for="m in selectedModelsList" :key="m.model_id" class="flex items-center gap-3">
+          <span class="text-xs font-mono text-zinc-400 w-40 truncate" :title="m.model_id">{{ m.display_name }}</span>
+          <select
+            v-model="selectedProfiles[m.model_id]"
+            class="text-xs font-mono px-2 py-1 rounded-sm flex-1"
+            style="background:var(--surface);border:1px solid var(--border-subtle);color:var(--zinc-200);outline:none;"
+          >
+            <option value="">No Profile</option>
+            <option
+              v-for="p in (profilesStore.profilesByModel[m.model_id] || [])"
+              :key="p.id"
+              :value="p.id"
+            >{{ p.name }}</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
     <!-- Preset Manager -->
     <PresetManager
       v-if="selectedModels.size > 0"
@@ -195,6 +218,7 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToolEvalStore } from '../../stores/toolEval.js'
 import { useParamTunerStore } from '../../stores/paramTuner.js'
+import { useProfilesStore } from '../../stores/profiles.js'
 import { useConfigStore } from '../../stores/config.js'
 import { useToast } from '../../composables/useToast.js'
 import { useSharedContext } from '../../composables/useSharedContext.js'
@@ -207,6 +231,7 @@ import PresetManager from '../../components/tool-eval/PresetManager.vue'
 const router = useRouter()
 const teStore = useToolEvalStore()
 const ptStore = useParamTunerStore()
+const profilesStore = useProfilesStore()
 const configStore = useConfigStore()
 const { showToast } = useToast()
 const { context, setSuite, setModels } = useSharedContext()
@@ -224,6 +249,9 @@ const paramSupport = ref(null)
 const tunerSettings = ref(null)
 const paramsRegistry = ref(null)
 
+// Profile selection
+const selectedProfiles = ref({})
+
 // 2A: Search strategy
 const searchStrategy = ref('grid')
 const nTrials = ref(30)
@@ -240,6 +268,18 @@ const canStart = computed(() => {
   if (!selectedSuiteId.value || selectedModels.size === 0 || ptStore.isRunning) return false
   if (searchStrategy.value === 'grid') return totalCombos.value > 0
   return true  // random + bayesian don't need combos
+})
+
+const selectedModelsList = computed(() => {
+  const models = []
+  for (const group of providerGroups.value) {
+    for (const m of group.models) {
+      if (selectedModels.has(m.key)) {
+        models.push({ model_id: m.model_id, display_name: m.display_name || m.model_id })
+      }
+    }
+  }
+  return models
 })
 
 const matrixModels = computed(() => {
@@ -273,6 +313,9 @@ onMounted(async () => {
   } finally {
     loadingConfig.value = false
   }
+
+  // Load profiles
+  try { await profilesStore.fetchProfiles() } catch { /* profiles are optional */ }
 
   // Load registry
   try {
@@ -417,6 +460,15 @@ async function startTuning() {
     if (bayesianTimeout.value > 0) body.timeout = bayesianTimeout.value
   } else if (searchStrategy.value === 'random') {
     body.n_trials = randomSamples.value || 50
+  }
+
+  // Profiles — only include models that have a profile selected
+  const profilesMap = {}
+  for (const [modelId, profileId] of Object.entries(selectedProfiles.value)) {
+    if (profileId) profilesMap[modelId] = profileId
+  }
+  if (Object.keys(profilesMap).length > 0) {
+    body.profiles = profilesMap
   }
 
   if (context.experimentId) {

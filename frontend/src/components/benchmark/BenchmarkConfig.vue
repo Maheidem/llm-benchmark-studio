@@ -54,15 +54,15 @@
     <!-- Timeout -->
     <div>
       <div class="flex items-center justify-between mb-2">
-        <label class="text-xs text-zinc-500 font-body">Timeout (seconds)</label>
-        <span class="text-xs font-mono text-zinc-400">{{ store.timeout }}s</span>
+        <label class="text-xs text-zinc-500 font-body">Timeout</label>
+        <span class="text-xs font-mono text-zinc-400">{{ Math.floor(store.timeout / 60) }}m{{ store.timeout % 60 ? ' ' + (store.timeout % 60) + 's' : '' }}</span>
       </div>
       <input
         type="range"
         :value="store.timeout"
-        min="30"
-        max="600"
-        step="30"
+        min="60"
+        max="1800"
+        step="60"
         class="w-full"
         @input="store.timeout = parseInt($event.target.value)"
       />

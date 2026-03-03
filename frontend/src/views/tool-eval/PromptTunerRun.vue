@@ -194,7 +194,7 @@ function copyBestPrompt() {
 async function autoSaveBestPrompt() {
   if (!store.bestPrompt) return
   try {
-    await libraryStore.saveVersion(store.bestPrompt, null, 'tuner')
+    await libraryStore.saveVersion(store.bestPrompt, null, 'prompt_tuner')
     librarySaved.value = true
     showToast('Best prompt auto-saved to Prompt Library', 'success')
   } catch {
@@ -205,7 +205,7 @@ async function autoSaveBestPrompt() {
 async function saveToLibrary() {
   if (!store.bestPrompt) return
   try {
-    await libraryStore.saveVersion(store.bestPrompt, null, 'tuner')
+    await libraryStore.saveVersion(store.bestPrompt, null, 'prompt_tuner')
     librarySaved.value = true
     showToast('Saved to Prompt Library', 'success')
   } catch {

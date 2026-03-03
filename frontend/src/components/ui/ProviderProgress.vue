@@ -5,8 +5,8 @@
       :key="name"
       class="provider-progress-row"
     >
-      <div class="ppr-name" :style="{ color: getColor(name).text }" :title="name">
-        {{ name }}
+      <div class="ppr-name" :style="{ color: getColor(pp.displayName || name).text }" :title="pp.displayName || name">
+        {{ pp.displayName || name }}
       </div>
       <div class="ppr-mid">
         <div class="ppr-status">
@@ -28,8 +28,8 @@
             :class="['ppr-fill', isDone(pp) ? 'done' : '']"
             :style="{
               width: pct(pp) + '%',
-              backgroundColor: barColor(pp, name),
-              boxShadow: isDone(pp) ? 'none' : '0 0 8px ' + getColor(name).bar + '44',
+              backgroundColor: barColor(pp, pp.displayName || name),
+              boxShadow: isDone(pp) ? 'none' : '0 0 8px ' + getColor(pp.displayName || name).bar + '44',
             }"
           ></div>
         </div>

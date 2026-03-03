@@ -292,6 +292,7 @@ async def run_prompt_tune(request: Request, user: dict = Depends(auth.get_curren
         "base_prompt": base_prompt,
         "config": cfg,
         "experiment_id": experiment_id,
+        "profiles": validated.profiles,
     }
 
     job_id = await job_registry.submit(

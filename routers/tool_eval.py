@@ -33,6 +33,7 @@ from routers.helpers import (
     score_tool_selection,
     score_params,
     compute_overall_score,
+    score_schema_validation,
     score_multi_turn,
     score_abstention,
     classify_format_compliance,
@@ -142,6 +143,11 @@ async def run_single_eval(
         "error_type": None,
         # T3: category tag
         "category": case_category,
+        # Tier 2: schema validation scores (set during scoring phase)
+        "schema_score": None,
+        "required_present": None,
+        "type_correct": None,
+        "hallucination_free": None,
     }
 
     # Build validated+clamped params via provider_params module
@@ -270,7 +276,33 @@ async def run_single_eval(
     # Score
     result["tool_selection_score"] = score_tool_selection(expected_tool, result["actual_tool"])
     result["param_accuracy"] = score_params(expected_params, result["actual_params"], scoring_config=scoring_config)
-    result["overall_score"] = compute_overall_score(result["tool_selection_score"], result["param_accuracy"])
+
+    # Tier 2: Schema validation scoring
+    # Find the parameters_schema for the expected/actual tool from the tools list
+    tool_name_for_schema = (
+        (expected_tool if isinstance(expected_tool, str) else None)
+        or result["actual_tool"]
+    )
+    parameters_schema = None
+    if tool_name_for_schema:
+        for t in tools:
+            if isinstance(t, dict) and t.get("type") == "function":
+                fn = t.get("function", {})
+                if fn.get("name", "").lower() == tool_name_for_schema.lower():
+                    parameters_schema = fn.get("parameters")
+                    break
+
+    schema_result = score_schema_validation(parameters_schema or {}, result["actual_params"])
+    result["schema_score"] = schema_result["schema_score"]
+    result["required_present"] = schema_result["required_present"]
+    result["type_correct"] = schema_result["type_correct"]
+    result["hallucination_free"] = schema_result["hallucination_free"]
+
+    result["overall_score"] = compute_overall_score(
+        result["tool_selection_score"],
+        result["param_accuracy"],
+        result["schema_score"],
+    )
 
     # Irrelevance score: how well did model handle abstention expectation?
     result["irrelevance_score"] = score_abstention(should_call_tool, result["actual_tool"])
@@ -382,6 +414,11 @@ async def run_multi_turn_eval(
         "error_type": None,
         # T3: category
         "category": case_category,
+        # Tier 2: schema validation scores
+        "schema_score": None,
+        "required_present": None,
+        "type_correct": None,
+        "hallucination_free": None,
     }
 
     # Build messages: per-model system_prompt (from config) + explicit system_prompt (from prompt tuner)
@@ -569,6 +606,25 @@ async def run_multi_turn_eval(
         # Also set individual scores for summary compatibility
         result["tool_selection_score"] = score_tool_selection(expected_tool, result["actual_tool"])
         result["param_accuracy"] = score_params(expected_params, result["actual_params"], scoring_config=scoring_config)
+
+        # Tier 2: Schema validation on final tool call params
+        tool_name_for_schema = (
+            (expected_tool if isinstance(expected_tool, str) else None)
+            or result["actual_tool"]
+        )
+        mt_parameters_schema = None
+        if tool_name_for_schema:
+            for t in tools:
+                if isinstance(t, dict) and t.get("type") == "function":
+                    fn = t.get("function", {})
+                    if fn.get("name", "").lower() == tool_name_for_schema.lower():
+                        mt_parameters_schema = fn.get("parameters")
+                        break
+        mt_schema_result = score_schema_validation(mt_parameters_schema or {}, result["actual_params"])
+        result["schema_score"] = mt_schema_result["schema_score"]
+        result["required_present"] = mt_schema_result["required_present"]
+        result["type_correct"] = mt_schema_result["type_correct"]
+        result["hallucination_free"] = mt_schema_result["hallucination_free"]
 
         # Irrelevance score: how well did model handle abstention expectation?
         result["irrelevance_score"] = score_abstention(should_call_tool, result["actual_tool"])
@@ -1385,6 +1441,11 @@ async def get_tool_eval_run(eval_id: str, user: dict = Depends(auth.get_current_
             "avg_latency_ms": s.get("avg_latency_ms", 0),
             "irrelevance_accuracy_pct": s.get("irrelevance_accuracy_pct"),
             "category_breakdown": s.get("category_breakdown"),
+            # Tier 2: schema validation scores
+            "schema_score_pct": s.get("schema_score_pct"),
+            "required_present_pct": s.get("required_present_pct"),
+            "type_correct_pct": s.get("type_correct_pct"),
+            "hallucination_free_pct": s.get("hallucination_free_pct"),
         }
     run["summary"] = summary
     return run

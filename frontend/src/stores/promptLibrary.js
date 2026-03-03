@@ -27,7 +27,7 @@ export const usePromptLibraryStore = defineStore('promptLibrary', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt_text: promptText,
-        label: label || null,
+        label: label || '',
         source,
         parent_version_id: parentVersionId || null,
       }),

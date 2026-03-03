@@ -21,6 +21,21 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["benchmark"])
 
+
+def _enrich_confidence(results: list[dict]) -> None:
+    """Add confidence_level to each result row based on CV and run count."""
+    for r in results:
+        n = r.get("success_count") or r.get("runs") or 1
+        mean = r.get("avg_output_speed_tps") or r.get("avg_tokens_per_second") or 0
+        std = r.get("std_dev_tps") or 0
+        cv = (std / mean * 100) if mean > 0 else 0
+        if cv < 10 and n >= 3:
+            r["confidence_level"] = "high"
+        elif cv > 30 or n <= 1:
+            r["confidence_level"] = "low"
+        else:
+            r["confidence_level"] = "medium"
+
 # Module-level ws_manager -- set by app.py after import
 ws_manager = None
 
@@ -192,6 +207,8 @@ async def save_direct_results(request: Request, user: dict = Depends(auth.get_cu
             input_tokens=r.input_tokens,
             tokens_per_second=r.tokens_per_second,
             input_tokens_per_second=r.input_tokens_per_second,
+            output_speed_tps=r.output_speed_tps,
+            itl_ms=r.itl_ms,
             cost=r.cost,
             success=r.success,
             error=r.error,
@@ -218,11 +235,17 @@ async def get_history(user: dict = Depends(auth.get_current_user)):
     """Get the current user's benchmark history from the database."""
     runs = await db.get_user_benchmark_runs(user["id"])
     for run in runs:
-        if isinstance(run.get("context_tiers"), str):
+        ct = run.get("context_tiers")
+        if isinstance(ct, str):
             try:
-                run["context_tiers"] = json.loads(run["context_tiers"])
+                parsed = json.loads(ct)
+                run["context_tiers"] = parsed if isinstance(parsed, list) else [parsed]
             except (json.JSONDecodeError, TypeError):
-                logger.debug("Failed to parse context_tiers for run")
+                # Comma-separated string like "0,5000,50000"
+                run["context_tiers"] = [int(x) for x in ct.split(",") if x.strip().isdigit()]
+        # Embed per-model results so the list view can show tok/s, TTFT, etc.
+        run["results"] = await db.get_benchmark_results(run["id"])
+        _enrich_confidence(run["results"])
     return {"runs": runs}
 
 
@@ -234,11 +257,14 @@ async def get_history_run(run_id: str, user: dict = Depends(auth.get_current_use
         return JSONResponse({"error": "Run not found"}, status_code=404)
     # Fetch results from normalized benchmark_results table
     run["results"] = await db.get_benchmark_results(run_id)
-    if isinstance(run.get("context_tiers"), str):
+    _enrich_confidence(run["results"])
+    ct = run.get("context_tiers")
+    if isinstance(ct, str):
         try:
-            run["context_tiers"] = json.loads(run["context_tiers"])
+            parsed = json.loads(ct)
+            run["context_tiers"] = parsed if isinstance(parsed, list) else [parsed]
         except (json.JSONDecodeError, TypeError):
-            logger.debug("Failed to parse context_tiers for run %s", run_id)
+            run["context_tiers"] = [int(x) for x in ct.split(",") if x.strip().isdigit()]
     if isinstance(run.get("config_json"), str):
         try:
             run["config"] = json.loads(run["config_json"])

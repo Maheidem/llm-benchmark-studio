@@ -23,11 +23,13 @@ export const useConfigStore = defineStore('config', () => {
       const models = getProviderModels(provData)
       const pk = provData.provider_key || provider
       for (const m of models) {
+        const mid = m.model_id || m.id  // API returns "id", normalize to model_id
         result.push({
           ...m,
+          model_id: mid,
           provider,
           provider_key: pk,
-          compoundKey: pk + '::' + m.model_id,
+          compoundKey: pk + '::' + mid,
         })
       }
     }

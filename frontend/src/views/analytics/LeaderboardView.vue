@@ -58,12 +58,12 @@ const leaderboardType = ref('benchmark')
 const period = ref('all')
 const data = ref([])
 const loading = ref(false)
-const sortKey = ref('avg_tps')
+const sortKey = ref('avg_output_speed_tps')
 const sortAsc = ref(false)
 
 function setType(type) {
   leaderboardType.value = type
-  sortKey.value = type === 'benchmark' ? 'avg_tps' : 'avg_overall_pct'
+  sortKey.value = type === 'benchmark' ? 'avg_output_speed_tps' : 'avg_overall_pct'
   sortAsc.value = false
   loadLeaderboard()
 }

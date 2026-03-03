@@ -99,6 +99,7 @@ class ParamTuneRequest(BaseModel):
     targets: Optional[List[dict]] = Field(default=None)
     search_space: dict
     experiment_id: Optional[str] = None
+    profiles: Optional[dict] = None  # {"model_id": "profile_id"}
     # 2A: Bayesian / Random search support
     optimization_mode: Literal["grid", "random", "bayesian"] = "grid"
     n_trials: int = Field(default=50, ge=5, le=500)
@@ -124,6 +125,7 @@ class PromptTuneRequest(BaseModel):
     eval_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     eval_tool_choice: str = Field(default="required")
     experiment_id: Optional[str] = None
+    profiles: Optional[dict] = None  # {"model_id": "profile_id"}
     config: Optional[dict] = None  # deprecated: use explicit fields above
 
 
@@ -236,6 +238,8 @@ class DirectBenchmarkResult(BaseModel):
     input_tokens: Optional[int] = None
     tokens_per_second: Optional[float] = None
     input_tokens_per_second: Optional[float] = None
+    output_speed_tps: Optional[float] = None
+    itl_ms: Optional[float] = None
     cost: float = 0
     success: bool = True
     error: Optional[str] = None
@@ -449,6 +453,11 @@ class CaseResultResponse(BaseModel):
     raw_request: Optional[str] = None
     raw_response: Optional[str] = None
     created_at: str
+    # Tier 2 schema scoring (nullable — only set when tool has a parameters_schema)
+    schema_score: Optional[float] = None
+    required_present: Optional[float] = None
+    type_correct: Optional[float] = None
+    hallucination_free: Optional[float] = None
 
 
 class CaseResultSummaryResponse(BaseModel):
@@ -463,6 +472,11 @@ class CaseResultSummaryResponse(BaseModel):
     overall_score_pct: float = 0.0
     irrelevance_accuracy_pct: Optional[float] = None
     avg_latency_ms: int = 0
+    # Tier 2 schema scoring aggregates (nullable — only set when schema validation was run)
+    schema_score_pct: Optional[float] = None
+    required_present_pct: Optional[float] = None
+    type_correct_pct: Optional[float] = None
+    hallucination_free_pct: Optional[float] = None
 
 
 class JudgeVerdictResponse(BaseModel):
@@ -494,6 +508,8 @@ class BenchmarkResultResponse(BaseModel):
     input_tokens: Optional[int] = None
     tokens_per_second: Optional[float] = None
     input_tokens_per_second: Optional[float] = None
+    output_speed_tps: Optional[float] = None
+    itl_ms: Optional[float] = None
     cost: Optional[float] = None
     success: bool = True
     error: Optional[str] = None
@@ -516,6 +532,7 @@ class ParamTuneComboResponse(BaseModel):
     cases_total: int = 0
     adjustments_json: Optional[str] = None
     created_at: str
+    schema_score_pct: float = 0.0
 
 
 class PromptTuneCandidateResponse(BaseModel):

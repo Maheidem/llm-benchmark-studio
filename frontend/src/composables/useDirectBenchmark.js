@@ -99,17 +99,17 @@ export function useDirectBenchmark() {
    * Run a single benchmark against a local LLM directly from the browser.
    * Returns a result object matching the handleSSE() shape.
    */
-  async function runDirectBenchmark(target, messages, maxTokens, temperature, contextTokens, runNumber = 1, totalRuns = 1) {
+  async function runDirectBenchmark(target, messages, maxTokens, temperature, contextTokens, runNumber = 1, totalRuns = 1, timeoutSec = 300) {
     const controller = abortController.value || createAbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 30000) // 30s timeout
+    const timeoutId = setTimeout(() => controller.abort(), timeoutSec * 1000)
 
     const modelForApi = _stripModelPrefix(target.model_id, target.model_id_prefix || target.model_prefix)
     const addressSpace = _getAddressSpace(target.api_base)
 
     const baseResult = {
       type: 'result',
-      provider: target.provider_key || target.display_name,
-      model: target.display_name || target.model_id,
+      provider: target.provider_key || target.provider_display_name,
+      model: target.model_display_name || target.model_id,
       model_id: target.model_id,
       run: runNumber,
       runs: totalRuns,
@@ -150,6 +150,7 @@ export function useDirectBenchmark() {
           ...baseResult,
           ttft_ms: null, total_time_s: null, output_tokens: 0, input_tokens: 0,
           tokens_per_second: 0, input_tokens_per_second: null,
+          output_speed_tps: 0, itl_ms: 0,
           success: false, error: `[http_${response.status}] ${response.statusText}`,
         }
       }
@@ -203,6 +204,13 @@ export function useDirectBenchmark() {
 
       const tps = totalTime > 0 ? outputTokens / totalTime : 0
 
+      // Output Speed (excludes TTFT — industry standard)
+      const ttftSec = (ttft || 0) / 1000
+      const genTime = totalTime - ttftSec
+      const outputSpeed = genTime > 0 && outputTokens > 0 ? outputTokens / genTime : 0
+      // Inter-Token Latency
+      const itl = (outputTokens > 1 && genTime > 0) ? (genTime / (outputTokens - 1)) * 1000 : 0
+
       return {
         ...baseResult,
         ttft_ms: ttft !== null ? Math.round(ttft * 100) / 100 : null,
@@ -211,6 +219,8 @@ export function useDirectBenchmark() {
         input_tokens: inputTokens,
         tokens_per_second: Math.round(tps * 100) / 100,
         input_tokens_per_second: null,
+        output_speed_tps: Math.round(outputSpeed * 100) / 100,
+        itl_ms: Math.round(itl * 10) / 10,
         success: true,
         error: null,
       }
@@ -218,7 +228,7 @@ export function useDirectBenchmark() {
       clearTimeout(timeoutId)
       let errorMsg = '[network_error] ' + (err.message || 'Unknown error')
       if (err.name === 'AbortError') {
-        errorMsg = '[timeout] Request timed out after 30s'
+        errorMsg = `[timeout] Request timed out after ${timeoutSec >= 60 ? Math.floor(timeoutSec / 60) + 'm' : timeoutSec + 's'}`
       }
       if (err.message?.includes('Failed to fetch') || err.message?.includes('NetworkError')) {
         errorMsg = '[cors_blocked] Enable CORS in LM Studio: Developer > Local Server > Enable CORS'
@@ -228,6 +238,7 @@ export function useDirectBenchmark() {
         ...baseResult,
         ttft_ms: null, total_time_s: null, output_tokens: 0, input_tokens: 0,
         tokens_per_second: 0, input_tokens_per_second: null,
+        output_speed_tps: 0, itl_ms: 0,
         success: false, error: errorMsg,
       }
     }

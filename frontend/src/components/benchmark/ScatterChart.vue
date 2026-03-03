@@ -44,7 +44,7 @@ const chartData = computed(() => {
     const color = getColor(a.provider)
     return {
       label: a.model,
-      data: [{ x: a.tokens_per_second, y: a.ttft_ms }],
+      data: [{ x: a.output_speed_tps || a.tokens_per_second, y: a.ttft_ms }],
       backgroundColor: color.bar,
       borderColor: color.bar,
       pointRadius: scaleSize(a.output_tokens),
@@ -76,7 +76,7 @@ const chartOptions = computed(() => ({
       ...tooltipStyle,
       callbacks: {
         title: c => c[0].dataset.label,
-        label: c => [` Tok/s: ${c.parsed.x.toFixed(1)}`, ` TTFT: ${c.parsed.y.toFixed(0)}ms`],
+        label: c => [` Output Tok/s: ${c.parsed.x.toFixed(1)}`, ` TTFT: ${c.parsed.y.toFixed(0)}ms`],
       },
     },
   },

@@ -49,8 +49,8 @@ const chartData = computed(() => {
     return {
       labels: agg.map(a => a.model),
       datasets: [{
-        label: 'Tokens/sec',
-        data: agg.map(a => a.tokens_per_second),
+        label: 'Output Tok/s',
+        data: agg.map(a => a.output_speed_tps || a.tokens_per_second),
         backgroundColor: agg.map(a => getColor(a.provider).bar + 'CC'),
         borderColor: agg.map(a => getColor(a.provider).bar),
         borderWidth: 0,
@@ -72,7 +72,7 @@ const chartData = computed(() => {
     const color = getColor(provider)
     const data = tiers.map(tier => {
       const match = modelResults.find(r => r.context_tokens === tier)
-      return match && match.success ? match.tokens_per_second : null
+      return match && match.success ? (match.output_speed_tps || match.tokens_per_second) : null
     })
     return {
       label: modelName,

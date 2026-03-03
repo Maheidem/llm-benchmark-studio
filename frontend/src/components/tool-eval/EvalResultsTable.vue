@@ -1,7 +1,15 @@
 <template>
   <div class="card rounded-md overflow-hidden">
     <div class="flex items-center justify-between px-5 py-3" style="border-bottom:1px solid var(--border-subtle);">
-      <span class="section-label">Summary</span>
+      <div class="flex items-center gap-2">
+        <span class="section-label">Summary</span>
+        <!-- Scoring legend tooltip -->
+        <span
+          class="text-[10px] font-mono text-zinc-600 cursor-help select-none"
+          style="border:1px solid var(--border-subtle);padding:1px 5px;border-radius:2px;"
+          :title="scoringLegend"
+        >?</span>
+      </div>
       <div class="flex items-center gap-3">
         <!-- T3: Error type filter -->
         <select
@@ -40,8 +48,15 @@
           <th class="px-5 py-3 text-right section-label cursor-pointer" @click="sort('tool_accuracy_pct')">
             Tool % {{ sortIndicator('tool_accuracy_pct') }}
           </th>
-          <th class="px-5 py-3 text-right section-label cursor-pointer" @click="sort('param_accuracy_pct')">
-            Param % {{ sortIndicator('param_accuracy_pct') }}
+          <th class="px-5 py-3 text-right section-label cursor-pointer" @click="sort('param_accuracy_pct')"
+            :title="hasSchemaScore ? 'Param value accuracy — informational precision metric (not used in overall score when Schema % is present)' : 'Parameter accuracy score'"
+          >
+            Param %<span v-if="hasSchemaScore" class="text-[9px] text-zinc-600 ml-1 font-mono normal-case" style="font-weight:400">info</span>
+            {{ sortIndicator('param_accuracy_pct') }}
+          </th>
+          <th v-if="hasSchemaScore" class="px-5 py-3 text-right section-label cursor-pointer" @click="sort('schema_score_pct')"
+            title="Schema compliance: validates parameter types, required fields, and detects hallucinated params">
+            Schema % {{ sortIndicator('schema_score_pct') }}
           </th>
           <th class="px-5 py-3 text-right section-label cursor-pointer" @click="sort('overall_pct')">
             Overall % {{ sortIndicator('overall_pct') }}
@@ -90,6 +105,12 @@
           </td>
           <td class="px-5 py-3 text-right text-sm font-mono font-bold" :style="{ color: scoreColor(s.param_accuracy_pct ?? 0) }">
             {{ s.param_accuracy_pct != null ? s.param_accuracy_pct.toFixed(1) + '%' : '-' }}
+          </td>
+          <td v-if="hasSchemaScore" class="px-5 py-3 text-right text-sm font-mono font-bold"
+            :style="{ color: s.schema_score_pct != null ? schemaScoreColor(s.schema_score_pct) : '#52525B' }"
+            title="Schema compliance: validates parameter types, required fields, and detects hallucinated params"
+          >
+            {{ s.schema_score_pct != null ? s.schema_score_pct.toFixed(1) + '%' : '-' }}
           </td>
           <td class="px-5 py-3 text-right text-sm font-mono font-bold" :style="{ color: scoreColor(s.overall_pct ?? 0) }">
             {{ (s.overall_pct ?? 0).toFixed(1) }}%
@@ -170,6 +191,35 @@ const hasIrrelevance = computed(() => {
   return props.results.some(r => r.irrelevance_pct != null)
 })
 
+// Show schema score column only if at least one result has it
+const hasSchemaScore = computed(() => {
+  return props.results.some(r => r.schema_score_pct != null)
+})
+
+// Scoring legend tooltip text
+const scoringLegend = computed(() => {
+  if (hasSchemaScore.value) {
+    return [
+      'Scoring tiers:',
+      '  Tool % — Tier 1: correct tool selected (binary)',
+      '  Param % — Tier 3: parameter value accuracy (informational)',
+      '  Schema % — Tier 2: schema compliance (required fields, types, no hallucinated params)',
+      '  Overall % — 60% Tool + 40% Schema',
+      '',
+      'Color coding: ≥80% green · 50–79% yellow · <50% red',
+      'Schema column: ≥90% green · 70–89% yellow · <70% red',
+    ].join('\n')
+  }
+  return [
+    'Scoring:',
+    '  Tool % — correct tool selected (binary)',
+    '  Param % — parameter value accuracy',
+    '  Overall % — 60% Tool + 40% Param',
+    '',
+    'Color coding: ≥80% green · 50–79% yellow · <50% red',
+  ].join('\n')
+})
+
 // T1: Show format compliance column if any result has it
 const hasFormatCompliance = computed(() => {
   return props.results.some(r => r.format_compliance_summary != null)
@@ -204,6 +254,12 @@ const summaryInfo = computed(() => {
 function scoreColor(pct) {
   if (pct >= 80) return 'var(--lime)'
   if (pct >= 50) return '#FBBF24'
+  return 'var(--coral)'
+}
+
+function schemaScoreColor(pct) {
+  if (pct >= 90) return 'var(--lime)'
+  if (pct >= 70) return '#FBBF24'
   return 'var(--coral)'
 }
 

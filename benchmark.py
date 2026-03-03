@@ -80,6 +80,8 @@ class RunResult:
     context_tokens: int = 0
     cost: float = 0.0
     input_tokens_per_second: float = 0.0
+    output_speed_tps: float = 0.0   # Output tokens/sec EXCLUDING TTFT
+    itl_ms: float = 0.0             # Inter-token latency in ms
 
 
 @dataclass
@@ -106,6 +108,18 @@ class AggregatedResult:
     total_cost: float = 0.0
     # Input tokens/second
     avg_input_tps: float = 0.0
+    # Output speed & ITL
+    avg_output_speed_tps: float = 0.0
+    avg_itl_ms: float = 0.0
+    # TTFT percentiles
+    p50_ttft: float = 0.0
+    p95_ttft: float = 0.0
+    p99_ttft: float = 0.0
+    # Coefficient of Variation
+    cv_tps: float = 0.0
+    cv_ttft: float = 0.0
+    # Confidence level
+    confidence_level: str = ""  # "high" / "medium" / "low"
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +394,7 @@ def generate_context_text(target_tokens: int) -> str:
 
 def run_single(
     target: Target, prompt: str, max_tokens: int, temperature: float,
-    context_tokens: int = 0, timeout: int = 120,
+    context_tokens: int = 0, timeout: int = 300,
 ) -> RunResult:
     """Execute a single streaming benchmark run against one model."""
     result = RunResult(target=target, context_tokens=context_tokens)
@@ -459,6 +473,15 @@ def run_single(
             result.output_tokens / total if total > 0 else 0.0
         )
 
+        # Output Speed (industry standard: excludes TTFT)
+        ttft_s = (result.ttft_ms or 0.0) / 1000.0
+        gen_time = total - ttft_s
+        if gen_time > 0 and result.output_tokens > 0:
+            result.output_speed_tps = result.output_tokens / gen_time
+        # Inter-Token Latency
+        if result.output_tokens > 1 and gen_time > 0:
+            result.itl_ms = gen_time / (result.output_tokens - 1) * 1000
+
         # Input tokens/second: how fast the model processes the prompt
         if result.ttft_ms > 0 and result.input_tokens > 0:
             result.input_tokens_per_second = result.input_tokens / (result.ttft_ms / 1000)
@@ -529,6 +552,43 @@ def _compute_variance(agg: AggregatedResult, successes: list[RunResult]) -> None
         lower = q1 - 1.5 * iqr
         upper = q3 + 1.5 * iqr
         agg.outlier_count = sum(1 for v in tps_vals if v < lower or v > upper)
+
+    # Output Speed and ITL averages
+    ospeed_vals = [r.output_speed_tps for r in successes if r.output_speed_tps > 0]
+    if ospeed_vals:
+        agg.avg_output_speed_tps = sum(ospeed_vals) / len(ospeed_vals)
+    itl_vals = [r.itl_ms for r in successes if r.itl_ms > 0]
+    if itl_vals:
+        agg.avg_itl_ms = sum(itl_vals) / len(itl_vals)
+
+    # TTFT Percentiles
+    if n >= 1:
+        agg.p50_ttft = statistics.median(ttft_vals)
+    if n >= 4:
+        agg.p95_ttft = statistics.quantiles(ttft_vals, n=20)[-1]
+        agg.p99_ttft = statistics.quantiles(ttft_vals, n=100)[-1] if n >= 5 else max(ttft_vals)
+    elif n >= 2:
+        agg.p95_ttft = max(ttft_vals)
+        agg.p99_ttft = max(ttft_vals)
+    else:
+        agg.p95_ttft = ttft_vals[0] if ttft_vals else 0.0
+        agg.p99_ttft = ttft_vals[0] if ttft_vals else 0.0
+
+    # Coefficient of Variation
+    mean_tps = sum(tps_vals) / n if n > 0 else 0
+    if n >= 2 and mean_tps > 0:
+        agg.cv_tps = (agg.std_dev_tps / mean_tps) * 100
+    mean_ttft = sum(ttft_vals) / n if n > 0 else 0
+    if n >= 2 and mean_ttft > 0:
+        agg.cv_ttft = (agg.std_dev_ttft / mean_ttft) * 100
+
+    # Confidence level
+    if agg.cv_tps < 10 and n >= 3:
+        agg.confidence_level = "high"
+    elif agg.cv_tps > 30 or n == 1:
+        agg.confidence_level = "low"
+    else:
+        agg.confidence_level = "medium"
 
 
 def run_benchmarks(
@@ -615,6 +675,12 @@ def run_benchmarks(
                 input_tps_vals = [r.input_tokens_per_second for r in successes if r.input_tokens_per_second > 0]
                 if input_tps_vals:
                     agg.avg_input_tps = sum(input_tps_vals) / len(input_tps_vals)
+                ospeed_vals = [r.output_speed_tps for r in successes if r.output_speed_tps > 0]
+                if ospeed_vals:
+                    agg.avg_output_speed_tps = sum(ospeed_vals) / len(ospeed_vals)
+                itl_vals = [r.itl_ms for r in successes if r.itl_ms > 0]
+                if itl_vals:
+                    agg.avg_itl_ms = sum(itl_vals) / len(itl_vals)
                 _compute_variance(agg, successes)
 
             results.append(agg)
@@ -630,9 +696,9 @@ MEDALS = {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}  # gold, silver, br
 
 
 def display_results(results: list[AggregatedResult]) -> None:
-    """Render a Rich table of benchmark results sorted by tok/s."""
+    """Render a Rich table of benchmark results sorted by output tok/s."""
     sorted_results = sorted(
-        results, key=lambda r: r.avg_tokens_per_second, reverse=True
+        results, key=lambda r: r.avg_output_speed_tps, reverse=True
     )
 
     # Show std_dev column only when any result has > 1 run
@@ -641,6 +707,8 @@ def display_results(results: list[AggregatedResult]) -> None:
     show_cost = any(r.avg_cost > 0 for r in sorted_results)
     # Show input TPS column only when any result has data
     show_input_tps = any(r.avg_input_tps > 0 for r in sorted_results)
+    # Show ITL column only when any result has data
+    show_itl = any(r.avg_itl_ms > 0 for r in sorted_results)
 
     table = Table(
         title="\U0001f3ce  LLM Benchmark Results",
@@ -651,9 +719,11 @@ def display_results(results: list[AggregatedResult]) -> None:
     table.add_column("Rank", style="bold", width=5, justify="center")
     table.add_column("Provider", style="cyan", min_width=14)
     table.add_column("Model", style="white", min_width=18)
-    table.add_column("Tok/s", style="bold green", justify="right", min_width=8)
+    table.add_column("Output Tok/s", style="bold green", justify="right", min_width=12)
     if show_std:
         table.add_column("\u00b1 Std", style="dim", justify="right", min_width=7)
+    if show_itl:
+        table.add_column("ITL", style="dim", justify="right", min_width=8)
     if show_input_tps:
         table.add_column("In Tok/s", justify="right", min_width=9)
     table.add_column("TTFT (ms)", justify="right", min_width=9)
@@ -662,6 +732,7 @@ def display_results(results: list[AggregatedResult]) -> None:
     if show_cost:
         table.add_column("Cost ($)", justify="right", min_width=9)
     table.add_column("Status", justify="center", min_width=8)
+    table.add_column("Confidence", justify="center", min_width=10)
 
     for i, r in enumerate(sorted_results, 1):
         # Status column
@@ -672,8 +743,18 @@ def display_results(results: list[AggregatedResult]) -> None:
         else:
             status = f"[red]FAIL[/red]"
 
-        rank = MEDALS.get(i, str(i)) if r.avg_tokens_per_second > 0 else str(i)
-        tok_s = f"{r.avg_tokens_per_second:.1f}" if r.avg_tokens_per_second > 0 else "-"
+        # Confidence column
+        if r.confidence_level == "high":
+            confidence = f"[green]{r.confidence_level}[/green]"
+        elif r.confidence_level == "medium":
+            confidence = f"[yellow]{r.confidence_level}[/yellow]"
+        elif r.confidence_level == "low":
+            confidence = f"[red]{r.confidence_level}[/red]"
+        else:
+            confidence = "-"
+
+        rank = MEDALS.get(i, str(i)) if r.avg_output_speed_tps > 0 else str(i)
+        tok_s = f"{r.avg_output_speed_tps:.1f}" if r.avg_output_speed_tps > 0 else "-"
         ttft = f"{r.avg_ttft_ms:.0f}" if r.avg_ttft_ms > 0 else "-"
         total = f"{r.avg_total_time_s:.2f}" if r.avg_total_time_s > 0 else "-"
         tokens = f"{r.avg_output_tokens:.0f}" if r.avg_output_tokens > 0 else "-"
@@ -682,6 +763,9 @@ def display_results(results: list[AggregatedResult]) -> None:
         if show_std:
             std = f"{r.std_dev_tps:.1f}" if r.std_dev_tps > 0 else "-"
             row.append(std)
+        if show_itl:
+            itl = f"{r.avg_itl_ms:.1f}ms" if r.avg_itl_ms > 0 else "-"
+            row.append(itl)
         if show_input_tps:
             in_tps = f"{r.avg_input_tps:.0f}" if r.avg_input_tps > 0 else "-"
             row.append(in_tps)
@@ -690,6 +774,7 @@ def display_results(results: list[AggregatedResult]) -> None:
             cost = f"{r.avg_cost:.6f}" if r.avg_cost > 0 else "-"
             row.append(cost)
         row.append(status)
+        row.append(confidence)
 
         table.add_row(*row)
 
@@ -697,12 +782,12 @@ def display_results(results: list[AggregatedResult]) -> None:
     console.print(table)
 
     # Winner line
-    if sorted_results and sorted_results[0].avg_tokens_per_second > 0:
+    if sorted_results and sorted_results[0].avg_output_speed_tps > 0:
         w = sorted_results[0]
         console.print(
             f"\n  \U0001f3c6 [bold]Winner:[/bold] {w.target.provider} / "
             f"{w.target.display_name} at "
-            f"[bold green]{w.avg_tokens_per_second:.1f} tok/s[/bold green]\n"
+            f"[bold green]{w.avg_output_speed_tps:.1f} tok/s[/bold green]\n"
         )
 
 
@@ -744,6 +829,14 @@ def save_results(
                 "avg_cost": round(r.avg_cost, 8),
                 "total_cost": round(r.total_cost, 8),
                 "avg_input_tps": round(r.avg_input_tps, 2),
+                "avg_output_speed_tps": round(r.avg_output_speed_tps, 2),
+                "avg_itl_ms": round(r.avg_itl_ms, 1),
+                "p50_ttft": round(r.p50_ttft, 1),
+                "p95_ttft": round(r.p95_ttft, 1),
+                "p99_ttft": round(r.p99_ttft, 1),
+                "cv_tps": round(r.cv_tps, 1),
+                "cv_ttft": round(r.cv_ttft, 1),
+                "confidence_level": r.confidence_level,
                 "runs": r.runs,
                 "failures": r.failures,
                 "error": next((rr.error for rr in r.all_results if not rr.success), ""),
@@ -754,6 +847,8 @@ def save_results(
                         "total_time_s": round(rr.total_time_s, 3),
                         "output_tokens": rr.output_tokens,
                         "input_tokens_per_second": round(rr.input_tokens_per_second, 2),
+                        "output_speed_tps": round(rr.output_speed_tps, 2),
+                        "itl_ms": round(rr.itl_ms, 1),
                         "cost": round(rr.cost, 8),
                         "success": rr.success,
                     }

@@ -72,8 +72,8 @@ class TestIdentifyProvider:
     def test_prefix_openai_explicit(self):
         assert identify_provider("openai/gpt-4o") == "openai"
 
-    def test_unknown_model_no_key(self):
-        assert identify_provider("zai/GLM-4.7") == "_unknown"
+    def test_zai_prefix_resolves(self):
+        assert identify_provider("zai/GLM-4.7") == "zai_glm"
 
     def test_bare_model_no_prefix(self):
         """Models without prefix and no provider_key default to _unknown."""

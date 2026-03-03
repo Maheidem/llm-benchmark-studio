@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed, reactive } from 'vue'
 import { apiFetch } from '../utils/api.js'
 import { useConfigStore } from './config.js'
+import { useNotificationsStore } from './notifications.js'
 import { getColor } from '../utils/constants.js'
 import { formatCtxSize } from '../utils/helpers.js'
 import { useActiveSession } from '../composables/useActiveSession.js'
@@ -16,7 +17,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
   const runs = ref(1)
   const prompt = ref('')
   const warmup = ref(false)
-  const timeout = ref(120)
+  const timeout = ref(300)
   const promptTemplates = ref([])
   const providerParams = reactive({})  // Tier 2/3 params (top_p, frequency_penalty, etc.)
 
@@ -58,8 +59,8 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     return Object.values(grouped).map(g => {
       const successes = g._runs.filter(r => r.success)
       const n = successes.length
-      const tpsVals = successes.map(r => r.tokens_per_second).sort((a, b) => a - b)
-      const ttftVals = successes.map(r => r.ttft_ms).sort((a, b) => a - b)
+      const tpsVals = successes.map(r => r.tokens_per_second).filter(v => v > 0)
+      const ttftVals = successes.map(r => r.ttft_ms).filter(v => v > 0)
       const inputTpsVals = successes.map(r => r.input_tokens_per_second || 0).filter(v => v > 0)
       const costVals = successes.map(r => r.cost || 0)
       return {
@@ -68,6 +69,14 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
         model_id: g.model_id,
         context_tokens: g.context_tokens || 0,
         tokens_per_second: n ? successes.reduce((s, r) => s + r.tokens_per_second, 0) / n : 0,
+        output_speed_tps: (() => {
+          const vals = successes.map(r => r.output_speed_tps || 0).filter(v => v > 0)
+          return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0
+        })(),
+        itl_ms: (() => {
+          const vals = successes.map(r => r.itl_ms || 0).filter(v => v > 0)
+          return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0
+        })(),
         ttft_ms: n ? successes.reduce((s, r) => s + r.ttft_ms, 0) / n : 0,
         total_time_s: n ? successes.reduce((s, r) => s + r.total_time_s, 0) / n : 0,
         output_tokens: n ? successes.reduce((s, r) => s + r.output_tokens, 0) / n : 0,
@@ -76,12 +85,50 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
         total_cost: costVals.reduce((s, v) => s + v, 0),
         std_dev_tps: stdDev(tpsVals),
         std_dev_ttft: stdDev(ttftVals),
+        // TTFT Percentiles
+        p50_ttft: (() => {
+          if (!ttftVals.length) return 0
+          const sorted = [...ttftVals].sort((a, b) => a - b)
+          const mid = Math.floor(sorted.length / 2)
+          return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+        })(),
+        p95_ttft: (() => {
+          if (!ttftVals.length) return 0
+          const sorted = [...ttftVals].sort((a, b) => a - b)
+          const idx = Math.ceil(0.95 * sorted.length) - 1
+          return sorted[Math.min(idx, sorted.length - 1)]
+        })(),
+        p99_ttft: (() => {
+          if (!ttftVals.length) return 0
+          const sorted = [...ttftVals].sort((a, b) => a - b)
+          const idx = Math.ceil(0.99 * sorted.length) - 1
+          return sorted[Math.min(idx, sorted.length - 1)]
+        })(),
+        // CV and Confidence
+        cv_tps: (() => {
+          const mean = tpsVals.length ? tpsVals.reduce((s, v) => s + v, 0) / tpsVals.length : 0
+          const sd = stdDev(tpsVals)
+          return mean > 0 && tpsVals.length >= 2 ? (sd / mean) * 100 : 0
+        })(),
+        cv_ttft: (() => {
+          const mean = ttftVals.length ? ttftVals.reduce((s, v) => s + v, 0) / ttftVals.length : 0
+          const sd = stdDev(ttftVals)
+          return mean > 0 && ttftVals.length >= 2 ? (sd / mean) * 100 : 0
+        })(),
+        confidence_level: (() => {
+          const mean = tpsVals.length ? tpsVals.reduce((s, v) => s + v, 0) / tpsVals.length : 0
+          const sd = stdDev(tpsVals)
+          const cv = mean > 0 && tpsVals.length >= 2 ? (sd / mean) * 100 : 100
+          if (cv < 10 && n >= 3) return 'high'
+          if (cv > 30 || n === 1) return 'low'
+          return 'medium'
+        })(),
         success: g._successes > 0,
         runs: g._runs.length,
         failures: g._runs.length - g._successes,
         error: g._runs.find(r => !r.success)?.error || '',
       }
-    }).sort((a, b) => b.tokens_per_second - a.tokens_per_second)
+    }).sort((a, b) => (b.output_speed_tps || b.tokens_per_second) - (a.output_speed_tps || a.tokens_per_second))
   })
 
   const overallProgress = computed(() => {
@@ -200,21 +247,19 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
       const models = configStore.getProviderModels(provData)
       const pk = provData.provider_key || provider
       const selectedInProvider = body.targets
-        ? models.filter(m => selectedSet.has(pk + '::' + m.model_id))
-        : models.filter(m => selectedSet.has(m.model_id))
+        ? models.filter(m => selectedSet.has(pk + '::' + (m.model_id || m.id)))
+        : models.filter(m => selectedSet.has(m.model_id || m.id))
       if (selectedInProvider.length === 0) continue
 
       let totalSteps = 0
       for (const m of selectedInProvider) {
         for (const tier of tiers) {
-          const headroom = (m.context_window || Infinity) - mTokens - 100
-          if (tier === 0 || tier <= headroom) {
-            totalSteps += runCount
-          }
+          totalSteps += runCount
         }
       }
 
-      providerProgress[provider] = {
+      providerProgress[pk] = {
+        displayName: provData.display_name || pk,
         currentModel: null,
         currentRun: 0,
         totalRuns: runCount,
@@ -260,6 +305,21 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
         }
       }
       currentResults.value = [...currentResults.value, data]
+
+      // Update synthetic local job progress in notification store
+      if (activeJobId.value?.startsWith('local-')) {
+        const notifStore = useNotificationsStore()
+        const job = notifStore.jobs[activeJobId.value]
+        if (job) {
+          const { completed, total } = overallProgress.value
+          const pct = total > 0 ? Math.round((completed / total) * 100) : 0
+          notifStore.jobs[activeJobId.value] = {
+            ...job,
+            progress_pct: pct,
+            progress_detail: `${data.model}, Run ${data.run}/${data.runs}`,
+          }
+        }
+      }
     }
     if (data.type === 'error') {
       if (prov && providerProgress[prov]) {
@@ -406,10 +466,14 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
       const providerData = Object.values(configStore.config?.providers || {})
         .find(p => p.provider_key === target.provider_key)
       if (directSupported && providerData?.direct_local && isLocalProvider(providerData)) {
+        // Look up model display_name from config
+        const modelData = (providerData.models || [])
+          .find(m => (m.id || m.model_id) === target.model_id)
         localTargets.push({
           ...target,
           api_base: providerData.api_base,
-          display_name: providerData.display_name,
+          provider_display_name: providerData.display_name,
+          model_display_name: modelData?.display_name || target.model_id,
           model_id_prefix: providerData.model_id_prefix,
         })
       } else {
@@ -426,6 +490,27 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     }
 
     // Local targets: run directly in browser
+    // Register a synthetic job in the notification store so the bell badge + dropdown work
+    let localJobId = null
+    if (localTargets.length > 0 && cloudTargets.length === 0) {
+      localJobId = 'local-' + Date.now().toString(36)
+      const notifStore = useNotificationsStore()
+      const modelCount = localTargets.length
+      notifStore.jobs[localJobId] = {
+        id: localJobId,
+        job_type: 'benchmark',
+        status: 'running',
+        progress_pct: 0,
+        progress_detail: `Direct local: ${modelCount} model${modelCount !== 1 ? 's' : ''}`,
+        result_ref: null,
+        created_at: new Date().toISOString(),
+        started_at: new Date().toISOString(),
+        completed_at: null,
+        error_msg: null,
+        _local: true,
+      }
+      activeJobId.value = localJobId
+    }
     if (localTargets.length > 0) {
       promises.push(_runLocalBenchmarks(localTargets, body))
     }
@@ -442,6 +527,20 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     // If only local targets, we fire complete ourselves.
     if (cloudTargets.length === 0) {
       handleSSE({ type: 'complete' })
+    }
+
+    // Mark the synthetic local job as done in notification store
+    if (localJobId) {
+      const notifStore = useNotificationsStore()
+      if (notifStore.jobs[localJobId]) {
+        notifStore.jobs[localJobId] = {
+          ...notifStore.jobs[localJobId],
+          status: 'done',
+          progress_pct: 100,
+          completed_at: new Date().toISOString(),
+        }
+      }
+      activeJobId.value = null
     }
 
     // Return the cloud job data if available
@@ -476,6 +575,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     const mTokens = body.max_tokens || 512
     const temp = body.temperature ?? 0.7
     const userPrompt = body.prompt || 'Hello, how are you?'
+    const timeoutSec = body.timeout || 300
 
     try {
       for (const target of localTargets) {
@@ -485,22 +585,22 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
             { role: 'system', content: 'Benchmark warmup' },
             { role: 'user', content: 'Hello' },
           ]
-          await runDirectBenchmark(target, messages, mTokens, temp, 0, 0, 0)
+          await runDirectBenchmark(target, messages, mTokens, temp, 0, 0, 0, timeoutSec)
         }
 
         for (const tier of tiers) {
-          // Check if context tier fits in model window
+          // Check if context tier exceeds model's context window
           const cs = useConfigStore()
           const modelData = Object.values(cs.config?.providers || {})
             .flatMap(p => (p.models || []))
-            .find(m => m.model_id === target.model_id)
-          const contextWindow = modelData?.context_window || Infinity
-          if (tier > 0 && tier > contextWindow - mTokens - 100) {
+            .find(m => (m.id || m.model_id) === target.model_id)
+          const contextWindow = modelData?.context_window || 0
+          if (contextWindow > 0 && tier > 0 && tier > contextWindow - mTokens - 100) {
             handleSSE({
               type: 'skipped',
-              provider: target.provider_key || target.display_name,
-              model: target.display_name || target.model_id,
-              reason: `Context ${tier} exceeds window (${contextWindow} - ${mTokens})`,
+              provider: target.provider_key || target.provider_display_name,
+              model: target.model_display_name || target.model_id,
+              reason: `${(tier/1000).toFixed(0)}K context exceeds model window (${(contextWindow/1000).toFixed(0)}K - ${mTokens} max_tokens)`,
             })
             continue
           }
@@ -509,8 +609,8 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
             // Emit progress
             handleSSE({
               type: 'progress',
-              provider: target.provider_key || target.display_name,
-              model: target.display_name || target.model_id,
+              provider: target.provider_key || target.provider_display_name,
+              model: target.model_display_name || target.model_id,
               run,
               runs: runCount,
               context_tokens: tier,
@@ -523,7 +623,7 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
               { role: 'user', content: filler ? userPrompt + '\n\n' + filler : userPrompt },
             ]
 
-            const result = await runDirectBenchmark(target, messages, mTokens, temp, tier, run, runCount)
+            const result = await runDirectBenchmark(target, messages, mTokens, temp, tier, run, runCount, timeoutSec)
             handleSSE(result)
             allResults.push(result)
           }
@@ -550,6 +650,8 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
                   input_tokens: r.input_tokens,
                   tokens_per_second: r.tokens_per_second,
                   input_tokens_per_second: r.input_tokens_per_second,
+                  output_speed_tps: r.output_speed_tps,
+                  itl_ms: r.itl_ms,
                   cost: r.cost || 0,
                   success: r.success,
                   error: r.error,
@@ -572,8 +674,21 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
   }
 
   async function cancelBenchmark() {
-    if (activeJobId.value) {
+    // Cancel server-side job (skip for synthetic local jobs)
+    if (activeJobId.value && !activeJobId.value.startsWith('local-')) {
       await apiFetch(`/api/jobs/${activeJobId.value}/cancel`, { method: 'POST' })
+    }
+    // Mark synthetic local job as cancelled in notification store
+    if (activeJobId.value?.startsWith('local-')) {
+      const notifStore = useNotificationsStore()
+      if (notifStore.jobs[activeJobId.value]) {
+        notifStore.jobs[activeJobId.value] = {
+          ...notifStore.jobs[activeJobId.value],
+          status: 'cancelled',
+          completed_at: new Date().toISOString(),
+        }
+      }
+      activeJobId.value = null
     }
     // Also cancel any in-progress local benchmarks
     if (localRunning.value) {

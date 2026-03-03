@@ -32,7 +32,16 @@
             <div v-if="field.label" style="font-size:11px;color:#85858F;margin-bottom:4px;font-family:'Chakra Petch',sans-serif;text-transform:uppercase;letter-spacing:0.04em">
               {{ field.label }}
             </div>
+            <select
+              v-if="field.type === 'select'"
+              v-model="modalState.values[field.key]"
+              class="modal-input"
+              style="margin-bottom:0;appearance:none;-webkit-appearance:none;cursor:pointer;"
+            >
+              <option v-for="opt in field.options" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+            </select>
             <input
+              v-else
               :ref="el => { if (i === 0) firstFieldRef = el }"
               v-model="modalState.values[field.key]"
               :type="field.type || 'text'"

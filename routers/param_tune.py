@@ -109,6 +109,7 @@ async def run_param_tune(request: Request, user: dict = Depends(auth.get_current
         "search_space": search_space,
         "per_model_search_spaces": per_model_search_spaces,
         "experiment_id": experiment_id,
+        "profiles": validated.profiles,
         # 2A: optimization mode
         "optimization_mode": optimization_mode,
         "n_trials": n_trials,

@@ -5,20 +5,20 @@
       <template v-if="!isStressMode">
         <!-- Standard stat cards -->
         <div class="stat-card card-accent rounded-sm p-4">
-          <div class="section-label mb-2">Fastest</div>
+          <div class="section-label mb-2">Output Speed</div>
           <div class="big-num text-2xl text-zinc-100">
-            {{ winner.tokens_per_second.toFixed(1) }}
+            {{ (winner.output_speed_tps || winner.tokens_per_second || 0).toFixed(1) }}
             <span class="text-xs font-normal" style="color:var(--lime)">tok/s</span>
           </div>
           <div class="text-[11px] text-zinc-600 mt-1 font-body">{{ winner.model }}</div>
         </div>
 
         <div class="stat-card card rounded-sm p-4" style="border-left: 3px solid #38BDF8">
-          <div class="section-label mb-2">Best TTFT</div>
+          <div class="section-label mb-2">TTFT P50</div>
           <div class="big-num text-2xl text-zinc-100">
-            {{ fastestTTFT.ttft_ms.toFixed(0) }}<span class="text-xs font-normal text-zinc-500">ms</span>
+            {{ bestP50TTFT.toFixed(0) }}<span class="text-xs font-normal text-zinc-500">ms</span>
           </div>
-          <div class="text-[11px] text-zinc-600 mt-1 font-body">{{ fastestTTFT.model }}</div>
+          <div class="text-[11px] text-zinc-600 mt-1 font-body">Median across runs</div>
         </div>
 
         <div class="stat-card card rounded-sm p-4" style="border-left: 3px solid #8B8B95">
@@ -47,7 +47,7 @@
           <div class="section-label mb-2">Best @ 0K</div>
           <template v-if="bestZero">
             <div class="big-num text-2xl text-zinc-100">
-              {{ bestZero.tokens_per_second.toFixed(1) }}
+              {{ (bestZero.output_speed_tps || bestZero.tokens_per_second).toFixed(1) }}
               <span class="text-xs font-normal" style="color:var(--lime)">tok/s</span>
             </div>
             <div class="text-[11px] text-zinc-600 mt-1 font-body">{{ bestZero.model }}</div>
@@ -59,7 +59,7 @@
           <div class="section-label mb-2">Best @ {{ maxTierLabel }}</div>
           <template v-if="bestMax">
             <div class="big-num text-2xl text-zinc-100">
-              {{ bestMax.tokens_per_second.toFixed(1) }}
+              {{ (bestMax.output_speed_tps || bestMax.tokens_per_second).toFixed(1) }}
               <span class="text-xs font-normal" style="color:#38BDF8">tok/s</span>
             </div>
             <div class="text-[11px] text-zinc-600 mt-1 font-body">{{ bestMax.model }}</div>
@@ -147,8 +147,10 @@ const allFailed = computed(() => hasResults.value && props.results.every(r => !r
 
 // Standard stats
 const winner = computed(() => props.results[0] || {})
-const fastestTTFT = computed(() => {
-  return [...props.results].filter(a => a.success).sort((a, b) => a.ttft_ms - b.ttft_ms)[0] || {}
+const bestP50TTFT = computed(() => {
+  const successful = props.results.filter(r => r.success && r.p50_ttft > 0)
+  if (!successful.length) return 0
+  return Math.min(...successful.map(r => r.p50_ttft || r.ttft_ms))
 })
 const totalModels = computed(() => props.results.length)
 const totalRuns = computed(() => props.results.reduce((s, a) => s + a.runs, 0))
@@ -159,14 +161,14 @@ const grandTotalCost = computed(() => props.results.reduce((s, a) => s + (a.tota
 const bestZero = computed(() => {
   return props.results
     .filter(a => a.context_tokens === 0 && a.success)
-    .sort((a, b) => b.tokens_per_second - a.tokens_per_second)[0]
+    .sort((a, b) => (b.output_speed_tps || b.tokens_per_second) - (a.output_speed_tps || a.tokens_per_second))[0]
 })
 const maxTier = computed(() => Math.max(...props.results.map(a => a.context_tokens)))
 const maxTierLabel = computed(() => formatCtxSize(maxTier.value).replace(' ctx', ''))
 const bestMax = computed(() => {
   return props.results
     .filter(a => a.context_tokens === maxTier.value && a.success)
-    .sort((a, b) => b.tokens_per_second - a.tokens_per_second)[0]
+    .sort((a, b) => (b.output_speed_tps || b.tokens_per_second) - (a.output_speed_tps || a.tokens_per_second))[0]
 })
 const uniqueTiers = computed(() => new Set(props.results.map(a => a.context_tokens)).size)
 
@@ -183,10 +185,11 @@ function copyError(text) {
 function exportCSV() {
   const agg = props.results
   if (!agg.length) return
-  const headers = ['Provider', 'Model', 'Tok/s', 'TTFT (ms)', 'Input Tok/s', 'Duration (s)', 'Output Tokens', 'Status', 'Avg Cost', 'Total Cost']
+  const headers = ['Provider', 'Model', 'Output Tok/s', 'ITL (ms)', 'TTFT (ms)', 'Input Tok/s', 'Duration (s)', 'Output Tokens', 'Status', 'Avg Cost', 'Total Cost']
   const rows = agg.map(r => [
     r.provider, r.model,
-    r.success ? r.tokens_per_second.toFixed(2) : '',
+    r.success ? (r.output_speed_tps || r.tokens_per_second).toFixed(2) : '',
+    r.success && r.itl_ms > 0 ? r.itl_ms.toFixed(1) : '',
     r.success ? r.ttft_ms.toFixed(0) : '',
     r.success && r.input_tokens_per_second > 0 ? Math.round(r.input_tokens_per_second) : '',
     r.success ? r.total_time_s.toFixed(3) : '',

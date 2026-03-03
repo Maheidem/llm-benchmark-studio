@@ -608,11 +608,107 @@ def score_params(expected_params: dict | None, actual_params: dict | None, scori
     return correct / total if total > 0 else 1.0
 
 
-def compute_overall_score(tool_score: float, param_score: float | None) -> float:
-    """Compute weighted overall score."""
-    if param_score is None:
+def compute_overall_score(tool_score: float, param_score: float | None, schema_score: float | None = None) -> float:
+    """Compute weighted overall score.
+
+    3-tier scoring:
+    - Tier 1+2: 0.5 * tool_score + 0.5 * schema_score (when schema_score available)
+    - Legacy: 0.6 * tool_score + 0.4 * param_score (when only param_score available)
+    - Tool only: tool_score (fallback)
+    """
+    if schema_score is not None:
+        return 0.5 * tool_score + 0.5 * schema_score
+    elif param_score is not None:
+        return 0.6 * tool_score + 0.4 * param_score
+    else:
         return tool_score
-    return 0.6 * tool_score + 0.4 * param_score
+
+
+# JSON type map for schema validation
+_JSON_TYPE_MAP: dict[str, type | tuple] = {
+    "string": str,
+    "number": (int, float),
+    "integer": int,
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+    "null": type(None),
+}
+
+
+def score_schema_validation(parameters_schema: dict, actual_params: dict | None) -> dict:
+    """Score Tier 2: schema validation of actual LLM parameters against tool schema.
+
+    Args:
+        parameters_schema: The tool definition's JSON Schema (e.g. {"type": "object", "properties": {...}, "required": [...]})
+        actual_params: The parameters the LLM actually called with (dict or None)
+
+    Returns:
+        dict with keys: required_present, type_correct, hallucination_free, schema_score
+    """
+    if not parameters_schema or not isinstance(parameters_schema, dict):
+        return {"required_present": None, "type_correct": None, "hallucination_free": None, "schema_score": None}
+
+    properties = parameters_schema.get("properties") or {}
+    required_fields = set(parameters_schema.get("required") or [])
+    actual = actual_params if isinstance(actual_params, dict) else {}
+
+    # Cardinality guard — prevent DoS from malicious oversized schemas
+    if len(properties) > 200 or len(required_fields) > 200 or len(actual) > 200:
+        return {"required_present": None, "type_correct": None, "hallucination_free": None, "schema_score": None}
+
+    # --- Required field presence ---
+    if required_fields:
+        present_required = {k for k in required_fields if k in actual}
+        required_present = len(present_required) / len(required_fields)
+    else:
+        required_present = 1.0  # No required fields = perfect presence score
+
+    # --- Type correctness ---
+    if properties:
+        type_correct_count = 0
+        type_total = 0
+        for param_name, param_schema in properties.items():
+            if param_name not in actual:
+                continue  # Only score params that were actually provided
+            type_total += 1
+            expected_type = param_schema.get("type") if isinstance(param_schema, dict) else None
+            if expected_type is None:
+                type_correct_count += 1  # No type constraint = assume correct
+                continue
+            python_type = _JSON_TYPE_MAP.get(expected_type)
+            if python_type is None:
+                type_correct_count += 1  # Unknown type = assume correct
+                continue
+            actual_val = actual[param_name]
+            # Special case: booleans are ints in Python, so check bool first
+            if expected_type == "integer" and isinstance(actual_val, bool):
+                pass  # bool is subclass of int but not an integer in JSON Schema sense
+            elif isinstance(actual_val, python_type):
+                type_correct_count += 1
+        type_correct = type_correct_count / type_total if type_total > 0 else 1.0
+    else:
+        type_correct = 1.0  # No properties defined = assume correct
+
+    # --- Hallucination check (extra params not in schema) ---
+    if properties:
+        known_params = set(properties.keys())
+        actual_param_keys = set(actual.keys())
+        extra_params = actual_param_keys - known_params
+        hallucination_free = 1.0 - len(extra_params) / max(len(actual_param_keys), 1)
+        hallucination_free = max(0.0, hallucination_free)
+    else:
+        hallucination_free = 1.0  # No schema = can't hallucinate
+
+    # --- Composite schema score ---
+    schema_score = 0.5 * required_present + 0.3 * type_correct + 0.2 * hallucination_free
+
+    return {
+        "required_present": round(required_present, 4),
+        "type_correct": round(type_correct, 4),
+        "hallucination_free": round(hallucination_free, 4),
+        "schema_score": round(schema_score, 4),
+    }
 
 
 def score_multi_turn(
@@ -838,6 +934,16 @@ def _compute_eval_summaries(results: list[dict], targets: list[Target]) -> list[
         overall = (sum(overall_scores) / len(overall_scores) * 100) if overall_scores else 0.0
         cases_passed = sum(1 for r in model_results if r["success"] and r["overall_score"] == 1.0)
 
+        # Tier 2: Schema validation aggregates
+        schema_scores = [r["schema_score"] for r in model_results if r["success"] and r.get("schema_score") is not None]
+        req_scores = [r["required_present"] for r in model_results if r["success"] and r.get("required_present") is not None]
+        type_scores = [r["type_correct"] for r in model_results if r["success"] and r.get("type_correct") is not None]
+        halluc_scores = [r["hallucination_free"] for r in model_results if r["success"] and r.get("hallucination_free") is not None]
+        schema_pct = round(sum(schema_scores) / len(schema_scores) * 100, 1) if schema_scores else None
+        req_pct = round(sum(req_scores) / len(req_scores) * 100, 1) if req_scores else None
+        type_pct = round(sum(type_scores) / len(type_scores) * 100, 1) if type_scores else None
+        halluc_pct = round(sum(halluc_scores) / len(halluc_scores) * 100, 1) if halluc_scores else None
+
         # Irrelevance score: only from cases where should_call_tool=False
         irrelevance_cases = [r for r in model_results if r["success"] and not r.get("should_call_tool", True)]
         irrelevance_scores = [r.get("irrelevance_score", 0.0) for r in irrelevance_cases]
@@ -900,6 +1006,11 @@ def _compute_eval_summaries(results: list[dict], targets: list[Target]) -> list[
             "format_compliance_counts": format_compliance_counts,
             # T2: error taxonomy
             "error_type_counts": error_type_counts,
+            # T2: schema validation scores
+            "schema_score_pct": schema_pct,
+            "required_present_pct": req_pct,
+            "type_correct_pct": type_pct,
+            "hallucination_free_pct": halluc_pct,
             # T3: category breakdown
             "category_breakdown": cat_summary,
         })

@@ -182,7 +182,7 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
     prompt = params.get("prompt", "")
     context_tiers = params.get("context_tiers", [0])
     warmup = params.get("warmup", True)
-    timeout = params.get("timeout", 120)
+    timeout = params.get("timeout", 300)
     provider_params = params.get("provider_params")
     profiles_map = params.get("profiles")  # {"model_id": "profile_id"} or None
 
@@ -219,7 +219,7 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
     if not prompt.strip():
         prompt = defaults.get("prompt", "Explain recursion in programming with a Python example.")
 
-    # Calculate total runs across all tiers
+    # Calculate total runs, skipping tiers that exceed context window
     total = 0
     for tier in context_tiers:
         for target in targets:
@@ -306,7 +306,14 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
                     return
                 headroom = target.context_window - max_tokens - 100
                 if tier > 0 and tier > headroom:
-                    continue  # Skip tier exceeding context window
+                    # Notify user about the skip via WS
+                    await results_queue.put({
+                        "type": "skipped",
+                        "provider": target.display_name,
+                        "model": target.display_name,
+                        "reason": f"{tier//1000}K context exceeds model window ({target.context_window//1000}K - {max_tokens} max_tokens)",
+                    })
+                    continue
 
                 # Apply model profile if available (B3)
                 bench_target = target
@@ -372,6 +379,8 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
                         "input_tokens": result.input_tokens,
                         "tokens_per_second": round(result.tokens_per_second, 2),
                         "input_tokens_per_second": round(result.input_tokens_per_second, 2),
+                        "output_speed_tps": round(result.output_speed_tps, 2),
+                        "itl_ms": round(result.itl_ms, 1),
                         "cost": round(result.cost, 8),
                         "success": result.success,
                         "error": result.error,
@@ -400,6 +409,14 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
             for t in tasks:
                 t.cancel()
             return None
+        if item["type"] == "skipped":
+            # Notify frontend about skipped tier
+            await _ws_send({
+                "type": "benchmark_result",
+                "job_id": job_id,
+                "data": item,
+            })
+            continue
         if item["type"] == "result":
             current += 1
             all_results.append(item)
@@ -439,6 +456,8 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
                         input_tokens=item.get("input_tokens"),
                         tokens_per_second=item.get("tokens_per_second"),
                         input_tokens_per_second=item.get("input_tokens_per_second"),
+                        output_speed_tps=item.get("output_speed_tps"),
+                        itl_ms=item.get("itl_ms"),
                         cost=item.get("cost"),
                         success=item.get("success", True),
                         error=item.get("error"),
@@ -815,6 +834,10 @@ async def tool_eval_handler(job_id: str, params: dict, cancel_event, progress_cb
                     error_type=item.get("error_type"),
                     raw_request=raw_request_str,
                     raw_response=raw_response_str,
+                    schema_score=item.get("schema_score"),
+                    required_present=item.get("required_present"),
+                    type_correct=item.get("type_correct"),
+                    hallucination_free=item.get("hallucination_free"),
                 )
                 # Track for judge verdicts later
                 cr_key = f"{model_litellm_id}::{item.get('test_case_id', '')}"
@@ -1475,11 +1498,21 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
     # 2A: optimization mode
     optimization_mode = params.get("optimization_mode", "grid")
     n_trials = int(params.get("n_trials", 50))
+    profiles_map = params.get("profiles")  # {"model_id": "profile_id"} or None
 
     logger.info(
         "Param tune started: job_id=%s user_id=%s models=%d",
         job_id, user_id, len(model_ids),
     )
+
+    # Load model profiles if specified
+    loaded_profiles = {}
+    if profiles_map and isinstance(profiles_map, dict):
+        for model_id, profile_id in profiles_map.items():
+            profile = await db.get_profile(profile_id, user_id)
+            if profile:
+                loaded_profiles[model_id] = profile
+                logger.debug("Loaded profile %s for model %s", profile_id, model_id)
 
     # Load suite + test cases
     suite = await db.get_tool_suite(suite_id, user_id)
@@ -1635,6 +1668,22 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
                     if k not in ("temperature", "tool_choice", "max_tokens"):
                         pp[k] = v
 
+                # Apply profile if available: profile params as baseline, combo overrides
+                profile_system_prompt = None
+                profile = loaded_profiles.get(target.model_id)
+                if profile:
+                    profile_sys = profile.get("system_prompt")
+                    if profile_sys:
+                        profile_system_prompt = profile_sys
+                    profile_params_raw = profile.get("params_json")
+                    if profile_params_raw:
+                        profile_params = json.loads(profile_params_raw) if isinstance(profile_params_raw, str) else profile_params_raw
+                        if profile_params:
+                            # Profile baseline <- combo override (combo always wins)
+                            merged = {k: v for k, v in profile_params.items() if k not in ("temperature", "tool_choice", "max_tokens")}
+                            merged.update(pp)
+                            pp = merged
+
                 # Run all test cases for this combo
                 case_results = []
                 for case in cases:
@@ -1652,15 +1701,16 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
 
                     if mt_config and mt_config.get("multi_turn"):
                         case_with_mt = {**case, "_mt_config": mt_config}
-                        r = await run_multi_turn_eval(target, tools, case_with_mt, temp, tc, provider_params=pp if pp else None)
+                        r = await run_multi_turn_eval(target, tools, case_with_mt, temp, tc, provider_params=pp if pp else None, system_prompt=profile_system_prompt)
                     else:
-                        r = await run_single_eval(target, tools, case, temp, tc, provider_params=pp if pp else None)
+                        r = await run_single_eval(target, tools, case, temp, tc, provider_params=pp if pp else None, system_prompt=profile_system_prompt)
                     case_results.append(r)
 
                 # Compute aggregate scores for this combo
                 tool_scores = [r["tool_selection_score"] for r in case_results if r.get("success")]
                 param_scores = [r["param_accuracy"] for r in case_results if r.get("success") and r.get("param_accuracy") is not None]
                 overall_scores = [r["overall_score"] for r in case_results if r.get("success")]
+                schema_scores = [r["schema_score"] for r in case_results if r.get("success") and r.get("schema_score") is not None]
                 latencies = [r["latency_ms"] for r in case_results if r.get("success") and r.get("latency_ms")]
 
                 cases_passed = sum(1 for r in case_results if r.get("success") and r.get("overall_score", 0) == 1.0)
@@ -1678,6 +1728,10 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
                         "tool_selection_score": cr.get("tool_selection_score", 0.0),
                         "param_accuracy": cr.get("param_accuracy"),
                         "overall_score": cr.get("overall_score", 0.0),
+                        "schema_score": cr.get("schema_score"),
+                        "required_present": cr.get("required_present"),
+                        "type_correct": cr.get("type_correct"),
+                        "hallucination_free": cr.get("hallucination_free"),
                         "success": cr.get("success", False),
                         "error": cr.get("error", ""),
                         "latency_ms": cr.get("latency_ms", 0),
@@ -1692,6 +1746,7 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
                     "overall_score": round(sum(overall_scores) / len(overall_scores), 4) if overall_scores else 0.0,
                     "tool_accuracy": round(sum(tool_scores) / len(tool_scores) * 100, 2) if tool_scores else 0.0,
                     "param_accuracy": round(sum(param_scores) / len(param_scores) * 100, 2) if param_scores else 0.0,
+                    "schema_score": round(sum(schema_scores) / len(schema_scores) * 100, 2) if schema_scores else 0.0,
                     "latency_avg_ms": round(sum(latencies) / len(latencies)) if latencies else 0,
                     "cases_passed": cases_passed,
                     "cases_total": len(cases),
@@ -1769,6 +1824,7 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
                     cases_passed=item.get("cases_passed", 0),
                     cases_total=item.get("cases_total", 0),
                     adjustments_json=json.dumps(item.get("adjustments")) if item.get("adjustments") else None,
+                    schema_score_pct=item.get("schema_score", 0.0),
                 )
         except Exception as e:
             logger.warning("Failed to save param_tune_combo: %s", e)
@@ -1897,6 +1953,10 @@ async def param_tune_handler(job_id: str, params: dict, cancel_event, progress_c
                                 success=cr.get("success", True),
                                 error=cr.get("error", ""),
                                 latency_ms=cr.get("latency_ms", 0),
+                                schema_score=cr.get("schema_score"),
+                                required_present=cr.get("required_present"),
+                                type_correct=cr.get("type_correct"),
+                                hallucination_free=cr.get("hallucination_free"),
                             )
                     except Exception as cr_e:
                         logger.warning("Failed to save promoted case result: %s", cr_e)
@@ -1962,6 +2022,7 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
     base_prompt = params.get("base_prompt") or _DEFAULT_BASE_PROMPT
     cfg = params.get("config", {})
     experiment_id = params.get("experiment_id")
+    profiles_map = params.get("profiles")  # {"model_id": "profile_id"} or None
 
     population_size = int(cfg.get("population_size", 5))
     generations = int(cfg.get("generations", 1 if mode == "quick" else 3))
@@ -2007,6 +2068,15 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
                 user_keys_cache[t.provider_key] = encrypted
     meta_targets = inject_user_keys(meta_targets, user_keys_cache)
     eval_targets = inject_user_keys(eval_targets, user_keys_cache)
+
+    # Load model profiles if specified (params only — prompt tuner tests prompts, not profile prompts)
+    loaded_profiles = {}
+    if profiles_map and isinstance(profiles_map, dict):
+        for model_id, profile_id in profiles_map.items():
+            profile = await db.get_profile(profile_id, user_id)
+            if profile:
+                loaded_profiles[model_id] = profile
+                logger.debug("Loaded profile %s for model %s (prompt tuner)", profile_id, model_id)
 
     meta_target = meta_targets[0]
 
@@ -2158,6 +2228,16 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
                     "model": target.display_name,
                 })
 
+                # Resolve profile params for this target (params only, NOT system_prompt)
+                profile_pp = None
+                profile = loaded_profiles.get(target.model_id)
+                if profile:
+                    profile_params_raw = profile.get("params_json")
+                    if profile_params_raw:
+                        _pp = json.loads(profile_params_raw) if isinstance(profile_params_raw, str) else profile_params_raw
+                        if _pp:
+                            profile_pp = {k: v for k, v in _pp.items() if k not in ("temperature", "tool_choice", "max_tokens")}
+
                 # Run all test cases with this prompt as system_prompt
                 case_results = []
                 for case in cases:
@@ -2177,11 +2257,13 @@ async def prompt_tune_handler(job_id: str, params: dict, cancel_event, progress_
                         r = await run_multi_turn_eval(
                             target, tools, case_with_mt, eval_temperature,
                             eval_tool_choice, system_prompt=p_info["text"],
+                            provider_params=profile_pp,
                         )
                     else:
                         r = await run_single_eval(
                             target, tools, case, eval_temperature,
                             eval_tool_choice, system_prompt=p_info["text"],
+                            provider_params=profile_pp,
                         )
                     case_results.append(r)
 

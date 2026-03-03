@@ -141,8 +141,10 @@
               <tr class="text-zinc-700">
                 <th class="px-3 py-1.5 text-left section-label">Model</th>
                 <th v-if="hasMultiCtx(h)" class="px-3 py-1.5 text-right section-label">Context</th>
-                <th class="px-3 py-1.5 text-right section-label">Tok/s</th>
+                <th class="px-3 py-1.5 text-right section-label">Output Tok/s</th>
+                <th class="px-3 py-1.5 text-right section-label">ITL</th>
                 <th v-if="hasMultiRun(h)" class="px-3 py-1.5 text-right section-label">Std Dev</th>
+                <th class="px-3 py-1.5 text-center section-label">Confidence</th>
                 <th class="px-3 py-1.5 text-right section-label">TTFT</th>
                 <th class="px-3 py-1.5 text-right section-label">Duration</th>
               </tr>
@@ -156,8 +158,19 @@
                 <td class="px-3 py-2 text-right font-mono" :class="ri === 0 ? '' : 'text-zinc-500'" :style="ri === 0 ? 'color:var(--lime)' : ''">
                   {{ r.avg_tokens_per_second }}
                 </td>
+                <td class="px-3 py-2 text-right font-mono text-zinc-600">
+                  {{ r.avg_itl_ms > 0 ? r.avg_itl_ms.toFixed(1) + 'ms' : '-' }}
+                </td>
                 <td v-if="hasMultiRun(h)" class="px-3 py-2 text-right font-mono text-zinc-600">
                   {{ r.std_dev_tps > 0 ? '\u00B1' + r.std_dev_tps.toFixed(1) : '-' }}
+                </td>
+                <td class="px-3 py-2 text-center">
+                  <span
+                    v-if="r.confidence_level"
+                    class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm"
+                    :style="r.confidence_level === 'high' ? 'background:rgba(34,197,94,0.1);color:#22C55E;border:1px solid rgba(34,197,94,0.2)' : r.confidence_level === 'medium' ? 'background:rgba(234,179,8,0.1);color:#EAB308;border:1px solid rgba(234,179,8,0.2)' : 'background:rgba(239,68,68,0.1);color:#EF4444;border:1px solid rgba(239,68,68,0.2)'"
+                  >{{ r.confidence_level }}</span>
+                  <span v-else class="text-zinc-700">-</span>
                 </td>
                 <td class="px-3 py-2 text-right font-mono text-zinc-600">{{ r.avg_ttft_ms }}ms</td>
                 <td class="px-3 py-2 text-right font-mono text-zinc-600">{{ r.avg_total_time_s }}s</td>
@@ -261,7 +274,9 @@
                 <tr style="border-bottom:1px solid var(--border-subtle)">
                   <th class="px-3 py-2 text-left section-label">Model</th>
                   <th v-if="hasMultiCtx(detailRun)" class="px-3 py-2 text-right section-label">Context</th>
-                  <th class="px-3 py-2 text-right section-label">Tok/s</th>
+                  <th class="px-3 py-2 text-right section-label">Output Tok/s</th>
+                  <th class="px-3 py-2 text-right section-label">ITL</th>
+                  <th class="px-3 py-2 text-center section-label">Confidence</th>
                   <th class="px-3 py-2 text-right section-label">TTFT</th>
                   <th class="px-3 py-2 text-right section-label">Duration</th>
                   <th class="px-3 py-2 text-right section-label">Status</th>
@@ -279,6 +294,17 @@
                   </td>
                   <td class="px-3 py-2 text-right font-mono" :style="ri === 0 ? 'color:var(--lime)' : 'color:#71717A'">
                     {{ r.avg_tokens_per_second }}
+                  </td>
+                  <td class="px-3 py-2 text-right font-mono text-zinc-600">
+                    {{ r.avg_itl_ms > 0 ? r.avg_itl_ms.toFixed(1) + 'ms' : '-' }}
+                  </td>
+                  <td class="px-3 py-2 text-center">
+                    <span
+                      v-if="r.confidence_level"
+                      class="text-[9px] font-display tracking-wider uppercase px-1.5 py-0.5 rounded-sm"
+                      :style="r.confidence_level === 'high' ? 'background:rgba(34,197,94,0.1);color:#22C55E;border:1px solid rgba(34,197,94,0.2)' : r.confidence_level === 'medium' ? 'background:rgba(234,179,8,0.1);color:#EAB308;border:1px solid rgba(234,179,8,0.2)' : 'background:rgba(239,68,68,0.1);color:#EF4444;border:1px solid rgba(239,68,68,0.2)'"
+                    >{{ r.confidence_level }}</span>
+                    <span v-else class="text-zinc-700">-</span>
                   </td>
                   <td class="px-3 py-2 text-right font-mono text-zinc-600">{{ r.avg_ttft_ms }}ms</td>
                   <td class="px-3 py-2 text-right font-mono text-zinc-600">{{ r.avg_total_time_s }}s</td>
@@ -361,10 +387,12 @@ async function refreshHistory() {
 function getSortedResults(h) {
   return [...(h.results || [])].map(r => ({
     ...r,
-    avg_tokens_per_second: r.avg_tokens_per_second ?? r.tokens_per_second ?? 0,
+    avg_tokens_per_second: r.avg_output_speed_tps || r.avg_tokens_per_second || r.tokens_per_second || 0,
     avg_ttft_ms: r.avg_ttft_ms ?? r.ttft_ms ?? 0,
     avg_total_time_s: r.avg_total_time_s ?? r.total_time_s ?? 0,
+    avg_itl_ms: r.avg_itl_ms ?? r.itl_ms ?? 0,
     std_dev_tps: r.std_dev_tps ?? 0,
+    confidence_level: r.confidence_level || '',
   })).sort((a, b) => b.avg_tokens_per_second - a.avg_tokens_per_second)
 }
 
@@ -481,7 +509,7 @@ async function compareRuns() {
       const values = runs.map(run => {
         const match = (run.results || []).find(r => r.provider === provider && r.model === model)
         if (!match) return null
-        return match.avg_tokens_per_second ?? match.tokens_per_second ?? 0
+        return match.avg_output_speed_tps || match.avg_tokens_per_second || match.tokens_per_second || 0
       })
       return { key: modelKey, provider, model, color, values }
     })

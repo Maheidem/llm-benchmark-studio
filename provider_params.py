@@ -271,6 +271,7 @@ _PREFIX_MAP: dict[str, str] = {
     "xai/": "xai",
     "vllm/": "vllm",
     "openai/": "openai",
+    "zai/": "zai_glm",
 }
 
 

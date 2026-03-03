@@ -87,15 +87,21 @@ async def analytics_leaderboard(
             if model_id not in model_agg_bm:
                 model_agg_bm[model_id] = {
                     "model_id": model_id,
+                    "model": r.get("model", model_id),
+                    "provider": r.get("provider", ""),
                     "tps_vals": [],
                     "ttft_vals": [],
                     "cost_vals": [],
+                    "output_speed_vals": [],
+                    "itl_vals": [],
                     "last_run": run["timestamp"],
                 }
             entry = model_agg_bm[model_id]
             entry["tps_vals"].append(float(r.get("tokens_per_second", 0) or 0))
             entry["ttft_vals"].append(float(r.get("ttft_ms", 0) or 0))
             entry["cost_vals"].append(float(r.get("cost", 0) or 0))
+            entry["output_speed_vals"].append(float(r.get("avg_output_speed_tps", 0) or 0))
+            entry["itl_vals"].append(float(r.get("avg_itl_ms", 0) or 0))
             if run["timestamp"] > entry["last_run"]:
                 entry["last_run"] = run["timestamp"]
 
@@ -104,13 +110,17 @@ async def analytics_leaderboard(
         n = len(stats["tps_vals"])
         models.append({
             "model_id": model_id,
+            "model": stats["model"],
+            "provider": stats["provider"],
             "avg_tps": round(sum(stats["tps_vals"]) / n, 2) if n else 0,
             "avg_ttft_ms": round(sum(stats["ttft_vals"]) / n, 1) if n else 0,
             "avg_cost": round(sum(stats["cost_vals"]) / n, 6) if n else 0,
+            "avg_output_speed_tps": round(sum(stats["output_speed_vals"]) / n, 2) if n and any(stats["output_speed_vals"]) else 0,
+            "avg_itl_ms": round(sum(stats["itl_vals"]) / n, 1) if n and any(stats["itl_vals"]) else 0,
             "total_runs": n,
             "last_run": stats["last_run"],
         })
-    models.sort(key=lambda m: m["avg_tps"], reverse=True)
+    models.sort(key=lambda m: m["avg_output_speed_tps"] or m["avg_tps"], reverse=True)
     return {"type": "benchmark", "period": period, "models": models}
 
 
@@ -195,11 +205,15 @@ async def analytics_compare(
                     "tps_vals": [],
                     "ttft_vals": [],
                     "cost_vals": [],
+                    "output_speed_vals": [],
+                    "itl_vals": [],
                     "context_tokens": r.get("context_tokens", 0),
                 }
             model_map[model_id]["tps_vals"].append(float(r.get("tokens_per_second", 0) or 0))
             model_map[model_id]["ttft_vals"].append(float(r.get("ttft_ms", 0) or 0))
             model_map[model_id]["cost_vals"].append(float(r.get("cost", 0) or 0))
+            model_map[model_id]["output_speed_vals"].append(float(r.get("avg_output_speed_tps", 0) or 0))
+            model_map[model_id]["itl_vals"].append(float(r.get("avg_itl_ms", 0) or 0))
 
         run_models = []
         for model_id, stats in model_map.items():
@@ -210,6 +224,8 @@ async def analytics_compare(
                 "avg_ttft_ms": round(sum(stats["ttft_vals"]) / n, 1) if n else 0,
                 "context_tokens": stats["context_tokens"],
                 "avg_cost": round(sum(stats["cost_vals"]) / n, 8) if n else 0,
+                "avg_output_speed_tps": round(sum(stats["output_speed_vals"]) / n, 2) if n and any(stats["output_speed_vals"]) else 0,
+                "avg_itl_ms": round(sum(stats["itl_vals"]) / n, 1) if n and any(stats["itl_vals"]) else 0,
             })
 
         comparison.append({

@@ -136,7 +136,7 @@ const profilesStore = useProfilesStore()
 const judgeStore = useJudgeStore()
 const { setSystemPrompt, setConfig } = useSharedContext()
 const { showToast } = useToast()
-const { inputModal } = useModal()
+const { multiFieldModal } = useModal()
 
 const loading = ref(true)
 const selectedRun = ref(null)
@@ -186,25 +186,56 @@ async function saveAsProfile(run) {
     showToast('No best prompt available', 'error')
     return
   }
-
   const modelId = run.model_id || run.target?.model_id || null
 
-  const result = await inputModal('Save as Profile', 'Profile name', { confirmLabel: 'Save' })
-  const profileName = typeof result === 'string' ? result.trim() : result?.value?.trim?.() || ''
-  if (!profileName) return
-
+  let existing = []
   try {
-    await profilesStore.createFromTuner({
-      source_type: 'prompt_tuner',
-      source_id: run.id,
-      model_id: modelId,
-      name: profileName,
-      system_prompt: run.best_prompt,
-      params_json: null,
-    })
-    showToast('Profile saved', 'success')
-  } catch (e) {
-    showToast(e.message || 'Failed to save profile', 'error')
+    await profilesStore.fetchProfiles()
+    existing = profilesStore.profiles
+  } catch { /* proceed with create-only */ }
+
+  const profileOptions = [{ value: '__new__', label: '\u2014 Create New \u2014' }]
+  for (const p of existing) {
+    profileOptions.push({ value: p.id, label: p.name })
+  }
+
+  const fields = [
+    { key: 'profile', type: 'select', label: 'Profile', options: profileOptions, defaultValue: '__new__' },
+    { key: 'name', type: 'text', label: 'Profile Name', placeholder: 'Enter profile name' },
+  ]
+  const result = await multiFieldModal('Save to Profile', fields, { confirmLabel: 'Save' })
+  if (!result) return
+
+  const selectedProfile = result.profile
+  const profileName = (result.name || '').trim()
+
+  if (selectedProfile === '__new__') {
+    if (!profileName) {
+      showToast('Profile name is required', 'error')
+      return
+    }
+    try {
+      await profilesStore.createFromTuner({
+        source_type: 'prompt_tuner',
+        source_id: run.id,
+        model_id: modelId,
+        name: profileName,
+        system_prompt: run.best_prompt,
+        params_json: null,
+      })
+      showToast('Profile created', 'success')
+    } catch (e) {
+      showToast(e.message || 'Failed to create profile', 'error')
+    }
+  } else {
+    try {
+      const updateBody = { system_prompt: run.best_prompt }
+      if (profileName) updateBody.name = profileName
+      await profilesStore.updateProfile(selectedProfile, updateBody)
+      showToast('Profile updated', 'success')
+    } catch (e) {
+      showToast(e.message || 'Failed to update profile', 'error')
+    }
   }
 }
 

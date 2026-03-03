@@ -335,6 +335,8 @@ async def init_db():
                 input_tokens INTEGER,
                 tokens_per_second REAL,
                 input_tokens_per_second REAL,
+                output_speed_tps REAL,
+                itl_ms REAL,
                 cost REAL,
                 success INTEGER NOT NULL DEFAULT 1,
                 error TEXT,
@@ -867,6 +869,58 @@ async def init_db():
         except Exception:
             pass  # Column already exists
 
+        # --- Migration 706: Add 3-tier schema scoring columns to case_results ---
+        try:
+            await db.execute("ALTER TABLE case_results ADD COLUMN schema_score REAL DEFAULT 0.0")
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute("ALTER TABLE case_results ADD COLUMN required_present REAL")
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute("ALTER TABLE case_results ADD COLUMN type_correct REAL")
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute("ALTER TABLE case_results ADD COLUMN hallucination_free REAL")
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "INSERT OR IGNORE INTO schema_version (version, description) "
+                "VALUES (706, 'Add schema_score, required_present, type_correct, hallucination_free to case_results')"
+            )
+            await db.commit()
+        except Exception:
+            pass
+
+        # --- Migration 707: Add schema_score_pct to param_tune_combos ---
+        try:
+            await db.execute("ALTER TABLE param_tune_combos ADD COLUMN schema_score_pct REAL DEFAULT 0.0")
+            await db.execute(
+                "INSERT OR IGNORE INTO schema_version (version, description) "
+                "VALUES (707, 'Add schema_score_pct to param_tune_combos')"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # --- Migration 708: Add output_speed_tps and itl_ms to benchmark_results ---
+        for col, ctype in [("output_speed_tps", "REAL"), ("itl_ms", "REAL")]:
+            try:
+                await db.execute(f"ALTER TABLE benchmark_results ADD COLUMN {col} {ctype}")
+            except Exception:
+                pass  # Column already exists
+        try:
+            await db.execute(
+                "INSERT OR IGNORE INTO schema_version (version, description) "
+                "VALUES (708, 'Add output_speed_tps and itl_ms to benchmark_results')"
+            )
+            await db.commit()
+        except Exception:
+            pass
+
 
 # --- User CRUD ---
 
@@ -1152,6 +1206,8 @@ async def save_benchmark_result(
     input_tokens: int | None = None,
     tokens_per_second: float | None = None,
     input_tokens_per_second: float | None = None,
+    output_speed_tps: float | None = None,
+    itl_ms: float | None = None,
     cost: float | None = None,
     success: bool = True,
     error: str | None = None,
@@ -1162,11 +1218,11 @@ async def save_benchmark_result(
         "INSERT INTO benchmark_results "
         "(id, run_id, model_id, run_number, context_tokens, ttft_ms, total_time_s, "
         "output_tokens, input_tokens, tokens_per_second, input_tokens_per_second, "
-        "cost, success, error) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "output_speed_tps, itl_ms, cost, success, error) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (result_id, run_id, model_id, run_number, context_tokens, ttft_ms, total_time_s,
          output_tokens, input_tokens, tokens_per_second, input_tokens_per_second,
-         cost, 1 if success else 0, error),
+         output_speed_tps, itl_ms, cost, 1 if success else 0, error),
     )
     return result_id
 
@@ -1185,6 +1241,14 @@ async def get_benchmark_results(run_id: str) -> list[dict]:
         "ROUND(AVG(CASE WHEN br.success = 1 THEN br.ttft_ms END), 1) AS avg_ttft_ms, "
         "ROUND(AVG(CASE WHEN br.success = 1 THEN br.total_time_s END), 3) AS avg_total_time_s, "
         "ROUND(AVG(CASE WHEN br.success = 1 THEN br.input_tokens_per_second END), 2) AS avg_input_tokens_per_second, "
+        "ROUND(AVG(CASE WHEN br.success = 1 THEN br.output_speed_tps END), 2) AS avg_output_speed_tps, "
+        "ROUND(AVG(CASE WHEN br.success = 1 THEN br.itl_ms END), 1) AS avg_itl_ms, "
+        "CASE WHEN SUM(CASE WHEN br.success = 1 THEN 1 ELSE 0 END) >= 2 THEN "
+        "  ROUND(SQRT(MAX(0, "
+        "    AVG(CASE WHEN br.success = 1 THEN COALESCE(br.output_speed_tps, br.tokens_per_second) * COALESCE(br.output_speed_tps, br.tokens_per_second) END) - "
+        "    AVG(CASE WHEN br.success = 1 THEN COALESCE(br.output_speed_tps, br.tokens_per_second) END) * "
+        "    AVG(CASE WHEN br.success = 1 THEN COALESCE(br.output_speed_tps, br.tokens_per_second) END)"
+        "  )), 2) ELSE 0 END AS std_dev_tps, "
         "SUM(CASE WHEN br.success = 1 THEN 1 ELSE 0 END) AS success_count, "
         "SUM(CASE WHEN br.success = 0 THEN 1 ELSE 0 END) AS error_count, "
         "MAX(br.error) AS error "
@@ -1593,6 +1657,10 @@ async def save_case_result(
     error_type: str | None = None,
     raw_request: str | None = None,
     raw_response: str | None = None,
+    schema_score: float | None = None,
+    required_present: float | None = None,
+    type_correct: float | None = None,
+    hallucination_free: float | None = None,
 ) -> str:
     """Save a single case result. Returns result ID."""
     result_id = uuid.uuid4().hex
@@ -1600,12 +1668,14 @@ async def save_case_result(
         "INSERT INTO case_results "
         "(id, eval_run_id, test_case_id, model_id, tool_selection_score, param_accuracy, "
         "overall_score, irrelevance_score, actual_tool, actual_params, success, error, "
-        "latency_ms, format_compliance, error_type, raw_request, raw_response) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "latency_ms, format_compliance, error_type, raw_request, raw_response, "
+        "schema_score, required_present, type_correct, hallucination_free) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (result_id, eval_run_id, test_case_id, model_id, tool_selection_score, param_accuracy,
          overall_score, irrelevance_score, actual_tool, actual_params,
          1 if success else 0, error, latency_ms, format_compliance, error_type,
-         raw_request, raw_response),
+         raw_request, raw_response,
+         schema_score, required_present, type_correct, hallucination_free),
     )
     return result_id
 
@@ -1621,15 +1691,18 @@ async def save_case_results_batch(eval_run_id: str, results: list[dict]) -> int:
                 "INSERT INTO case_results "
                 "(id, eval_run_id, test_case_id, model_id, tool_selection_score, param_accuracy, "
                 "overall_score, irrelevance_score, actual_tool, actual_params, success, error, "
-                "latency_ms, format_compliance, error_type, raw_request, raw_response) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "latency_ms, format_compliance, error_type, raw_request, raw_response, "
+                "schema_score, required_present, type_correct, hallucination_free) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (result_id, eval_run_id, r["test_case_id"], r["model_id"],
                  r.get("tool_selection_score", 0.0), r.get("param_accuracy"),
                  r.get("overall_score", 0.0), r.get("irrelevance_score"),
                  r.get("actual_tool"), r.get("actual_params"),
                  1 if r.get("success", True) else 0, r.get("error", ""),
                  r.get("latency_ms", 0), r.get("format_compliance", "PASS"),
-                 r.get("error_type"), r.get("raw_request"), r.get("raw_response")),
+                 r.get("error_type"), r.get("raw_request"), r.get("raw_response"),
+                 r.get("schema_score"), r.get("required_present"),
+                 r.get("type_correct"), r.get("hallucination_free")),
             )
         await conn.commit()
     return len(results)
@@ -1672,7 +1745,11 @@ async def get_case_results_summary(eval_run_id: str) -> list[dict]:
             ROUND(AVG(cr.param_accuracy) * 100, 2) AS param_accuracy_pct,
             ROUND(AVG(cr.overall_score) * 100, 2) AS overall_score_pct,
             ROUND(AVG(cr.irrelevance_score) * 100, 2) AS irrelevance_accuracy_pct,
-            CAST(AVG(cr.latency_ms) AS INTEGER) AS avg_latency_ms
+            CAST(AVG(cr.latency_ms) AS INTEGER) AS avg_latency_ms,
+            ROUND(AVG(cr.schema_score) * 100, 2) AS schema_score_pct,
+            ROUND(AVG(cr.required_present) * 100, 2) AS required_present_pct,
+            ROUND(AVG(cr.type_correct) * 100, 2) AS type_correct_pct,
+            ROUND(AVG(cr.hallucination_free) * 100, 2) AS hallucination_free_pct
         FROM case_results cr
         LEFT JOIN models m ON cr.model_id = m.id
         WHERE cr.eval_run_id = ?
@@ -1843,6 +1920,7 @@ async def save_param_tune_combo(
     cases_passed: int = 0,
     cases_total: int = 0,
     adjustments_json: str | None = None,
+    schema_score_pct: float = 0.0,
 ) -> str:
     """Save a param tune combo result. Returns combo ID."""
     combo_id = uuid.uuid4().hex
@@ -1850,11 +1928,11 @@ async def save_param_tune_combo(
         "INSERT INTO param_tune_combos "
         "(id, tune_run_id, combo_index, model_id, config_json, eval_run_id, "
         "overall_score, tool_accuracy_pct, param_accuracy_pct, latency_avg_ms, "
-        "cases_passed, cases_total, adjustments_json) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "cases_passed, cases_total, adjustments_json, schema_score_pct) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (combo_id, tune_run_id, combo_index, model_id, config_json, eval_run_id,
          overall_score, tool_accuracy_pct, param_accuracy_pct, latency_avg_ms,
-         cases_passed, cases_total, adjustments_json),
+         cases_passed, cases_total, adjustments_json, schema_score_pct),
     )
     return combo_id
 

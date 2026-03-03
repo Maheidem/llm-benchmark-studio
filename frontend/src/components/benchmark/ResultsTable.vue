@@ -20,8 +20,11 @@
             >
               Context
             </th>
-            <th class="px-5 py-3 text-right section-label cursor-pointer" @click="sortBy('tokens_per_second')">
-              Tok/s
+            <th class="px-5 py-3 text-right section-label cursor-pointer" @click="sortBy('output_speed_tps')">
+              Output Tok/s
+            </th>
+            <th class="px-5 py-3 text-right section-label cursor-pointer" @click="sortBy('itl_ms')">
+              ITL
             </th>
             <th
               v-if="multiRun"
@@ -43,6 +46,7 @@
               Tokens
             </th>
             <th class="px-5 py-3 text-center section-label">Status</th>
+            <th class="px-5 py-3 text-center section-label">Confidence</th>
             <th class="px-5 py-3 text-right section-label cursor-pointer" @click="sortBy('avg_cost')">
               Cost
             </th>
@@ -90,13 +94,18 @@
               {{ r.context_tokens === 0 ? '0' : formatCtxLabel(r.context_tokens) }}
             </td>
 
-            <!-- Tok/s -->
+            <!-- Output Tok/s -->
             <td
               class="px-5 py-3.5 text-right font-mono text-sm"
               :class="r.success && i === 0 ? '' : 'text-zinc-400'"
               :style="r.success && i === 0 ? 'color:var(--lime)' : ''"
             >
-              {{ r.success ? r.tokens_per_second.toFixed(1) : '-' }}
+              {{ r.success ? (r.output_speed_tps || r.tokens_per_second).toFixed(1) : '-' }}
+            </td>
+
+            <!-- ITL -->
+            <td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">
+              {{ r.success && r.itl_ms > 0 ? r.itl_ms.toFixed(1) + 'ms' : '-' }}
             </td>
 
             <!-- Std Dev -->
@@ -137,6 +146,22 @@
               </span>
             </td>
 
+            <!-- Confidence -->
+            <td class="px-5 py-3.5 text-center">
+              <span
+                v-if="r.confidence_level"
+                class="px-2 py-0.5 rounded-full text-[10px] font-mono uppercase tracking-wider"
+                :class="{
+                  'bg-green-500/20 text-green-400': r.confidence_level === 'high',
+                  'bg-amber-500/20 text-amber-400': r.confidence_level === 'medium',
+                  'bg-red-500/20 text-red-400': r.confidence_level === 'low',
+                }"
+              >
+                {{ r.confidence_level }}
+              </span>
+              <span v-else class="text-zinc-700">-</span>
+            </td>
+
             <!-- Cost -->
             <td class="px-5 py-3.5 text-right font-mono text-sm text-zinc-500">
               {{ r.success && r.avg_cost > 0 ? '$' + r.avg_cost.toFixed(4) : '-' }}
@@ -160,7 +185,7 @@ const props = defineProps({
   isStressMode: { type: Boolean, default: false },
 })
 
-const sortKey = ref('tokens_per_second')
+const sortKey = ref('output_speed_tps')
 const sortAsc = ref(false)
 
 const multiRun = computed(() => props.results.some(r => r.runs > 1))
@@ -184,7 +209,7 @@ function sortBy(key) {
     sortAsc.value = !sortAsc.value
   } else {
     sortKey.value = key
-    sortAsc.value = key === 'ttft_ms' || key === 'total_time_s' || key === 'avg_cost'
+    sortAsc.value = key === 'ttft_ms' || key === 'total_time_s' || key === 'avg_cost' || key === 'itl_ms'
   }
 }
 

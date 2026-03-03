@@ -16,6 +16,9 @@
             <th class="px-3 py-2 text-right section-label cursor-pointer" @click="$emit('sort', 'overall_score')">Score</th>
             <th class="px-3 py-2 text-right section-label cursor-pointer" @click="$emit('sort', 'tool_accuracy')">Tool%</th>
             <th class="px-3 py-2 text-right section-label cursor-pointer" @click="$emit('sort', 'param_accuracy')">Param%</th>
+            <th v-if="hasSchemaScore" class="px-3 py-2 text-right section-label cursor-pointer" @click="$emit('sort', 'schema_score_pct')"
+              title="Schema compliance: validates parameter types, required fields, and detects hallucinated params"
+            >Schema%</th>
             <th class="px-3 py-2 text-right section-label">Latency</th>
             <th class="px-3 py-2 text-center section-label">Status</th>
           </tr>
@@ -58,6 +61,12 @@
             <td class="px-3 py-2 text-right text-xs font-mono text-zinc-400">
               {{ r.param_accuracy?.toFixed(0) || '0' }}%
             </td>
+            <td v-if="hasSchemaScore" class="px-3 py-2 text-right text-xs font-mono"
+              :style="{ color: r.schema_score_pct != null ? schemaScoreColor(r.schema_score_pct) : '#52525B' }"
+              title="Schema compliance score"
+            >
+              {{ r.schema_score_pct != null ? r.schema_score_pct.toFixed(0) + '%' : '-' }}
+            </td>
             <td class="px-3 py-2 text-right text-xs font-mono text-zinc-600">
               {{ r.latency_avg_ms ? r.latency_avg_ms + 'ms' : '-' }}
             </td>
@@ -82,6 +91,10 @@ const props = defineProps({
 })
 
 defineEmits(['sort', 'select'])
+
+const hasSchemaScore = computed(() => {
+  return props.results.some(r => r.schema_score_pct != null)
+})
 
 const paramColumns = computed(() => {
   const keys = new Set()
@@ -134,6 +147,12 @@ function getClampTitle(r, param) {
 function scoreColor(pct) {
   if (pct >= 80) return 'var(--lime)'
   if (pct >= 50) return '#FBBF24'
+  return 'var(--coral)'
+}
+
+function schemaScoreColor(pct) {
+  if (pct >= 90) return 'var(--lime)'
+  if (pct >= 70) return '#FBBF24'
   return 'var(--coral)'
 }
 

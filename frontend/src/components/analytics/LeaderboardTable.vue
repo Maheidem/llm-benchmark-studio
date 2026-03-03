@@ -4,15 +4,18 @@
       <!-- Benchmark headers -->
       <thead v-if="type === 'benchmark'">
         <tr style="border-bottom: 1px solid var(--border-subtle)">
-          <th class="px-5 py-3 text-center section-label cursor-pointer" @click="$emit('sort', 'avg_tps')">#</th>
+          <th class="px-5 py-3 text-center section-label cursor-pointer" @click="$emit('sort', 'avg_output_speed_tps')">#</th>
           <th class="px-5 py-3 text-left section-label cursor-pointer" @click="$emit('sort', 'model')">
             Model <SortArrow :active="sortKey === 'model'" :asc="sortAsc" />
           </th>
           <th class="px-5 py-3 text-left section-label cursor-pointer" @click="$emit('sort', 'provider')">
             Provider <SortArrow :active="sortKey === 'provider'" :asc="sortAsc" />
           </th>
-          <th class="px-5 py-3 text-right section-label cursor-pointer" @click="$emit('sort', 'avg_tps')">
-            Avg TPS <SortArrow :active="sortKey === 'avg_tps'" :asc="sortAsc" />
+          <th class="px-5 py-3 text-right section-label cursor-pointer" @click="$emit('sort', 'avg_output_speed_tps')">
+            Output Tok/s <SortArrow :active="sortKey === 'avg_output_speed_tps'" :asc="sortAsc" />
+          </th>
+          <th class="px-5 py-3 text-right section-label cursor-pointer" @click="$emit('sort', 'avg_itl_ms')">
+            ITL <SortArrow :active="sortKey === 'avg_itl_ms'" :asc="sortAsc" />
           </th>
           <th class="px-5 py-3 text-right section-label cursor-pointer" @click="$emit('sort', 'avg_ttft_ms')">
             Avg TTFT <SortArrow :active="sortKey === 'avg_ttft_ms'" :asc="sortAsc" />
@@ -54,14 +57,14 @@
       <tbody>
         <!-- Loading -->
         <tr v-if="loading">
-          <td :colspan="type === 'benchmark' ? 8 : 6" class="px-5 py-8 text-center text-zinc-600 text-sm">
+          <td :colspan="type === 'benchmark' ? 10 : 6" class="px-5 py-8 text-center text-zinc-600 text-sm">
             Loading...
           </td>
         </tr>
 
         <!-- Empty -->
         <tr v-else-if="!sorted.length">
-          <td :colspan="type === 'benchmark' ? 8 : 6" class="px-5 py-8 text-center text-zinc-600 text-sm">
+          <td :colspan="type === 'benchmark' ? 10 : 6" class="px-5 py-8 text-center text-zinc-600 text-sm">
             No data yet. Run some {{ type === 'benchmark' ? 'benchmarks' : 'evaluations' }} first!
           </td>
         </tr>
@@ -85,7 +88,8 @@
             <td
               class="px-5 py-3 text-right font-mono text-sm"
               :style="{ color: i === 0 ? 'var(--lime)' : '#A1A1AA' }"
-            >{{ m.avg_tps.toFixed(1) }}</td>
+            >{{ (m.avg_output_speed_tps || m.avg_tps || 0).toFixed(1) }}</td>
+            <td class="px-5 py-3 text-right font-mono text-sm text-zinc-500">{{ m.avg_itl_ms > 0 ? m.avg_itl_ms.toFixed(1) + 'ms' : '-' }}</td>
             <td class="px-5 py-3 text-right font-mono text-sm text-zinc-400">{{ m.avg_ttft_ms.toFixed(0) }}ms</td>
             <td class="px-5 py-3 text-right font-mono text-xs text-zinc-500">{{ formatCost(m.avg_cost) }}</td>
             <td class="px-5 py-3 text-center font-mono text-xs text-zinc-500">{{ m.total_runs }}</td>

@@ -89,6 +89,33 @@
             <span v-if="r.param_accuracy != null">Param: <span :style="{ color: scoreColor(r.param_accuracy * 100) }">{{ (r.param_accuracy * 100).toFixed(0) }}%</span></span>
           </div>
 
+          <!-- Tier 2: Schema validation breakdown -->
+          <div v-if="r.schema_score != null" class="flex flex-wrap gap-2 mt-2">
+            <span
+              v-if="r.required_present != null"
+              class="text-[9px] font-mono px-1.5 py-0.5 rounded-sm"
+              :style="schemaBadgeStyle(r.required_present)"
+              title="Required parameters present"
+            >Req: {{ (r.required_present * 100).toFixed(0) }}%</span>
+            <span
+              v-if="r.type_correct != null"
+              class="text-[9px] font-mono px-1.5 py-0.5 rounded-sm"
+              :style="schemaBadgeStyle(r.type_correct)"
+              title="Parameter types correct"
+            >Types: {{ (r.type_correct * 100).toFixed(0) }}%</span>
+            <span
+              v-if="r.hallucination_free != null"
+              class="text-[9px] font-mono px-1.5 py-0.5 rounded-sm"
+              :style="schemaBadgeStyle(r.hallucination_free)"
+              title="No hallucinated parameters"
+            >No Halluc: {{ (r.hallucination_free * 100).toFixed(0) }}%</span>
+            <span
+              class="text-[9px] font-mono px-1.5 py-0.5 rounded-sm"
+              :style="schemaBadgeStyle(r.schema_score)"
+              title="Overall schema compliance score"
+            >Schema: {{ (r.schema_score * 100).toFixed(0) }}%</span>
+          </div>
+
           <!-- Multi-turn chain -->
           <div v-if="r.multi_turn && r.tool_chain?.length" class="mt-2">
             <!-- T5: Visual argument flow between tools -->
@@ -222,6 +249,15 @@ function scoreColor(pct) {
   if (pct >= 80) return 'var(--lime)'
   if (pct >= 50) return '#FBBF24'
   return 'var(--coral)'
+}
+
+// Tier 2: schema sub-score badge style
+function schemaBadgeStyle(val) {
+  if (val == null) return {}
+  const pct = val * 100
+  if (pct >= 90) return { background: 'rgba(191,255,0,0.08)', color: 'var(--lime)', border: '1px solid rgba(191,255,0,0.2)' }
+  if (pct >= 70) return { background: 'rgba(251,191,36,0.08)', color: '#FBBF24', border: '1px solid rgba(251,191,36,0.2)' }
+  return { background: 'rgba(255,59,92,0.08)', color: 'var(--coral)', border: '1px solid rgba(255,59,92,0.2)' }
 }
 
 // T1: format compliance badge style
