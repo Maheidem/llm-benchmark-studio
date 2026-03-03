@@ -271,6 +271,7 @@ async def admin_set_rate_limit(user_id: str, request: Request, current_user: dic
             max_runs_per_benchmark=body.get("max_runs_per_benchmark", 10),
         )
     except (ValidationError, Exception) as e:
+        logger.warning("Rate limit validation failed for user=%s: %s body=%s", user_id, e, body)
         raise HTTPException(422, detail=str(e))
 
     conn = await db.get_db()

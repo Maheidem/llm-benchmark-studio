@@ -220,13 +220,16 @@ async function showRateLimit(user) {
 
 async function saveRateLimit() {
   try {
+    const bph = parseInt(rateLimitModal.bph) || 20
+    const mc = parseInt(rateLimitModal.mc) || 1
+    const mrpb = parseInt(rateLimitModal.mrpb) || 10
     const res = await apiFetch(`/api/admin/users/${rateLimitModal.userId}/rate-limit`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        benchmarks_per_hour: rateLimitModal.bph || 20,
-        max_concurrent: rateLimitModal.mc || 1,
-        max_runs_per_benchmark: rateLimitModal.mrpb || 10,
+        benchmarks_per_hour: bph,
+        max_concurrent: mc,
+        max_runs_per_benchmark: mrpb,
       }),
     })
     if (res.ok) {
@@ -234,7 +237,7 @@ async function saveRateLimit() {
       rateLimitModal.visible = false
     } else {
       const data = await res.json()
-      showToast(data.error || 'Failed to save', 'error')
+      showToast(data.detail || data.error || 'Failed to save', 'error')
     }
   } catch {
     showToast('Failed to save rate limits', 'error')
