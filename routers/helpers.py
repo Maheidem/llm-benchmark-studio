@@ -182,14 +182,16 @@ async def _save_user_config(user_id: str, config: dict):
             existing = existing_by_key.get(prov_key)
 
             if existing:
-                # Update existing provider
+                # Update existing provider — preserve direct_local if not explicitly provided
+                dl = prov_cfg.get("direct_local")
+                direct_local_val = (1 if dl else 0) if dl is not None else existing.get("direct_local", 0)
                 await db.update_provider(
                     existing["id"],
                     name=prov_cfg.get("display_name", prov_key),
                     api_base=prov_cfg.get("api_base"),
                     api_key_env=prov_cfg.get("api_key_env"),
                     model_prefix=prov_cfg.get("model_id_prefix"),
-                    direct_local=1 if prov_cfg.get("direct_local") else 0,
+                    direct_local=direct_local_val,
                 )
                 # Sync models
                 existing_models = await db.get_models_for_provider(existing["id"])
