@@ -24,7 +24,7 @@ import {
   Filler,
 } from 'chart.js'
 import { useChartTheme } from '../../composables/useChartTheme.js'
-import { getColor } from '../../utils/constants.js'
+import { getColor, buildModelColorMap } from '../../utils/constants.js'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Tooltip, Legend, Filler)
 
@@ -42,8 +42,11 @@ const chartHeight = computed(() => {
   return Math.max(200, props.results.length * 36)
 })
 
+const modelColors = computed(() => buildModelColorMap(props.results))
+
 const chartData = computed(() => {
   const agg = props.results
+  const cm = modelColors.value
 
   if (!props.isStressMode) {
     return {
@@ -51,8 +54,8 @@ const chartData = computed(() => {
       datasets: [{
         label: 'Output Tok/s',
         data: agg.map(a => a.output_speed_tps || a.tokens_per_second),
-        backgroundColor: agg.map(a => getColor(a.provider).bar + 'CC'),
-        borderColor: agg.map(a => getColor(a.provider).bar),
+        backgroundColor: agg.map(a => (cm[`${a.model_id || a.model}::${a.provider}`] || getColor(a.provider).bar) + 'CC'),
+        borderColor: agg.map(a => cm[`${a.model_id || a.model}::${a.provider}`] || getColor(a.provider).bar),
         borderWidth: 0,
         borderRadius: 2,
         barPercentage: 0.55,
@@ -68,8 +71,7 @@ const chartData = computed(() => {
   const datasets = models.map(uid => {
     const modelResults = agg.filter(a => `${a.model_id}::${a.provider}` === uid)
     const modelName = modelResults[0]?.model || uid
-    const provider = modelResults[0]?.provider || ''
-    const color = getColor(provider)
+    const hex = cm[uid] || getColor(modelResults[0]?.provider || '').bar
     const data = tiers.map(tier => {
       const match = modelResults.find(r => r.context_tokens === tier)
       return match && match.success ? (match.output_speed_tps || match.tokens_per_second) : null
@@ -77,11 +79,11 @@ const chartData = computed(() => {
     return {
       label: modelName,
       data,
-      borderColor: color.bar,
-      backgroundColor: color.bar + '33',
+      borderColor: hex,
+      backgroundColor: hex + '33',
       borderWidth: 2,
       pointRadius: 4,
-      pointBackgroundColor: color.bar,
+      pointBackgroundColor: hex,
       pointBorderColor: '#09090B',
       pointBorderWidth: 2,
       tension: 0.3,

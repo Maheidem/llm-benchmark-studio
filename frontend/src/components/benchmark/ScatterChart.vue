@@ -18,7 +18,7 @@ import {
   Legend,
 } from 'chart.js'
 import { useChartTheme } from '../../composables/useChartTheme.js'
-import { getColor } from '../../utils/constants.js'
+import { getColor, buildModelColorMap } from '../../utils/constants.js'
 
 ChartJS.register(LinearScale, PointElement, Tooltip, Legend)
 
@@ -31,9 +31,12 @@ const { gridColor, tooltipStyle, axisLabelFont, tickFont } = useChartTheme()
 const successfulResults = computed(() => props.results.filter(a => a.success))
 const hasData = computed(() => successfulResults.value.length >= 2)
 
+const modelColors = computed(() => buildModelColorMap(successfulResults.value))
+
 const chartData = computed(() => {
   const agg = successfulResults.value
   if (agg.length < 2) return { datasets: [] }
+  const cm = modelColors.value
 
   const allTokens = agg.map(a => a.output_tokens)
   const minT = Math.min(...allTokens)
@@ -41,12 +44,12 @@ const chartData = computed(() => {
   const scaleSize = (t) => maxT === minT ? 10 : 5 + (t - minT) / (maxT - minT) * 15
 
   const datasets = agg.map(a => {
-    const color = getColor(a.provider)
+    const hex = cm[`${a.model_id || a.model}::${a.provider}`] || getColor(a.provider).bar
     return {
       label: a.model,
       data: [{ x: a.output_speed_tps || a.tokens_per_second, y: a.ttft_ms }],
-      backgroundColor: color.bar,
-      borderColor: color.bar,
+      backgroundColor: hex,
+      borderColor: hex,
       pointRadius: scaleSize(a.output_tokens),
       pointHoverRadius: scaleSize(a.output_tokens) + 3,
     }
