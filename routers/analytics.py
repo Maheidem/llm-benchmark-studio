@@ -145,6 +145,7 @@ async def analytics_trends(
     runs = await db.get_analytics_benchmark_runs(user["id"], period)
 
     series_map: dict[str, list[dict]] = {mid: [] for mid in model_ids}
+    model_names: dict[str, str] = {}  # model_id -> display name
 
     for run in runs:
         results = await db.get_benchmark_results(run["id"])
@@ -154,6 +155,8 @@ async def analytics_trends(
                 continue
             m_id = r.get("model_id", "")
             if m_id in series_map:
+                if m_id not in model_names:
+                    model_names[m_id] = r.get("model", m_id)
                 run_model_vals.setdefault(m_id, []).append(
                     float(r.get("avg_output_speed_tps", 0) or r.get("avg_tokens_per_second", 0) or 0) if metric == "tps" else float(r.get("avg_ttft_ms", 0) or 0)
                 )
@@ -170,7 +173,7 @@ async def analytics_trends(
         points = series_map.get(m_id, [])
         if points:
             points.sort(key=lambda p: p["timestamp"])
-            series.append({"model_id": m_id, "points": points})
+            series.append({"model_id": m_id, "model": model_names.get(m_id, m_id), "points": points})
 
     return {"metric": metric, "series": series}
 
