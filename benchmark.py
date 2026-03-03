@@ -446,11 +446,10 @@ def run_single(
                 ttft = (now - start) * 1000  # ms
 
             # Count content-bearing chunks (1 chunk ~ 1 token)
-            if (
-                chunk.choices
-                and chunk.choices[0].delta
-                and chunk.choices[0].delta.content
-            ):
+            # Handle both standard content AND reasoning model content
+            # Reasoning models (Qwen3.5, DeepSeek-R1, etc.) use delta.reasoning_content
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta and (delta.content or getattr(delta, "reasoning_content", None)):
                 chunk_count += 1
 
             # Capture usage from final chunk if provider supports it

@@ -155,10 +155,34 @@ export function useDirectBenchmark() {
         }
       }
 
+      // Safety check: if server returned non-SSE response (e.g. JSON error),
+      // parse it directly instead of attempting SSE stream parsing
+      const contentType = response.headers.get('content-type') || ''
+      if (!contentType.includes('text/event-stream') && contentType.includes('application/json')) {
+        clearTimeout(timeoutId)
+        const text = await response.text()
+        let errorMsg = '[non_streaming] Server returned JSON instead of SSE stream'
+        try {
+          const json = JSON.parse(text)
+          if (json.error) {
+            errorMsg = `[api_error] ${json.error.message || JSON.stringify(json.error)}`
+          }
+        } catch { /* not parseable */ }
+        return {
+          ...baseResult,
+          ttft_ms: null, total_time_s: (performance.now() - t0) / 1000,
+          output_tokens: 0, input_tokens: 0,
+          tokens_per_second: 0, input_tokens_per_second: null,
+          output_speed_tps: 0, itl_ms: 0,
+          success: false, error: errorMsg,
+        }
+      }
+
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
       let lastUsage = null
+      let apiError = null
 
       while (true) {
         const { done, value } = await reader.read()
@@ -176,11 +200,21 @@ export function useDirectBenchmark() {
 
           try {
             const chunk = JSON.parse(payload)
-            const content = chunk.choices?.[0]?.delta?.content
-            if (content && ttft === null) {
+            // Detect API errors returned inside SSE events
+            if (chunk.error) {
+              apiError = chunk.error.message || JSON.stringify(chunk.error)
+              continue
+            }
+            const delta = chunk.choices?.[0]?.delta
+            // Handle both standard content AND reasoning model content
+            // Reasoning models (Qwen3.5, DeepSeek-R1, etc.) use delta.reasoning_content
+            const content = delta?.content
+            const reasoning = delta?.reasoning_content
+            const hasOutput = content || reasoning
+            if (hasOutput && ttft === null) {
               ttft = performance.now() - t0
             }
-            if (content) {
+            if (hasOutput) {
               outputTokens++  // count content chunks as rough token count
             }
             // Capture usage from final chunk if available
@@ -196,10 +230,36 @@ export function useDirectBenchmark() {
       clearTimeout(timeoutId)
       const totalTime = (performance.now() - t0) / 1000 // seconds
 
+      // If an API error was found in the SSE stream, report it
+      if (apiError) {
+        return {
+          ...baseResult,
+          ttft_ms: null, total_time_s: Math.round(totalTime * 1000) / 1000,
+          output_tokens: 0, input_tokens: lastUsage?.prompt_tokens || 0,
+          tokens_per_second: 0, input_tokens_per_second: null,
+          output_speed_tps: 0, itl_ms: 0,
+          success: false, error: `[api_error] ${apiError}`,
+        }
+      }
+
       // Use usage data if available, otherwise use chunk count
       if (lastUsage) {
         if (lastUsage.completion_tokens) outputTokens = lastUsage.completion_tokens
         if (lastUsage.prompt_tokens) inputTokens = lastUsage.prompt_tokens
+      }
+
+      // Zero output tokens = model produced nothing (context overflow, empty response, etc.)
+      if (outputTokens === 0) {
+        console.warn(`[DirectBenchmark] 0 output tokens for ${baseResult.model} @ ${contextTokens}tok context — check model context length in LM Studio`)
+        return {
+          ...baseResult,
+          ttft_ms: null, total_time_s: Math.round(totalTime * 1000) / 1000,
+          output_tokens: 0, input_tokens: lastUsage?.prompt_tokens || inputTokens,
+          tokens_per_second: 0, input_tokens_per_second: null,
+          output_speed_tps: 0, itl_ms: 0,
+          success: false,
+          error: `[no_output] Model returned 0 tokens — check context length in LM Studio (${contextTokens > 0 ? contextTokens + ' context tokens sent' : 'no context filler'})`,
+        }
       }
 
       const tps = totalTime > 0 ? outputTokens / totalTime : 0
