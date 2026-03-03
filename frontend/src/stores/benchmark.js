@@ -588,6 +588,8 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     async function runProviderGroup(targets) {
       const groupResults = []
       for (const target of targets) {
+        if (!localRunning.value) break // cancelled
+
         // Optional warmup run once per model (discarded)
         if (body.warmup) {
           const messages = [
@@ -598,6 +600,8 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
         }
 
         for (const tier of tiers) {
+          if (!localRunning.value) break // cancelled
+
           // Check if context tier exceeds model's context window
           const cs = useConfigStore()
           const modelData = Object.values(cs.config?.providers || {})
@@ -615,6 +619,8 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
           }
 
           for (let run = 1; run <= runCount; run++) {
+            if (!localRunning.value) break // cancelled
+
             // Emit progress
             handleSSE({
               type: 'progress',
@@ -707,11 +713,13 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
       }
       activeJobId.value = null
     }
-    // Also cancel any in-progress local benchmarks
+    // Cancel local benchmarks: set flag FIRST so loops break, then abort in-flight request
     if (localRunning.value) {
-      cancelDirect()
       localRunning.value = false
+      cancelDirect()
     }
+    isRunning.value = false
+    session.resetTracking()
   }
 
   function restoreRunningJob(job) {
