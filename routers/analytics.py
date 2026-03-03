@@ -81,7 +81,8 @@ async def analytics_leaderboard(
     for run in runs:
         results = await db.get_benchmark_results(run["id"])
         for r in results:
-            if not r.get("success", True):
+            # Skip context-tier groups with zero successes
+            if not r.get("success_count", 0):
                 continue
             model_id = r.get("model_id", "")
             if model_id not in model_agg_bm:
@@ -97,8 +98,8 @@ async def analytics_leaderboard(
                     "last_run": run["timestamp"],
                 }
             entry = model_agg_bm[model_id]
-            entry["tps_vals"].append(float(r.get("tokens_per_second", 0) or 0))
-            entry["ttft_vals"].append(float(r.get("ttft_ms", 0) or 0))
+            entry["tps_vals"].append(float(r.get("avg_tokens_per_second", 0) or 0))
+            entry["ttft_vals"].append(float(r.get("avg_ttft_ms", 0) or 0))
             entry["cost_vals"].append(float(r.get("cost", 0) or 0))
             entry["output_speed_vals"].append(float(r.get("avg_output_speed_tps", 0) or 0))
             entry["itl_vals"].append(float(r.get("avg_itl_ms", 0) or 0))
@@ -149,12 +150,12 @@ async def analytics_trends(
         results = await db.get_benchmark_results(run["id"])
         run_model_vals: dict[str, list[float]] = {}
         for r in results:
-            if not r.get("success", True):
+            if not r.get("success_count", 0):
                 continue
             m_id = r.get("model_id", "")
             if m_id in series_map:
                 run_model_vals.setdefault(m_id, []).append(
-                    float(r.get("tokens_per_second", 0) or 0) if metric == "tps" else float(r.get("ttft_ms", 0) or 0)
+                    float(r.get("avg_output_speed_tps", 0) or r.get("avg_tokens_per_second", 0) or 0) if metric == "tps" else float(r.get("avg_ttft_ms", 0) or 0)
                 )
 
         for m_id, vals in run_model_vals.items():
@@ -196,7 +197,7 @@ async def analytics_compare(
 
         model_map: dict[str, dict] = {}  # model_id -> stats
         for r in results:
-            if not r.get("success", True):
+            if not r.get("success_count", 0):
                 continue
             model_id = r.get("model_id", "")
             if model_id not in model_map:
@@ -209,8 +210,8 @@ async def analytics_compare(
                     "itl_vals": [],
                     "context_tokens": r.get("context_tokens", 0),
                 }
-            model_map[model_id]["tps_vals"].append(float(r.get("tokens_per_second", 0) or 0))
-            model_map[model_id]["ttft_vals"].append(float(r.get("ttft_ms", 0) or 0))
+            model_map[model_id]["tps_vals"].append(float(r.get("avg_tokens_per_second", 0) or 0))
+            model_map[model_id]["ttft_vals"].append(float(r.get("avg_ttft_ms", 0) or 0))
             model_map[model_id]["cost_vals"].append(float(r.get("cost", 0) or 0))
             model_map[model_id]["output_speed_vals"].append(float(r.get("avg_output_speed_tps", 0) or 0))
             model_map[model_id]["itl_vals"].append(float(r.get("avg_itl_ms", 0) or 0))
