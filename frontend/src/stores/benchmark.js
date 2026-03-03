@@ -577,9 +577,18 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
     const userPrompt = body.prompt || 'Hello, how are you?'
     const timeoutSec = body.timeout || 300
 
-    try {
-      for (const target of localTargets) {
-        // Optional warmup run (discarded)
+    // Group targets by provider (same pattern as backend: providers parallel, models sequential)
+    const providerGroups = {}
+    for (const target of localTargets) {
+      const key = target.provider_key || target.provider_display_name || 'unknown'
+      if (!providerGroups[key]) providerGroups[key] = []
+      providerGroups[key].push(target)
+    }
+
+    async function runProviderGroup(targets) {
+      const groupResults = []
+      for (const target of targets) {
+        // Optional warmup run once per model (discarded)
         if (body.warmup) {
           const messages = [
             { role: 'system', content: 'Benchmark warmup' },
@@ -625,10 +634,18 @@ export const useBenchmarkStore = defineStore('benchmark', () => {
 
             const result = await runDirectBenchmark(target, messages, mTokens, temp, tier, run, runCount, timeoutSec)
             handleSSE(result)
-            allResults.push(result)
+            groupResults.push(result)
           }
         }
       }
+      return groupResults
+    }
+
+    try {
+      // Run provider groups in parallel, models within each group sequential
+      const groupPromises = Object.values(providerGroups).map(g => runProviderGroup(g))
+      const groupResults = await Promise.all(groupPromises)
+      allResults.push(...groupResults.flat())
 
       // Persist results to backend
       if (allResults.length > 0) {
