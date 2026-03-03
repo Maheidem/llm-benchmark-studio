@@ -605,21 +605,26 @@ def run_benchmarks(
         context_tiers = [0]
 
     results = []
-    # Calculate total: for each tier, count eligible targets x runs
+    # Calculate total: for each target, count eligible tiers x runs
     total_runs = 0
-    for tier in context_tiers:
-        for target in targets:
+    for target in targets:
+        for tier in context_tiers:
             headroom = target.context_window - max_tokens - 100  # ~100 tokens for prompt
             if tier == 0 or tier <= headroom:
                 total_runs += runs
 
     current = 0
 
-    for tier in context_tiers:
-        if tier > 0:
-            console.print(f"\n  [bold cyan]── Context tier: {tier:,} tokens ──[/bold cyan]")
+    for target in targets:
+        console.print(f"\n  [bold cyan]── {target.provider} / {target.display_name} ──[/bold cyan]")
 
-        for target in targets:
+        # Warm-up run once per model (discarded)
+        if warmup:
+            console.print(f"  [dim]Warm-up: {target.display_name}...[/dim]", end=" ")
+            wu = run_single(target, prompt, max_tokens, temperature, context_tokens=0)
+            console.print("[dim]done[/dim]" if wu.success else "[dim]fail[/dim]")
+
+        for tier in context_tiers:
             headroom = target.context_window - max_tokens - 100
             if tier > 0 and tier > headroom:
                 console.print(
@@ -627,12 +632,6 @@ def run_benchmarks(
                     f"({target.context_window // 1000}K context window)[/yellow]"
                 )
                 continue
-
-            # Warm-up run (discarded)
-            if warmup:
-                console.print(f"  [dim]Warm-up: {target.display_name}...[/dim]", end=" ")
-                wu = run_single(target, prompt, max_tokens, temperature, context_tokens=tier)
-                console.print("[dim]done[/dim]" if wu.success else "[dim]fail[/dim]")
 
             run_results = []
             for r in range(runs):

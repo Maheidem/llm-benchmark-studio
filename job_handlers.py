@@ -299,9 +299,43 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
     )
 
     async def run_provider(prov_targets):
-        """Run all benchmarks for one provider sequentially."""
-        for tier in context_tiers:
-            for target in prov_targets:
+        """Run all benchmarks for one provider sequentially.
+
+        Execution order: model → context tiers → runs.
+        This profiles each model across all context sizes before moving on.
+        """
+        for target in prov_targets:
+            if cancel_event.is_set():
+                return
+
+            # Apply model profile once per model (B3)
+            bench_target = target
+            bench_provider_params = provider_params
+            profile = loaded_profiles.get(target.model_id)
+            if profile:
+                # Profile system_prompt replaces config-level baseline
+                profile_sys = profile.get("system_prompt")
+                if profile_sys:
+                    bench_target = replace(target, system_prompt=profile_sys)
+
+                # Profile params: defaults < profile < per-request overrides
+                profile_params_raw = profile.get("params_json")
+                if profile_params_raw:
+                    profile_params = json.loads(profile_params_raw) if isinstance(profile_params_raw, str) else profile_params_raw
+                    if profile_params:
+                        merged = dict(profile_params)
+                        if bench_provider_params:
+                            merged.update(bench_provider_params)
+                        bench_provider_params = merged
+
+            # Warm-up run once per model (discarded)
+            if warmup:
+                await async_run_single(
+                    bench_target, prompt, max_tokens, temperature, 0,
+                    timeout=timeout, provider_params=bench_provider_params,
+                )
+
+            for tier in context_tiers:
                 if cancel_event.is_set():
                     return
                 headroom = target.context_window - max_tokens - 100
@@ -314,33 +348,6 @@ async def benchmark_handler(job_id: str, params: dict, cancel_event, progress_cb
                         "reason": f"{tier//1000}K context exceeds model window ({target.context_window//1000}K - {max_tokens} max_tokens)",
                     })
                     continue
-
-                # Apply model profile if available (B3)
-                bench_target = target
-                bench_provider_params = provider_params
-                profile = loaded_profiles.get(target.model_id)
-                if profile:
-                    # Profile system_prompt replaces config-level baseline
-                    profile_sys = profile.get("system_prompt")
-                    if profile_sys:
-                        bench_target = replace(target, system_prompt=profile_sys)
-
-                    # Profile params: defaults < profile < per-request overrides
-                    profile_params_raw = profile.get("params_json")
-                    if profile_params_raw:
-                        profile_params = json.loads(profile_params_raw) if isinstance(profile_params_raw, str) else profile_params_raw
-                        if profile_params:
-                            merged = dict(profile_params)
-                            if bench_provider_params:
-                                merged.update(bench_provider_params)
-                            bench_provider_params = merged
-
-                # Warm-up run (discarded)
-                if warmup:
-                    await async_run_single(
-                        bench_target, prompt, max_tokens, temperature, tier,
-                        timeout=timeout, provider_params=bench_provider_params,
-                    )
 
                 for r in range(runs):
                     if cancel_event.is_set():
