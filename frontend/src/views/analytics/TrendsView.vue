@@ -22,15 +22,15 @@
           <div v-else-if="!availableModels.length" class="text-zinc-600 text-xs px-3 py-2">No models found.</div>
           <label
             v-for="m in availableModels"
-            :key="m.model"
+            :key="m.model_id"
             class="flex items-center gap-2 px-2 py-1 rounded-sm cursor-pointer hover:bg-white/[0.03] text-xs text-zinc-400"
           >
             <input
               type="checkbox"
-              :value="m.model"
-              :checked="selectedModels.has(m.model)"
+              :value="m.model_id"
+              :checked="selectedModels.has(m.model_id)"
               class="accent-lime-400 w-3 h-3"
-              @change="toggleModel(m.model, $event.target.checked)"
+              @change="toggleModel(m.model_id, $event.target.checked)"
             />
             {{ m.model }}
           </label>
