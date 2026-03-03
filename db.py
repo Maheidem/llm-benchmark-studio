@@ -1241,7 +1241,7 @@ async def get_benchmark_results(run_id: str) -> list[dict]:
         "ROUND(AVG(CASE WHEN br.success = 1 THEN br.ttft_ms END), 1) AS avg_ttft_ms, "
         "ROUND(AVG(CASE WHEN br.success = 1 THEN br.total_time_s END), 3) AS avg_total_time_s, "
         "ROUND(AVG(CASE WHEN br.success = 1 THEN br.input_tokens_per_second END), 2) AS avg_input_tokens_per_second, "
-        "ROUND(AVG(CASE WHEN br.success = 1 THEN br.output_speed_tps END), 2) AS avg_output_speed_tps, "
+        "ROUND(AVG(CASE WHEN br.success = 1 THEN COALESCE(br.output_speed_tps, br.tokens_per_second) END), 2) AS avg_output_speed_tps, "
         "ROUND(AVG(CASE WHEN br.success = 1 THEN br.itl_ms END), 1) AS avg_itl_ms, "
         "CASE WHEN SUM(CASE WHEN br.success = 1 THEN 1 ELSE 0 END) >= 2 THEN "
         "  ROUND(SQRT(MAX(0, "
