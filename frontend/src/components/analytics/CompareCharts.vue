@@ -1,9 +1,9 @@
 <template>
   <div class="space-y-6">
     <div class="card rounded-md p-4">
-      <h3 class="section-label mb-3">Throughput Comparison (tok/s)</h3>
+      <h3 class="section-label mb-3">Output Speed Comparison (tok/s)</h3>
       <div style="height: 320px">
-        <Bar :data="tpsChartData" :options="chartOptions('TOKENS / SECOND', 'tok/s')" />
+        <Bar :data="tpsChartData" :options="chartOptions('OUTPUT TOKENS / SECOND', 'tok/s')" />
       </div>
     </div>
     <div class="card rounded-md p-4">
@@ -25,7 +25,7 @@
                 v-for="(run, ri) in runs"
                 :key="'tps-' + ri"
                 class="px-3 py-2 text-right section-label"
-              >Run {{ ri + 1 }} TPS</th>
+              >Run {{ ri + 1 }} Tok/s</th>
               <th
                 v-for="(run, ri) in runs"
                 :key="'ttft-' + ri"
@@ -81,7 +81,7 @@ const modelList = computed(() => {
   const allModels = new Set()
   props.runs.forEach(run => {
     const items = run.results || run.models || []
-    items.forEach(r => allModels.add(r.model || r.display_name))
+    items.forEach(r => allModels.add(r.model || r.model_id || r.display_name))
   })
   return Array.from(allModels).sort()
 })
@@ -101,8 +101,8 @@ const tpsChartData = computed(() => ({
     return {
       label: runLabels.value[ri],
       data: modelList.value.map(m => {
-        const match = results.find(r => (r.model || r.display_name) === m)
-        return match ? (match.avg_tokens_per_second ?? match.avg_tps ?? 0) : 0
+        const match = results.find(r => (r.model || r.model_id || r.display_name) === m)
+        return match ? (match.avg_output_speed_tps ?? match.avg_tps ?? match.avg_tokens_per_second ?? 0) : 0
       }),
       backgroundColor: CHART_COLORS[ri % CHART_COLORS.length] + 'CC',
       borderColor: CHART_COLORS[ri % CHART_COLORS.length],
@@ -119,7 +119,7 @@ const ttftChartData = computed(() => ({
     return {
       label: runLabels.value[ri],
       data: modelList.value.map(m => {
-        const match = results.find(r => (r.model || r.display_name) === m)
+        const match = results.find(r => (r.model || r.model_id || r.display_name) === m)
         return match ? (match.avg_ttft_ms ?? 0) : 0
       }),
       backgroundColor: CHART_COLORS[ri % CHART_COLORS.length] + 'CC',
@@ -167,15 +167,15 @@ function chartOptions(title, unit) {
 
 function getModelTps(run, model) {
   const items = run.results || run.models || []
-  const match = items.find(r => (r.model || r.display_name) === model)
+  const match = items.find(r => (r.model || r.model_id || r.display_name) === model)
   if (!match) return '-'
-  const val = match.avg_tokens_per_second ?? match.avg_tps ?? 0
+  const val = match.avg_output_speed_tps ?? match.avg_tps ?? match.avg_tokens_per_second ?? 0
   return val.toFixed(1)
 }
 
 function getModelTtft(run, model) {
   const items = run.results || run.models || []
-  const match = items.find(r => (r.model || r.display_name) === model)
+  const match = items.find(r => (r.model || r.model_id || r.display_name) === model)
   if (!match) return '-'
   const val = match.avg_ttft_ms ?? 0
   return val.toFixed(0) + 'ms'

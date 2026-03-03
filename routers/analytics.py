@@ -206,6 +206,7 @@ async def analytics_compare(
             if model_id not in model_map:
                 model_map[model_id] = {
                     "model_id": model_id,
+                    "model": r.get("model", model_id),
                     "tps_vals": [],
                     "ttft_vals": [],
                     "cost_vals": [],
@@ -224,6 +225,7 @@ async def analytics_compare(
             n = len(stats["tps_vals"])
             run_models.append({
                 "model_id": model_id,
+                "model": stats["model"],
                 "avg_tps": round(sum(stats["tps_vals"]) / n, 2) if n else 0,
                 "avg_ttft_ms": round(sum(stats["ttft_vals"]) / n, 1) if n else 0,
                 "context_tokens": stats["context_tokens"],

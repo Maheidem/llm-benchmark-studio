@@ -36,7 +36,7 @@
           />
           <span class="text-xs font-mono text-zinc-500">{{ formatTimestamp(run.timestamp) }}</span>
           <span class="text-xs text-zinc-400 truncate flex-1">{{ (run.prompt || 'Benchmark run').substring(0, 50) }}</span>
-          <span class="text-[10px] font-mono text-zinc-600">{{ (run.results || []).length }} models</span>
+          <span class="text-[10px] font-mono text-zinc-600">{{ new Set((run.results || []).map(r => r.model_id || r.model)).size }} models</span>
         </label>
       </div>
     </div>
