@@ -24,8 +24,9 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Copy application code
-COPY app.py benchmark.py auth.py db.py keyvault.py provider_params.py job_registry.py job_handlers.py schemas.py ws_manager.py mailer.py config.yaml migrate_to_multiuser.py ./
+COPY app.py benchmark.py auth.py db.py keyvault.py provider_params.py job_registry.py job_handlers.py schemas.py ws_manager.py mailer.py migrate_to_multiuser.py ./
 COPY routers/ routers/
+COPY corpus/ corpus/
 
 # Copy built frontend assets (vite outputs to ../static relative to /build, i.e. /static)
 COPY --from=frontend-build /static/ static/

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """LLM Benchmark - Measure token/second performance across providers via LiteLLM.
 
+CLI requires --token for remote server mode. Providers/models are configured
+via the web UI Settings page.
+
 Usage:
-    python benchmark.py                          # Run all benchmarks
-    python benchmark.py --runs 3                 # Average over 3 runs
-    python benchmark.py --provider openai        # Only OpenAI models
-    python benchmark.py --model GLM              # Only models matching 'GLM'
-    python benchmark.py --prompt "Write a poem"  # Custom prompt
-    python benchmark.py --no-save                # Don't save results to file
+    python benchmark.py --token JWT               # Run all configured models
+    python benchmark.py --token JWT --runs 3      # Average over 3 runs
+    python benchmark.py --token JWT --model id1,id2  # Specific model IDs
+    python benchmark.py --token JWT --prompt "Write a poem"
 """
 
 import argparse
@@ -23,7 +24,6 @@ from typing import Optional
 import tiktoken
 
 import litellm
-import yaml
 
 # Disable retry loops at two layers:
 # 1. LiteLLM wrapper (default num_retries=2) — we handle retries ourselves.
@@ -31,7 +31,6 @@ import yaml
 #    endpoints (LM Studio) trigger invisible retry loops inside the SDK.
 litellm.num_retries = 0
 os.environ.setdefault("OPENAI_MAX_RETRIES", "0")
-from pydantic import BaseModel, ValidationError
 from dotenv import load_dotenv
 from rich import box
 from rich.console import Console
@@ -120,54 +119,6 @@ class AggregatedResult:
     cv_ttft: float = 0.0
     # Confidence level
     confidence_level: str = ""  # "high" / "medium" / "low"
-
-
-# ---------------------------------------------------------------------------
-# Config validation
-# ---------------------------------------------------------------------------
-
-class ModelSchema(BaseModel):
-    id: str
-    display_name: str
-    context_window: int = 128000
-    max_output_tokens: Optional[int] = None
-    skip_params: Optional[list[str]] = None
-    input_cost_per_mtok: Optional[float] = None
-    output_cost_per_mtok: Optional[float] = None
-
-
-class ProviderSchema(BaseModel):
-    display_name: str
-    models: list[ModelSchema]
-    api_base: Optional[str] = None
-    api_key: Optional[str] = None
-    api_key_env: Optional[str] = None
-    model_id_prefix: Optional[str] = None
-
-
-class ConfigSchema(BaseModel):
-    defaults: dict
-    providers: dict[str, ProviderSchema]
-    prompt_templates: Optional[dict] = None
-
-
-# ---------------------------------------------------------------------------
-# Config loading
-# ---------------------------------------------------------------------------
-
-def load_config(config_path: str) -> dict:
-    """Load and validate benchmark configuration from YAML file."""
-    with open(config_path) as f:
-        raw = yaml.safe_load(f)
-    try:
-        ConfigSchema(**raw)
-    except ValidationError as e:
-        console.print(f"[red]Config validation error in {config_path}:[/red]")
-        for err in e.errors():
-            loc = " -> ".join(str(x) for x in err["loc"])
-            console.print(f"  [yellow]{loc}[/yellow]: {err['msg']}")
-        raise SystemExit(1)
-    return raw
 
 
 def resolve_api_key(provider_cfg: dict) -> Optional[str]:
@@ -263,133 +214,84 @@ def build_targets(
 # Benchmark execution
 # ---------------------------------------------------------------------------
 
-def generate_context_text(target_tokens: int) -> str:
-    """Generate realistic filler text sized to approximately target_tokens.
+# ---------------------------------------------------------------------------
+# Corpus cache for context generation
+# ---------------------------------------------------------------------------
+_CORPUS_TEXT: str | None = None
+_CORPUS_TOKENS: list[int] | None = None
+_CORPUS_ENC = None
 
-    Builds context from diverse block types (code, prose, JSON, docs) to
-    better simulate real-world workloads rather than repeating one paragraph.
-    """
-    if target_tokens <= 0:
-        return ""
+# Synthetic fallback text (used when corpus file is unavailable, e.g. in tests)
+_SYNTHETIC_BLOCKS = [
+    "Artificial intelligence continues to reshape industries across the global economy. "
+    "Modern language models leverage transformer architectures with attention mechanisms "
+    "that enable contextual understanding of text at unprecedented scale. These systems "
+    "are trained on diverse corpora spanning scientific literature, software documentation, "
+    "news articles, and conversational data. The resulting models demonstrate emergent "
+    "capabilities in reasoning, code generation, summarization, and creative writing.",
+    "Distributed systems rely on consensus protocols to maintain consistency across "
+    "replicas. The Raft algorithm partitions the consensus problem into leader "
+    "election, log replication, and safety guarantees. Each server maintains a "
+    "replicated log of commands that are applied to a deterministic state machine. "
+    "When a leader receives a client request, it appends the entry to its log and "
+    "replicates it to followers. Once a majority acknowledges the entry, it is "
+    "committed and the leader responds to the client.",
+    "The query planner selects execution strategies based on table statistics, "
+    "available indexes, and estimated cardinalities. For joins involving more than "
+    "three tables, the planner uses dynamic programming to evaluate join orderings. "
+    "Partial indexes can dramatically reduce index size when queries consistently "
+    "filter on a known predicate. The EXPLAIN ANALYZE command reveals actual row "
+    "counts versus estimates, helping identify stale statistics or cardinality "
+    "misestimates that lead to suboptimal plans.",
+]
 
-    # Diverse content blocks that cycle to fill the target token count
-    _CONTEXT_BLOCKS = [
-        # Block 0: Python code snippet
-        (
-            "```python\n"
-            "def binary_search(arr: list[int], target: int) -> int:\n"
-            '    """Return the index of target in sorted arr, or -1 if absent."""\n'
-            "    lo, hi = 0, len(arr) - 1\n"
-            "    while lo <= hi:\n"
-            "        mid = (lo + hi) // 2\n"
-            "        if arr[mid] == target:\n"
-            "            return mid\n"
-            "        elif arr[mid] < target:\n"
-            "            lo = mid + 1\n"
-            "        else:\n"
-            "            hi = mid - 1\n"
-            "    return -1\n"
-            "```\n"
-        ),
-        # Block 1: Prose paragraph - AI topic
-        (
-            "Artificial intelligence continues to reshape industries across the global economy. "
-            "Modern language models leverage transformer architectures with attention mechanisms "
-            "that enable contextual understanding of text at unprecedented scale. These systems "
-            "are trained on diverse corpora spanning scientific literature, software documentation, "
-            "news articles, and conversational data. The resulting models demonstrate emergent "
-            "capabilities in reasoning, code generation, summarization, and creative writing. "
-        ),
-        # Block 2: JSON data structure
-        (
-            '{"experiment": {"id": "exp-20240315-001", "parameters": {"learning_rate": 0.001, '
-            '"batch_size": 64, "epochs": 100, "optimizer": "adamw", "weight_decay": 0.01}, '
-            '"metrics": {"train_loss": 0.342, "val_loss": 0.387, "accuracy": 0.924, '
-            '"f1_score": 0.918, "inference_ms": 12.4}, "hardware": {"gpu": "A100-80GB", '
-            '"gpu_count": 4, "cpu": "AMD EPYC 7763", "ram_gb": 512}}}\n'
-        ),
-        # Block 3: Technical documentation excerpt
-        (
-            "## API Rate Limiting\n\n"
-            "All endpoints enforce rate limits measured in requests per minute (RPM) and "
-            "tokens per minute (TPM). When a rate limit is exceeded, the server responds "
-            "with HTTP 429 and a Retry-After header indicating seconds to wait. Clients "
-            "should implement exponential backoff starting at 1 second with a maximum of "
-            "60 seconds. Batch endpoints allow up to 50 requests per call and share the "
-            "same TPM quota as streaming endpoints. Enterprise tiers receive 10x the "
-            "default limits and dedicated endpoint pools.\n"
-        ),
-        # Block 4: Prose paragraph - networking topic
-        (
-            "Distributed systems rely on consensus protocols to maintain consistency across "
-            "replicas. The Raft algorithm partitions the consensus problem into leader "
-            "election, log replication, and safety guarantees. Each server maintains a "
-            "replicated log of commands that are applied to a deterministic state machine. "
-            "When a leader receives a client request, it appends the entry to its log and "
-            "replicates it to followers. Once a majority acknowledges the entry, it is "
-            "committed and the leader responds to the client. Network partitions and "
-            "leader failures are handled through randomised election timeouts. "
-        ),
-        # Block 5: Python code snippet - data processing
-        (
-            "```python\n"
-            "import json\n"
-            "from collections import Counter\n"
-            "from pathlib import Path\n\n"
-            "def analyse_logs(log_dir: str) -> dict:\n"
-            '    """Aggregate error counts from JSON log files."""\n'
-            "    errors = Counter()\n"
-            "    for path in Path(log_dir).glob('*.json'):\n"
-            "        for line in path.read_text().splitlines():\n"
-            "            entry = json.loads(line)\n"
-            "            if entry.get('level') == 'ERROR':\n"
-            "                errors[entry.get('code', 'UNKNOWN')] += 1\n"
-            "    return dict(errors.most_common(20))\n"
-            "```\n"
-        ),
-        # Block 6: JSON config structure
-        (
-            '{"deployment": {"service": "inference-gateway", "version": "2.4.1", '
-            '"replicas": 3, "resources": {"cpu_limit": "4000m", "memory_limit": "16Gi", '
-            '"gpu_limit": 1}, "autoscaling": {"min_replicas": 2, "max_replicas": 8, '
-            '"target_cpu_utilization": 70, "scale_down_delay_s": 300}, '
-            '"health_check": {"path": "/healthz", "interval_s": 10, "timeout_s": 5}}}\n'
-        ),
-        # Block 7: Technical documentation - database
-        (
-            "## Query Optimization\n\n"
-            "The query planner selects execution strategies based on table statistics, "
-            "available indexes, and estimated cardinalities. For joins involving more than "
-            "three tables, the planner uses dynamic programming to evaluate join orderings. "
-            "Partial indexes can dramatically reduce index size when queries consistently "
-            "filter on a known predicate. The EXPLAIN ANALYZE command reveals actual row "
-            "counts versus estimates, helping identify stale statistics or cardinality "
-            "misestimates that lead to suboptimal plans.\n"
-        ),
-    ]
+
+def _load_corpus():
+    """Load and cache book corpus. Falls back to synthetic text if file missing."""
+    global _CORPUS_TEXT, _CORPUS_TOKENS, _CORPUS_ENC
+    if _CORPUS_TEXT is not None:
+        return _CORPUS_TEXT, _CORPUS_TOKENS, _CORPUS_ENC
 
     try:
         enc = tiktoken.get_encoding("cl100k_base")
     except Exception:
-        # Fallback: rough estimate of 1 token ~ 4 chars
-        full_text = "\n".join(_CONTEXT_BLOCKS)
-        repeats = max(1, target_tokens * 4 // len(full_text) + 1)
-        text = (full_text + "\n") * repeats
-        return text[: target_tokens * 4]
+        enc = None
 
-    # Cycle through blocks to fill the target
-    parts = []
-    total_tokens = 0
-    idx = 0
-    while total_tokens < target_tokens:
-        block = _CONTEXT_BLOCKS[idx % len(_CONTEXT_BLOCKS)]
-        parts.append(block)
-        total_tokens += len(enc.encode(block))
-        idx += 1
+    corpus_path = Path(__file__).parent / "corpus" / "moby_dick.txt"
+    if corpus_path.exists():
+        text = corpus_path.read_text(encoding="utf-8")
+        tokens = enc.encode(text) if enc else None
+        _CORPUS_TEXT, _CORPUS_TOKENS, _CORPUS_ENC = text, tokens, enc
+        return text, tokens, enc
 
-    text = "\n".join(parts)
-    tokens = enc.encode(text)
-    return enc.decode(tokens[:target_tokens])
+    # Fallback: join synthetic blocks, repeat to fill a reasonable buffer
+    base = "\n\n".join(_SYNTHETIC_BLOCKS)
+    text = (base + "\n\n") * 200  # ~100K tokens of synthetic text
+    tokens = enc.encode(text) if enc else None
+    _CORPUS_TEXT, _CORPUS_TOKENS, _CORPUS_ENC = text, tokens, enc
+    return text, tokens, enc
+
+
+def generate_context_text(target_tokens: int) -> str:
+    """Generate context text of approximately target_tokens.
+
+    Uses a cached public-domain book corpus (Moby Dick) for natural,
+    non-repetitive context that defeats prompt caching. Falls back to
+    synthetic prose blocks if the corpus file is unavailable.
+    """
+    if target_tokens <= 0:
+        return ""
+
+    text, tokens, enc = _load_corpus()
+
+    if enc and tokens:
+        if target_tokens <= len(tokens):
+            return enc.decode(tokens[:target_tokens])
+        # Requested more than corpus has -- return all of it
+        return text
+
+    # No tiktoken available: rough char estimate (1 token ~ 4 chars)
+    return text[: target_tokens * 4]
 
 
 def run_single(
@@ -966,27 +868,21 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python benchmark.py                          # Run all benchmarks
-  python benchmark.py --runs 3                 # Average over 3 runs
-  python benchmark.py --provider openai        # Only OpenAI models
-  python benchmark.py --model GLM              # Only models matching 'GLM'
-  python benchmark.py --prompt "Write a poem"  # Custom prompt
-  python benchmark.py --no-save                # Don't save results to file
+  python benchmark.py --token JWT               # Run all configured models via server
+  python benchmark.py --token JWT --runs 3      # Average over 3 runs
+  python benchmark.py --token JWT --model id1,id2  # Specific model IDs (comma-separated)
+  python benchmark.py --token JWT --prompt "Write a poem"
         """,
     )
-    parser.add_argument("--config", default="config.yaml", help="Config file path (default: config.yaml)")
+    parser.add_argument("--token", help="JWT token for server API auth (required)")
+    parser.add_argument("--server", default="http://localhost:8501", help="Server URL (default: http://localhost:8501)")
     parser.add_argument("--runs", type=int, default=3, help="Number of runs per model (default: 3)")
-    parser.add_argument("--provider", help="Filter by provider name (substring match)")
-    parser.add_argument("--model", help="Filter by model name (substring match)")
+    parser.add_argument("--model", help="Comma-separated model IDs to benchmark (default: all configured)")
     parser.add_argument("--prompt", help="Override default benchmark prompt")
     parser.add_argument("--max-tokens", type=int, help="Override max output tokens")
     parser.add_argument("--temperature", type=float, help="Override temperature")
-    parser.add_argument("--no-save", action="store_true", help="Don't save results to JSON")
     parser.add_argument("--verbose", action="store_true", help="Show LiteLLM debug output")
     parser.add_argument("--context-tiers", help="Comma-separated context token tiers (e.g., 0,1000,5000)")
-    parser.add_argument("--no-warmup", action="store_true", help="Skip warm-up run before measured runs")
-    parser.add_argument("--token", help="JWT token for remote API mode (delegates to server)")
-    parser.add_argument("--server", default="http://localhost:8501", help="Server URL for remote mode (default: http://localhost:8501)")
     args = parser.parse_args()
 
     # Load .env (keys)
@@ -998,72 +894,40 @@ Examples:
         litellm.suppress_debug_info = True
         litellm.set_verbose = False
 
-    # Find config file: CLI arg > same dir as script
-    config_path = Path(args.config)
-    if not config_path.exists():
-        config_path = script_dir / args.config
-    if not config_path.exists():
-        console.print(f"[red]Config not found: {args.config}[/red]")
-        return
-
-    config = load_config(str(config_path))
-    defaults = config.get("defaults", {})
-
-    # Build targets
-    targets = build_targets(config, args.provider, args.model)
-    if not targets:
-        console.print("[yellow]No matching targets. Check config and filters.[/yellow]")
+    # CLI local mode requires --token for remote API mode.
+    # Providers/models are now configured in the web UI and stored in the DB.
+    if not args.token:
+        console.print(
+            "[red]Local config.yaml mode has been removed.[/red]\n"
+            "Use remote mode with --token to run benchmarks via the server API:\n"
+            "  python benchmark.py --token YOUR_JWT_TOKEN --server http://localhost:8501\n"
+            "Or use the web UI to configure providers and run benchmarks."
+        )
         return
 
     # Resolve parameters
-    prompt = args.prompt or defaults.get("prompt", "Explain recursion in programming with a Python example.")
-    max_tokens = args.max_tokens or defaults.get("max_tokens", 512)
-    temperature = args.temperature if args.temperature is not None else defaults.get("temperature", 0.7)
+    prompt = args.prompt or "Explain recursion in programming with a Python example."
+    max_tokens = args.max_tokens or 512
+    temperature = args.temperature if args.temperature is not None else 0.7
     runs = args.runs
 
     context_tiers = None
     if args.context_tiers:
         context_tiers = [int(x.strip()) for x in args.context_tiers.split(",")]
 
-    # Remote mode: delegate to server API when --token is provided
-    if args.token:
-        model_ids = [t.model_id for t in targets]
-        run_remote_benchmark(
-            server_url=args.server,
-            token=args.token,
-            model_ids=model_ids,
-            runs=runs,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            prompt=prompt,
-            context_tiers=context_tiers or [0],
-        )
-        return
+    # Build model_ids from --model filter (comma-separated) or None for all
+    model_ids = [m.strip() for m in args.model.split(",")] if args.model else None
 
-    # Header
-    console.print(
-        Panel(
-            f"[bold]Targets:[/bold] {len(targets)} models  |  "
-            f"[bold]Runs:[/bold] {runs}  |  "
-            f"[bold]Max tokens:[/bold] {max_tokens}  |  "
-            f"[bold]Temp:[/bold] {temperature}",
-            title="\U0001f680 LLM Benchmark",
-            border_style="cyan",
-        )
+    run_remote_benchmark(
+        server_url=args.server,
+        token=args.token,
+        model_ids=model_ids,
+        runs=runs,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        prompt=prompt,
+        context_tiers=context_tiers or [0],
     )
-    prompt_preview = prompt.strip().replace("\n", " ")[:80]
-    console.print(f"  [dim]Prompt: {prompt_preview}{'...' if len(prompt.strip()) > 80 else ''}[/dim]\n")
-
-    # Run
-    results = run_benchmarks(targets, prompt, runs, max_tokens, temperature,
-                             context_tiers=context_tiers, warmup=not args.no_warmup)
-
-    # Display
-    display_results(results)
-
-    # Save
-    if not args.no_save:
-        save_results(results, prompt, context_tiers=context_tiers)
 
 
 if __name__ == "__main__":

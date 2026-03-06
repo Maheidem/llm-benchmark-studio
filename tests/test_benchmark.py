@@ -1,6 +1,8 @@
 """Tests for benchmark.py — Target building, context generation, error sanitisation."""
 
 import os
+from pathlib import Path
+
 import pytest
 
 from benchmark import (
@@ -214,9 +216,30 @@ class TestGenerateContextText:
         assert len(text) > 1000
 
     def test_diverse_content(self):
-        """Output should contain varied content types (code, prose, JSON)."""
+        """Output should contain natural prose (book text or synthetic fallback)."""
         text = generate_context_text(2000)
-        # Should contain at least some of the diverse blocks
-        has_code = "def " in text or "```" in text
-        has_prose = "." in text  # Sentences end with periods
-        assert has_code or has_prose  # At least something meaningful
+        # Natural text has sentences (periods) and varied words
+        assert "." in text
+        words = set(text.lower().split())
+        assert len(words) > 50  # Real prose has diverse vocabulary
+
+    def test_corpus_fallback(self, monkeypatch):
+        """Function works when corpus file is missing (synthetic fallback)."""
+        import benchmark as bm
+
+        # Reset the module-level cache
+        monkeypatch.setattr(bm, "_CORPUS_TEXT", None)
+        monkeypatch.setattr(bm, "_CORPUS_TOKENS", None)
+        monkeypatch.setattr(bm, "_CORPUS_ENC", None)
+
+        # Make _load_corpus see a nonexistent corpus path
+        real_path = Path(bm.__file__).parent / "corpus" / "moby_dick.txt"
+        orig_exists = Path.exists
+        monkeypatch.setattr(
+            Path, "exists",
+            lambda self: False if self == real_path else orig_exists(self),
+        )
+
+        text = bm.generate_context_text(500)
+        assert len(text) > 0
+        assert "." in text  # Synthetic fallback is prose
